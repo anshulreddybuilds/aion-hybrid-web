@@ -11,7 +11,24 @@
  * with no network. In standalone mode /api/* is answered inside the page, not
  * by the network, so Offline Demo Mode works with on-device Gemini Nano.
  */
-const CACHE = "aion-hybrid-shell-v6";
+const CACHE = "aion-hybrid-shell-v7";
+
+/* hybrid-v2 privacy rule: this worker only ever caches the PUBLIC app shell.
+ * It never stores private data, prompts or AI responses:
+ *   - AI calls go to firebasevertexai.googleapis.com (cross-origin) -> never
+ *     intercepted, never cached;
+ *   - tasks, memories and chat live in IndexedDB, not in HTTP responses;
+ *   - only GET requests whose path matches CACHEABLE below are written to the
+ *     cache, and never when the URL has a query string or the response says
+ *     no-store / private. Everything else passes straight to the network. */
+const CACHEABLE = [/^\/$/, /^\/index\.html$/, /^\/[a-z.-]+\.(?:css|js|html|webmanifest|jpg)$/, /^\/(?:fonts|icons|vendor)\//];
+function cacheable(url, resp) {
+  if (url.search) return false;
+  if (!CACHEABLE.some((re) => re.test(url.pathname))) return false;
+  if (!resp || !resp.ok || resp.type !== "basic") return false;
+  const cc = (resp.headers.get("cache-control") || "").toLowerCase();
+  return !/no-store|private/.test(cc);
+}
 const SHELL = [
   "/",
   "/style.css",
@@ -74,7 +91,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(req)
       .then((resp) => {
-        if (resp && resp.ok) {
+        if (cacheable(url, resp)) {
           const copy = resp.clone();
           caches.open(CACHE).then((cache) => cache.put(req, copy));
         }

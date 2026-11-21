@@ -1207,20 +1207,23 @@ function renderSystemHealth(health) {
   if (!el) return;
   const rows = [];
 
+  /* hybrid-v2: no "unreadable" placeholders. A metric is shown only when there
+     is a real value; in a browser that is the reported core count and the
+     browser's rounded device memory, labelled as exactly that. */
+  const omitted = [];
   const cpu = health.cpu || {};
-  rows.push(cpu.available
-    ? healthRow("CPU", `${cpu.percent}% across ${cpu.cores} cores`, toneForPct(cpu.percent))
-    : healthRow("CPU", "unreadable", "is-warn"));
+  if (cpu.available) rows.push(healthRow("CPU", `${cpu.percent}% across ${cpu.cores} cores`, toneForPct(cpu.percent)));
+  else if (cpu.cores) rows.push(healthRow("CPU cores", `${cpu.cores} logical (browser-reported; load not readable)`, ""));
+  else omitted.push(cpu);
 
   const ram = health.ram || {};
-  rows.push(ram.available
-    ? healthRow("RAM", `${ram.used_pct}% of ${ram.total_gb} GB`, toneForPct(ram.used_pct))
-    : healthRow("RAM", "unreadable", "is-warn"));
+  if (ram.available) rows.push(healthRow("RAM", `${ram.used_pct}% of ${ram.total_gb} GB`, toneForPct(ram.used_pct)));
+  else if (ram.device_memory_gb) rows.push(healthRow("Device memory", `about ${ram.device_memory_gb} GB (browser-rounded; usage not readable)`, ""));
+  else omitted.push(ram);
 
   const disk = health.disk || {};
-  rows.push(disk.available
-    ? healthRow("Disk", `${disk.free_gb} GB free of ${disk.total_gb} GB`, toneForPct(disk.used_pct))
-    : healthRow("Disk", "unreadable", "is-warn"));
+  if (disk.available) rows.push(healthRow("Disk", `${disk.free_gb} GB free of ${disk.total_gb} GB`, toneForPct(disk.used_pct)));
+  else omitted.push(disk);
 
   const net = health.network || {};
   if (net.available) {
@@ -1235,8 +1238,7 @@ function renderSystemHealth(health) {
   // The reasons matter more than the dashes. Someone looking at an
   // unreadable panel needs to know it is a missing package, not a
   // broken machine.
-  const reasons = ["cpu", "ram", "disk", "network"]
-    .map((k) => health[k])
+  const reasons = omitted.concat(net.available ? [] : [net])
     .filter((d) => d && d.available === false && d.reason)
     .map((d) => `<div class="row-sub health-reason">${d.reason}</div>`);
 
@@ -2214,7 +2216,18 @@ function attachAiBadge(bubble, meta) {
   badge.textContent = onDevice
     ? "On-Device (Gemini Nano) \u00B7 " + ms
     : "In-Cloud (Gemini Fallback) \u00B7 " + (meta.model || "cloud model") + " \u00B7 " + ms;
-  badge.title = "Route: " + String(meta.mode || "").replace(/_/g, " ") + " \u00B7 Model: " + (meta.model || "?");
+  /* Telemetry split (hybrid-v2): requested route vs what actually ran, whether
+     the SDK reported the source itself, and who contributed to this reply. */
+  const c = meta.contributors || {};
+  const who = [c.local_deterministic && "local code", c.local_ai && "on-device AI",
+    c.cloud_ai && "cloud AI", c.human_confirmed && "you (approved)"].filter(Boolean);
+  badge.title = "Requested route: " + String(meta.requested_mode || meta.mode || "").replace(/_/g, " ") +
+    " \u00B7 Actually ran: " + (onDevice ? "on device" : "in cloud") +
+    (meta.source_verified ? " (reported by the SDK)" : " (inferred - the SDK did not report it)") +
+    " \u00B7 Model: " + (meta.model || "?") + (who.length ? " \u00B7 Contributors: " + who.join(", ") : "");
+  badge.dataset.requestedMode = meta.requested_mode || meta.mode || "";
+  badge.dataset.actualSource = meta.actual_source || meta.source || "";
+  badge.dataset.sourceVerified = meta.source_verified ? "true" : "false";
   bubble.insertBefore(badge, bubble.firstChild);
 
   const bits = [];
@@ -2224,6 +2237,10 @@ function attachAiBadge(bubble, meta) {
     bits.push(meta.private_withheld + " private note" + (meta.private_withheld === 1 ? "" : "s") +
       " kept out of this request (use Only On-Device to include them)");
   }
+  if (meta.sealed && meta.sealed_items) {
+    bits.push(meta.sealed_items + " private item" + (meta.sealed_items === 1 ? "" : "s") + " sent as placeholders, names restored here");
+  }
+  if (who.length) bits.push("By: " + who.join(" + "));
   const sub = document.createElement("span");
   sub.className = "ai-badge-sub";
   sub.textContent = bits.join(" \u00B7 ");

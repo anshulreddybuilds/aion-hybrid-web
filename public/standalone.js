@@ -561,11 +561,13 @@
   function systemHealth() {
     /* Only what a web page can truly read. CPU % is not one of them. */
     var res = {
+      /* Real values only: core count and the browser's rounded memory figure.
+         Load and usage are not readable from a web page, so they are not shown. */
       cpu: navigator.hardwareConcurrency
-        ? { available: false, reason: "A web page cannot read CPU load (" + navigator.hardwareConcurrency + " logical cores reported)." }
+        ? { available: false, cores: navigator.hardwareConcurrency, reason: "A web page cannot read CPU load." }
         : { available: false, reason: "CPU information is hidden by this browser." },
       ram: navigator.deviceMemory
-        ? { available: false, reason: "Browser only reports a rounded device memory of about " + navigator.deviceMemory + " GB, not usage." }
+        ? { available: false, device_memory_gb: navigator.deviceMemory, reason: "A web page cannot read memory usage." }
         : { available: false, reason: "Device memory is not exposed by this browser." },
       disk: { available: false, reason: "Storage quota unavailable." },
       network: { available: true, verdict: navigator.onLine ? "browser reports online" : "browser reports OFFLINE", age_minutes: 0 },
@@ -712,26 +714,109 @@
   function taskContext() {
     return Promise.all([store.all("tasks"), store.all("proposals")]).then(function (r) {
       var rank = { doing: 0, todo: 1 };
-      var open = r[0].filter(function (t) { return t.status !== "done"; })
+      var openRows = r[0].filter(function (t) { return t.status !== "done"; })
         .sort(function (a, b) { return (rank[a.status] - rank[b.status]) || (a.mission < b.mission ? -1 : 1); })
-        .slice(0, 14)
-        .map(function (t) { return "- [" + (t.status === "doing" ? "in progress" : "to do") + "] " + t.title + " (" + t.mission + ")"; });
-      var waiting = r[1].filter(function (p) { return p.status === "pending" && p.kind === "task"; })
-        .slice(0, 4)
-        .map(function (p) { return "- [awaiting your approval] " + p.content; });
-      return { lines: open.concat(waiting), openCount: open.length, waitingCount: waiting.length };
+        .slice(0, 14);
+      var waitingRows = r[1].filter(function (p) { return p.status === "pending" && p.kind === "task"; }).slice(0, 4);
+      /* items keep the raw values apart from the wording, so a cloud-bound
+         prompt can swap them for placeholders (see buildPrompt). */
+      var items = openRows.map(function (t) {
+        return { label: t.status === "doing" ? "in progress" : "to do", title: t.title, mission: t.mission };
+      }).concat(waitingRows.map(function (p) { return { label: "awaiting your approval", title: p.content, mission: null }; }));
+      var lines = items.map(function (it) { return "- [" + it.label + "] " + it.title + (it.mission ? " (" + it.mission + ")" : ""); });
+      return { lines: lines, items: items, openCount: openRows.length, waitingCount: waitingRows.length };
     });
   }
 
-  function buildPrompt(message, history, notes, tasks) {
-    var ctx = notes.length ? notes.map(function (n, i) { return (i + 1) + ". " + n.content; }).join("\n") : "(no relevant notes)";
-    var tctx = tasks && tasks.lines.length ? tasks.lines.join("\n") : "(no open tasks)";
-    var hist = (history || []).slice(-4).map(function (h) {
-      return (h.role === "user" ? "User: " : "AION: ") + String(h.content).slice(0, 400);
-    }).join("\n");
-    return SYSTEM_PROMPT + "\n\nNOTES:\n" + ctx + "\n\nTASKS:\n" + tctx +
-      (hist ? "\n\nRECENT CONVERSATION:\n" + hist : "") +
-      "\n\nUser: " + message + "\nAION:";
+  /* ------------------------------------------------------------------ */
+  /* Cloud boundary (Day-1, hybrid-v2)                                     */
+  /* ------------------------------------------------------------------ */
+  /* Whenever a request CAN reach the cloud (Prefer Cloud and Prefer On-Device
+   * both can), the prompt is sealed first:
+   *   - task titles and project names become placeholders ([TASK_3], [PROJECT_1]);
+   *   - secrets / ID numbers are cut, emails / phones become [email] / [phone];
+   *   - conversation history comes from sealedTurns (stored sealed), never from
+   *     the reply text shown on screen - that text has the real names put back
+   *     in and would re-leak them on the next turn;
+   *   - turns that ran in Only On-Device mode never enter cloud history at all.
+   * The reply is un-sealed locally, only for display. This is a pattern- and
+   * vault-based seal, not a guarantee for arbitrary free text the user types. */
+  var vault = { byKey: {}, byToken: {}, counts: { TASK: 0, PROJECT: 0 } };
+  function tokenFor(kind, value) {
+    var v = String(value == null ? "" : value).trim();
+    if (!v) return v;
+    var key = kind + "|" + v.toLowerCase();
+    if (vault.byKey[key]) return vault.byKey[key];
+    vault.counts[kind] += 1;
+    var tok = "[" + kind + "_" + vault.counts[kind] + "]";
+    vault.byKey[key] = tok;
+    vault.byToken[tok] = v;
+    return tok;
+  }
+  function escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+  function sealText(text) {
+    var out = String(text == null ? "" : text);
+    /* 1. Known private values -> placeholders, longest first, whole words only. */
+    Object.keys(vault.byToken)
+      .map(function (t) { return [t, vault.byToken[t]]; })
+      .filter(function (p) { return p[1].length >= 3; })
+      .sort(function (a, b) { return b[1].length - a[1].length; })
+      .forEach(function (p) {
+        out = out.replace(new RegExp("(?<![A-Za-z0-9])" + escRe(p[1]) + "(?![A-Za-z0-9])", "gi"), p[0]);
+      });
+    /* 2. Secrets / ID numbers are cut; contact details are redacted. */
+    BLOCK_RULES.forEach(function (rule) {
+      out = out.replace(rule.re, function (m) { return !rule.test || rule.test(m) ? "[withheld secret]" : m; });
+    });
+    REDACT_RULES.forEach(function (rule) { out = out.replace(rule.re, rule.token); });
+    return out;
+  }
+  var TOKEN_RE = /\[(TASK|PROJECT)[ _](\d+)\]/g;
+  function unsealText(text) {
+    return String(text == null ? "" : text).replace(TOKEN_RE, function (m, kind, n) {
+      var v = vault.byToken["[" + kind + "_" + n + "]"];
+      return v != null ? v : m;
+    });
+  }
+  /* Sealed transcript: the only history a cloud-reachable prompt may carry. */
+  var sealedTurns = [];
+  function recordTurn(cloudReachable, userMessage, modelReply) {
+    if (!cloudReachable) return;              /* local-only turns stay local */
+    sealedTurns.push({ user: sealText(userMessage).slice(0, 400), assistant: sealText(modelReply).slice(0, 400) });
+    if (sealedTurns.length > 20) sealedTurns.shift();
+  }
+  var PLACEHOLDER_RULE =
+    " Private items are replaced by placeholders such as [TASK_3] or [PROJECT_1]. When you refer to one, " +
+    "write the placeholder exactly as given; never guess or describe what it stands for.";
+
+  function buildPrompt(message, history, notes, tasks, sealed) {
+    if (!sealed) {
+      /* Only On-Device: nothing leaves this browser, so the full local context is used. */
+      var ctx = notes.length ? notes.map(function (n, i) { return (i + 1) + ". " + n.content; }).join("\n") : "(no relevant notes)";
+      var tctx = tasks && tasks.lines.length ? tasks.lines.join("\n") : "(no open tasks)";
+      var hist = (history || []).slice(-4).map(function (h) {
+        return (h.role === "user" ? "User: " : "AION: ") + String(h.content).slice(0, 400);
+      }).join("\n");
+      return { prompt: SYSTEM_PROMPT + "\n\nNOTES:\n" + ctx + "\n\nTASKS:\n" + tctx +
+        (hist ? "\n\nRECENT CONVERSATION:\n" + hist : "") +
+        "\n\nUser: " + message + "\nAION:", sealedItems: 0, historyTurns: Math.ceil(Math.min((history || []).length, 4) / 2) };
+    }
+    /* Cloud-reachable: register every task title / project name first so the
+       vault can find them anywhere (notes, history, the message itself). */
+    var items = (tasks && tasks.items) || [];
+    var tlines = items.map(function (it) {
+      return "- [" + it.label + "] " + tokenFor("TASK", it.title) + (it.mission ? " (" + tokenFor("PROJECT", it.mission) + ")" : "");
+    });
+    var sctx = notes.length ? notes.map(function (n, i) { return (i + 1) + ". " + sealText(n.content); }).join("\n") : "(no relevant notes)";
+    var turns = sealedTurns.slice(-2);
+    var shist = turns.map(function (t) { return "User: " + t.user + "\nAION: " + t.assistant; }).join("\n");
+    var smsg = sealText(message);
+    var prompt = SYSTEM_PROMPT + PLACEHOLDER_RULE + "\n\nNOTES:\n" + sctx + "\n\nTASKS:\n" + (tlines.length ? tlines.join("\n") : "(no open tasks)") +
+      (shist ? "\n\nRECENT CONVERSATION:\n" + shist : "") +
+      "\n\nUser: " + smsg + "\nAION:";
+    var placeholders = prompt.match(TOKEN_RE) || [];
+    var uniq = {}; placeholders.forEach(function (p) { uniq[p.replace(" ", "_")] = 1; });
+    return { prompt: prompt, sealedItems: Object.keys(uniq).length, historyTurns: turns.length };
   }
 
   function waitForHybrid() {
@@ -744,23 +829,47 @@
   function handleChat(body) {
     var message = String(body.message || "").trim();
     return waitForHybrid().then(function (hybrid) {
+      /* The mode is read ONCE and passed to generate(), so the route cannot
+         change between "build the prompt" and "send it" (e.g. a dropdown
+         change during recall), which would otherwise send an unsealed prompt
+         to the cloud. */
       var mode = hybrid.getMode();
       var includePrivate = mode === "only_on_device";
+      var sealed = typeof hybrid.mayReachCloud === "function" ? hybrid.mayReachCloud(mode) : mode !== "only_on_device";
       return Promise.all([recall(message, includePrivate, 4), taskContext()]).then(function (both) {
         var rc = both[0], tasks = both[1];
-        var prompt = buildPrompt(message, body.history, rc.memories, tasks);
-        return hybrid.generate(prompt, window.AionOnChunk).then(function (g) {
+        var built = buildPrompt(message, body.history, rc.memories, tasks, sealed);
+        var prompt = built.prompt;
+        /* Live streaming text is un-sealed for display only. */
+        var uiChunk = window.AionOnChunk;
+        var onChunk = typeof uiChunk === "function"
+          ? function (soFar) { uiChunk(sealed ? unsealText(soFar) : soFar); } : null;
+        return hybrid.generate(prompt, onChunk, { mode: mode, sealed: sealed }).then(function (g) {
+          var shown = sealed ? unsealText(g.text) : g.text;
+          recordTurn(sealed, message, g.text);   /* store the SEALED model text, not `shown` */
           var proposals = extractProposals(message);
           return persistProposals(proposals).then(function (saved) {
+            var contributors = {
+              local_deterministic: true,                 /* recall, task context, sealing ran in this browser */
+              local_ai: g.source === "on_device",
+              cloud_ai: g.source === "in_cloud",
+              human_confirmed: false,                    /* nothing in a chat reply is approved yet */
+            };
             var detail = { provider: g.source === "on_device" ? "on-device (Gemini Nano)" : "in-cloud (Gemini)",
+              requested_mode: g.requested_mode || mode, actual_source: g.actual_source || g.source,
+              source_verified: !!g.source_verified, contributors: contributors,
+              sealed: sealed, sealed_items: built.sealedItems,
               latency_ms: g.latencyMs, tokens_in: Math.ceil(prompt.length / 4), tokens_out: Math.ceil(g.text.length / 4) };
             return store.put("events", { id: Date.now() + "-c", event_id: uid("evt"), timestamp: nowIso(),
               event_type: "chat.reply", source_engine: "hybrid-router", detail: detail }).then(function () {
               return {
-                reply: g.text,
+                reply: shown,
                 proposed_memories: saved,
                 citations: rc.memories.map(function (m) { return m.id; }),
                 meta: { source: g.source, latency_ms: g.latencyMs, first_chunk_ms: g.firstChunkMs, model: g.model, mode: g.mode,
+                  requested_mode: g.requested_mode || mode, actual_source: g.actual_source || g.source,
+                  source_verified: !!g.source_verified, contributors: contributors,
+                  sealed: sealed, sealed_items: built.sealedItems, history_turns_sent: built.historyTurns,
                   notes_used: rc.memories.length, tasks_used: tasks.lines.length, private_withheld: includePrivate ? 0 : rc.withheld,
                   tokens_estimated: true },
               };
@@ -783,7 +892,11 @@
   function friendlyAiError(err) {
     var raw = String((err && err.message) || err || "unknown error");
     var hint;
-    if (/ONLY_ON_DEVICE|on-device model is not available|LanguageModel API not available/i.test(raw))
+    if (err && err.code === "timeout" || /\(timeout\)/.test(raw))
+      hint = "The AI did not answer in time, so AION stopped waiting instead of hanging. Try again, or switch route.";
+    else if (err && err.code === "unsealed_refused")
+      hint = "AION refused to send this request: it held private context that was not sealed for the cloud.";
+    else if (/ONLY_ON_DEVICE|on-device model is not available|LanguageModel API not available/i.test(raw))
       hint = "On-device Gemini Nano is not ready in this browser (needs desktop Chrome 139+, enough disk space and the model downloaded). Switch the AI route to Prefer On-Device or Prefer Cloud.";
     else if (window.AION_OFFLINE_DEMO && /fetch|network/i.test(raw))
       hint = "Offline Demo Mode blocked a cloud call. Gemini Nano must be ready for this mode.";
@@ -964,6 +1077,9 @@
     ensureSeeded: ensureSeeded,
     detectMode: function () { return detectMode(); },
     resetDemo: function () { return store.clear().then(function () { ready = null; location.reload(); }); },
+    /* Read-only window onto the cloud boundary, for tests and the console. */
+    boundary: { seal: function (t) { return sealText(t); }, unseal: function (t) { return unsealText(t); },
+      sealedTurnCount: function () { return sealedTurns.length; } },
     privacy: privacyCheck,
   };
 })();

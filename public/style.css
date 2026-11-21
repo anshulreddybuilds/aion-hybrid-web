@@ -1036,3 +1036,7 @@ body.offline-demo .hy-bar { outline:1px dashed rgba(232,181,58,.35); outline-off
 .chat-msg .ai-badge { display:flex; width:fit-content; max-width:100%; margin:0 0 10px; flex-wrap:wrap }
 
 .chat-msg.pending{opacity:.75;font-style:italic}
+
+/* hybrid-v2: hidden nav destinations and views stay hidden even where a
+   class sets display (the [hidden] attribute alone would lose to it). */
+.nav a[hidden], .view[hidden] { display: none !important; }

@@ -87,11 +87,26 @@ try {
   state.appCheck = { status: "error", detail: "Firebase init failed: " + e.message };
 }
 
+/* Where App Check's DEBUG provider may run (Day-1 hardening, hybrid-v2).
+ *   - Production hosts: NEVER. No URL flag, saved token or missing key can turn
+ *     it on there; production always uses reCAPTCHA Enterprise.
+ *   - localhost / 127.0.0.1 / [::1]: always (developer machines, smoke test).
+ *   - Firebase preview channels (aion-hybrid-ai--<channel>.web.app) and any
+ *     other host: only when the page is opened with ?appcheck_debug.
+ * A debug token still has to be registered in the Firebase console to work. */
+const PROD_HOSTS = ["aion-hybrid-ai.web.app", "aion-hybrid-ai.firebaseapp.com"];
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+function appCheckDebugAllowed() {
+  const host = location.hostname;
+  if (PROD_HOSTS.includes(host)) return false;
+  if (LOCAL_HOSTS.includes(host)) return true;
+  return new URLSearchParams(location.search).has("appcheck_debug") || !RECAPTCHA_SITE_KEY;
+}
+state.isProductionHost = PROD_HOSTS.includes(location.hostname);
+
 if (app) {
   try {
-    const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname) ||
-      new URLSearchParams(location.search).has("appcheck_debug");
-    const useDebug = local || !RECAPTCHA_SITE_KEY;
+    const useDebug = appCheckDebugAllowed();
     if (useDebug) {
       /* If you saved a debug token (SET TOKEN button), reuse exactly that one so
        * it matches what is registered in Firebase console > App Check > Manage
@@ -240,34 +255,106 @@ async function downloadNano() {
 
 const SOURCE = { on_device: "on_device", in_cloud: "in_cloud" };
 
-async function generate(prompt, onChunk) {
-  const modeKey = state.mode;
-  const attempts = [];
-  /* On-device-only never touches the cloud model, so there is nothing to retry. */
-  const candidates = modeKey === "only_on_device" ? [CLOUD_MODELS[0]] : CLOUD_MODELS;
-  for (let i = 0; i < candidates.length; i++) {
-    const cloudModel = candidates[i];
-    try {
-      const model = modelFor(modeKey, cloudModel);
-      const t0 = performance.now();
-      /* Stream so text can appear as it is produced. onChunk(textSoFar) is
-       * optional; without it this behaves like a normal generateContent. */
-      const streamed = await model.generateContentStream(prompt);
+/* Watchdogs (Day-1, hybrid-v2). A cloud call must start answering within
+ * CLOUD_TIMEOUT_MS and must not go silent for longer than that between chunks;
+ * otherwise the request is aborted and a clear error is shown. This is what
+ * stops gemini-4-hydrogen (measured ~125 s to first byte) from hanging the UI.
+ * On-device Gemini Nano gets a longer budget: on 8 GB machines a legitimate
+ * local reply takes 60-80 s, and killing it at 15 s would break that path. */
+const CLOUD_TIMEOUT_MS = 15000;
+const LOCAL_TIMEOUT_MS = 120000;
+
+/* Where we expect this request to run, decided BEFORE the call. Used only to
+ * pick the right watchdog; the badge always uses what the SDK reports. */
+function expectedSource(modeKey) {
+  if (modeKey === "only_on_device") return SOURCE.on_device;
+  if (modeKey === "prefer_on_device") return state.nano === "ready" ? SOURCE.on_device : SOURCE.in_cloud;
+  return navigator.onLine === false ? SOURCE.on_device : SOURCE.in_cloud;
+}
+
+class InferenceTimeoutError extends Error {
+  constructor(message) { super(message); this.name = "InferenceTimeoutError"; this.code = "timeout"; }
+}
+
+/* Runs one streaming call with a first-chunk + idle watchdog. Late chunks that
+ * arrive after the timeout are ignored (never shown, never returned). */
+function streamWithWatchdog(model, prompt, onChunk, limitMs, label) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let settled = false;
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const arm = (phase) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { if (controller) controller.abort(); } catch (e) { /* ignore */ }
+        reject(new InferenceTimeoutError(label + " did not " + phase + " within " +
+          Math.round(limitMs / 1000) + " s - stopped waiting (timeout). Nothing was retried automatically."));
+      }, limitMs);
+    };
+    const t0 = performance.now();
+    arm("start answering");
+    (async () => {
+      const streamed = await model.generateContentStream(prompt, controller ? { signal: controller.signal } : undefined);
       let soFar = "";
       let firstChunkMs = null;
       for await (const chunk of streamed.stream) {
+        if (settled) return;
         let piece = "";
         try { piece = chunk.text(); } catch (e) { piece = ""; }
+        arm("send more text");
         if (!piece) continue;
         if (firstChunkMs === null) firstChunkMs = Math.round(performance.now() - t0);
         soFar += piece;
         if (typeof onChunk === "function") { try { onChunk(soFar); } catch (e) { /* UI errors must not break the reply */ } }
       }
-      const result = { response: await streamed.response };
-      const latencyMs = Math.round(performance.now() - t0);
-      const text = soFar || result.response.text();
-      let source = result.response.inferenceSource;
-      if (source !== SOURCE.on_device && source !== SOURCE.in_cloud) {
+      const response = await streamed.response;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ response, soFar, firstChunkMs, latencyMs: Math.round(performance.now() - t0) });
+    })().catch((e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
+  });
+}
+
+/* opts (optional, added on hybrid-v2):
+ *   mode   - the route the caller built its prompt for. Used instead of the
+ *            current dropdown value so the route cannot change mid-request.
+ *   sealed - false means "this prompt holds raw private context". Such a
+ *            prompt is refused on any route that can reach the cloud. */
+async function generate(prompt, onChunk, opts) {
+  const modeKey = opts && MODES[opts.mode] ? opts.mode : state.mode;
+  if (opts && opts.sealed === false && modeKey !== "only_on_device") {
+    const err = new Error("Refused: this prompt contains unsealed private context and the route (" +
+      modeKey.replace(/_/g, " ") + ") can reach the cloud. Nothing was sent.");
+    err.code = "unsealed_refused";
+    throw err;
+  }
+  const attempts = [];
+  /* On-device-only never touches the cloud model, so there is nothing to retry. */
+  const candidates = modeKey === "only_on_device" ? [CLOUD_MODELS[0]] : CLOUD_MODELS;
+  const expected = expectedSource(modeKey);
+  for (let i = 0; i < candidates.length; i++) {
+    const cloudModel = candidates[i];
+    try {
+      const model = modelFor(modeKey, cloudModel);
+      const limitMs = expected === SOURCE.on_device ? LOCAL_TIMEOUT_MS : CLOUD_TIMEOUT_MS;
+      const label = expected === SOURCE.on_device ? "On-device Gemini Nano" : "Cloud model " + cloudModel;
+      /* Stream so text can appear as it is produced. onChunk(textSoFar) is
+       * optional; without it this behaves like a normal generateContent. */
+      const run = await streamWithWatchdog(model, prompt, onChunk, limitMs, label);
+      const text = run.soFar || run.response.text();
+      /* Telemetry split: what was asked for, what actually ran, and whether the
+       * SDK itself reported it (source_verified) or we had to infer it. */
+      let source = run.response.inferenceSource;
+      const sourceVerified = source === SOURCE.on_device || source === SOURCE.in_cloud;
+      if (!sourceVerified) {
         // Older SDKs do not report it; infer conservatively.
         source = modeKey === "only_on_device" ? SOURCE.on_device
           : modeKey === "prefer_on_device" && state.nano === "ready" ? SOURCE.on_device : SOURCE.in_cloud;
@@ -276,12 +363,21 @@ async function generate(prompt, onChunk) {
       return {
         text: text || "(The model returned an empty reply.)",
         source,
-        latencyMs,
-        firstChunkMs,
+        latencyMs: run.latencyMs,
+        firstChunkMs: run.firstChunkMs,
         mode: modeKey,
+        requested_mode: modeKey,
+        actual_source: source,
+        source_verified: sourceVerified,
         model: source === SOURCE.on_device ? "Gemini Nano" : cloudModel,
       };
     } catch (e) {
+      if (e && e.name === "InferenceTimeoutError") {
+        attempts.push(candidates.length > 1 ? cloudModel + ": " + e.message : e.message);
+        const err = new Error(attempts.join("\n"));
+        err.code = "timeout";
+        throw err;
+      }
       const msg = describeError(e);
       attempts.push(candidates.length > 1 ? cloudModel + ": " + msg : msg);
       /* Only move to the backup model when the failure looks model-specific.
@@ -430,6 +526,11 @@ function boot() {
     downloadNano,
     state,
     modes: Object.keys(MODES),
+    /* true when a request in this mode can be sent to the cloud. Callers MUST
+     * seal private context whenever this is true (PREFER_* modes may go either
+     * way, so they count as cloud-reachable). */
+    mayReachCloud: (modeKey) => (modeKey || state.mode) !== "only_on_device",
+    timeouts: { cloudMs: CLOUD_TIMEOUT_MS, localMs: LOCAL_TIMEOUT_MS },
   };
   if (window.__resolveAionHybrid) window.__resolveAionHybrid(window.AionHybrid);
 }

@@ -181,6 +181,87 @@ with sync_playwright() as p:
     tok = pg2.evaluate("window.AionHybridState.debugToken")
     ok("printed debug token captured for COPY TOKEN", bool(tok) and len(tok)==36 and pg2.is_visible("#appCheckCopyBtn"), tok)
     pg2.close()
+    # ================= hybrid-v2 Day-1 checks =================
+    # ---- cloud boundary: sealed prompts, sealed history, local-only turns stay local ----
+    pg3 = ctx.new_page(); bodies=[]; reply_q=["Next up: [TASK_1] is in progress for [PROJECT_1]."]
+    def vertex3(route):
+        req=route.request
+        if req.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
+        bodies.append(req.post_data or "")
+        t = reply_q.pop(0) if reply_q else "Noted."
+        c={"candidates":[{"content":{"role":"model","parts":[{"text":t}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}
+        return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body="data: "+json.dumps(c)+"\r\n\r\n")
+    pg3.route("**/firebasevertexai.googleapis.com/**", vertex3)
+    pg3.goto(f"http://127.0.0.1:{PORT}/index.html")
+    pg3.wait_for_function("window.AionHybrid && window.AionStandalone", timeout=15000); pg3.wait_for_timeout(1500)
+    pg3.evaluate("window.__nanoAvail='unavailable'"); pg3.wait_for_timeout(6500)
+    pg3.select_option("#inferenceMode","prefer_in_cloud")
+    def chat3(msg, n):
+        pg3.fill("#chatInput", msg); pg3.click("#sendBtn")
+        pg3.wait_for_function("document.querySelectorAll('.ai-badge').length>=%d || document.querySelector('.chat-msg.error')"%n, timeout=20000)
+    chat3("Summarize my tasks for today. Email me at alex.runner@example.com", 1)
+    b1 = bodies[-1] if bodies else ""
+    ok("v2: cloud prompt has no raw task title", "Add photo upload to run entries" not in b1 and "Deploy first version to Firebase Hosting" not in b1, b1[:160])
+    ok("v2: cloud prompt uses task placeholders", "[TASK_1]" in b1 and "[PROJECT_" in b1)
+    ok("v2: cloud prompt has no email address", "alex.runner@example.com" not in b1 and "[email]" in b1)
+    rep = pg3.locator(".chat-msg.assistant").last.inner_text()
+    ok("v2: reply shows real names (unsealed locally)", "Next up:" in rep and "[TASK_" not in rep and "[PROJECT_" not in rep and "Hackathon submission" in rep, rep[:200])
+    badge3 = pg3.locator(".ai-badge").last
+    ok("v2: telemetry split on badge", badge3.get_attribute("data-requested-mode")=="prefer_in_cloud" and badge3.get_attribute("data-actual-source")=="in_cloud" and badge3.get_attribute("data-source-verified") in ("true","false"), (badge3.get_attribute("data-requested-mode"), badge3.get_attribute("data-actual-source"), badge3.get_attribute("data-source-verified")))
+    ok("v2: contributors shown", "local code" in pg3.locator(".ai-badge-sub").last.inner_text() and "cloud AI" in pg3.locator(".ai-badge-sub").last.inner_text(), pg3.locator(".ai-badge-sub").last.inner_text())
+    chat3("And what comes after that one?", 2)
+    b2 = bodies[-1] if len(bodies)>=2 else ""
+    ok("v2: turn 2 history is sealed (no re-leak of restored name)", "Add photo upload to run entries" not in b2 and "Deploy first version" not in b2 and "RECENT CONVERSATION" in b2 and "[TASK_1]" in b2, b2[-300:])
+    ok("v2: turn 2 history has no email", "alex.runner@example.com" not in b2)
+    pg3.evaluate("window.__nanoAvail='available'"); pg3.wait_for_timeout(6500)
+    pg3.select_option("#inferenceMode","only_on_device")
+    n_before = len(bodies)
+    chat3("What about my knee and long runs?", 3)
+    ok("v2: only-on-device turn made no cloud request", len(bodies)==n_before, (n_before, len(bodies)))
+    pg3.select_option("#inferenceMode","prefer_in_cloud"); pg3.evaluate("window.__nanoAvail='unavailable'"); pg3.wait_for_timeout(6500)
+    chat3("Anything else for today?", 4)
+    b4 = bodies[-1] if bodies else ""
+    ok("v2: local-only turn never enters cloud history", "knee" not in b4.lower() and "long runs" not in b4.lower(), b4[-300:])
+    refused = pg3.evaluate("window.AionHybrid.generate('raw', null, {mode:'prefer_in_cloud', sealed:false}).then(()=> 'SENT').catch(e=> String(e.message))")
+    ok("v2: unsealed prompt refused on cloud route", str(refused).startswith("Refused"), refused)
+    # ---- 15 s cloud timeout (a model that never answers) ----
+    def hang(route):
+        if route.request.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
+        return None   # never fulfilled: simulates gemini-4-hydrogen's ~125 s silence
+    pg3.unroute("**/firebasevertexai.googleapis.com/**"); pg3.route("**/firebasevertexai.googleapis.com/**", hang)
+    t0=time.time(); pg3.fill("#chatInput","Say hi slowly"); pg3.click("#sendBtn")
+    pg3.wait_for_selector(".chat-msg.error >> nth=-1", timeout=30000)
+    took=time.time()-t0; et3=pg3.locator(".chat-msg.error").last.inner_text()
+    ok("v2: hung cloud model times out cleanly (~15 s)", 13<=took<=24 and "timeout" in et3.lower() and "did not answer in time" in et3, (round(took,1), et3[:160]))
+    ok("v2: sidebar hides unfinished Create tab", not pg3.is_visible('a[data-view="create"]'))
+    pg3.evaluate("location.hash='#create'"); pg3.reload(); pg3.wait_for_timeout(1500)
+    ok("v2: #create falls back to Home", pg3.evaluate("document.body.getAttribute('data-view')")=="home", pg3.evaluate("document.body.getAttribute('data-view')"))
+    ok("v2: no 'unreadable' placeholders on page", "unreadable" not in pg3.inner_text("body").lower())
+    pg3.close()
+    # ---- App Check debug provider can never start on production hosts ----
+    ctx2 = b.new_context(service_workers="block")
+    ctx2.add_init_script("try{localStorage.setItem('aion_appcheck_debug_token','11111111-2222-3333-4444-555555555555')}catch(e){}")
+    def serve_local(route):
+        u = route.request.url.split("?")[0].split("#")[0]
+        path = "/" + u.split("/",3)[3] if u.count("/")>=3 else "/"
+        if path=="/": path="/index.html"
+        fp = os.path.join(ROOT, path.lstrip("/"))
+        if os.path.isfile(fp):
+            ct = {"html":"text/html","js":"application/javascript","css":"text/css","webmanifest":"application/manifest+json"}.get(fp.rsplit(".",1)[-1],"application/octet-stream")
+            return route.fulfill(status=200, path=fp, headers={"content-type":ct})
+        return route.fulfill(status=404, body="")
+    for host in ("aion-hybrid-ai.web.app","aion-hybrid-ai.firebaseapp.com","aion-hybrid-ai--v2-test.web.app"):
+        ctx2.route(f"https://{host}/**", serve_local)
+    for url, want in (("https://aion-hybrid-ai.web.app/index.html?appcheck_debug","recaptcha"),
+                      ("https://aion-hybrid-ai.firebaseapp.com/index.html?appcheck_debug","recaptcha"),
+                      ("https://aion-hybrid-ai--v2-test.web.app/index.html","recaptcha"),
+                      ("https://aion-hybrid-ai--v2-test.web.app/index.html?appcheck_debug","debug")):
+        pp = ctx2.new_page(); pp.goto(url)
+        pp.wait_for_function("window.AionHybridState && window.AionHybridState.appCheck && window.AionHybridState.appCheck.status!=='off'", timeout=15000)
+        st = pp.evaluate("window.AionHybridState.appCheck.status"); dbg = pp.evaluate("typeof self.FIREBASE_APPCHECK_DEBUG_TOKEN")
+        ok("v2: App Check on %s -> %s"%(url.split('/')[2]+("?debug" if "appcheck_debug" in url else ""), want), st==want and ((dbg=="undefined") if want=="recaptcha" else True), (st, dbg))
+        pp.close()
+    ctx2.close()
     # mobile + approve pages
     for path,sel in (("/approve.html","#cards"),("/mobile.html","body")):
         pg = ctx.new_page(); e2=[]

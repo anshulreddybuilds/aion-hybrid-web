@@ -1,0 +1,1674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>AION Mobile Control</title>
+<!--
+  AION MOBILE CONTROL CENTER
+
+  Self-contained: no CDN, no external font, no chart library, no request
+  to anything but this AION. The page is opened over a Tailscale tunnel
+  on mobile data, sometimes to answer something urgent, and a blocking
+  request to a third party is the last thing you want in that moment.
+
+  The shell is served unauthenticated because it must load before it can
+  ask for a token. Every real value comes from /api, which the middleware
+  locks. The token lives in localStorage, is sent only as an
+  Authorization header, and is never placed in a URL, written into the
+  DOM, or logged.
+
+  ---------------------------------------------------------------------
+  WHAT THIS PAGE WILL NOT DO
+
+  The HUD reference this is modelled on shows CPU, MEMORY, NETWORK and
+  STORAGE gauges, a live thought-stream, and six agent tiles. AION
+  exposes none of those. There is no telemetry endpoint, no streaming
+  chat, and no agent roster - so none of them appear here as decoration
+  with invented numbers behind them.
+
+  What replaced them is real and from the same family: engine health
+  from /api/architecture, provider health computed from real call
+  outcomes, and an activity sparkline bucketed from the actual
+  timestamps of recent events. A control panel that reads well while
+  telling you something untrue is worse than a plain one.
+
+  Safe Mode is shown, never toggled - no endpoint sets it. Skills are
+  listed, never run. Memory statistics are labelled as statistics,
+  because no endpoint browses memory content.
+  ---------------------------------------------------------------------
+-->
+<style>
+:root{
+  /* Monologue palette, 9 Sep 2026 - the same tokens as style.css so the
+     phone and the desktop are one product rather than two. The variable
+     NAMES are unchanged on purpose: --o was "orange" and is now the
+     single accent, so nothing below this block had to be rewritten to
+     follow. The self-contained rule still holds - this page loads no
+     font, no CDN and no chart library, because it is opened over
+     Tailscale on mobile data to answer something urgent. */
+  --bg:#000;
+  --bg-2:#08090b;
+  --panel:#0c0d0f;
+  --panel-2:#111214;
+  --line:#242424;
+  --line-hot:rgba(25,208,232,.22);
+  --o:#19d0e8;
+  --o-2:#44ccff;
+  --o-dim:rgba(25,208,232,.10);
+  --text:#fff;
+  --muted:#7f7f7f;
+  --green:#3ddc97;
+  --red:#ff4d5e;
+  --amber:#e8b53a;
+  --violet:#a98cff;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+  font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  font-size:13.5px;line-height:1.45;overflow-x:hidden;
+  -webkit-font-smoothing:antialiased}
+body{padding-bottom:calc(78px + env(safe-area-inset-bottom))}
+button,input,textarea,select{font:inherit;color:inherit}
+.hidden{display:none!important}
+.app{max-width:560px;margin:0 auto;padding:0 13px}
+
+/* ============ header ============ */
+.hdr{position:sticky;top:0;z-index:30;
+  background:linear-gradient(180deg,rgba(5,5,6,.97),rgba(5,5,6,.88));
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--line);
+  padding:calc(9px + env(safe-area-inset-top)) 13px 9px;
+  display:flex;align-items:center;gap:9px}
+.logo{width:26px;height:26px;flex:none}
+.brandwrap{line-height:1.05}
+.brand{font-weight:700;letter-spacing:.26em;font-size:14px}
+.brandsub{font-size:8px;letter-spacing:.22em;color:var(--muted);margin-top:2px}
+.hdr .sp{flex:1}
+.sysline{text-align:right;line-height:1.15}
+.sysline .l{font-size:7.5px;letter-spacing:.18em;color:var(--muted)}
+.sysline .v{font-size:9.5px;letter-spacing:.14em;color:var(--o);font-weight:700;
+  display:flex;align-items:center;gap:5px;justify-content:flex-end;margin-top:2px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted);flex:none}
+.dot.on{background:var(--green);box-shadow:0 0 7px var(--green)}
+.dot.off{background:var(--red);box-shadow:0 0 7px var(--red)}
+.dot.busy{background:var(--o);box-shadow:0 0 8px var(--o)}
+.iconbtn{background:transparent;border:1px solid var(--line);border-radius:9px;
+  width:40px;height:40px;min-height:40px;display:grid;place-items:center;padding:0;flex:none}
+.iconbtn:active{background:var(--panel-2);border-color:var(--line-hot)}
+.spin{animation:rot .7s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+
+/* ============ panels ============ */
+.panel{background:linear-gradient(180deg,var(--panel),var(--bg-2));
+  border:1px solid var(--line);border-radius:13px;padding:13px;margin-bottom:10px;
+  position:relative;overflow:hidden}
+.panel.hot{border-color:var(--line-hot)}
+.panel.hot::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--o),transparent);opacity:.55}
+.lbl{font-size:8.5px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;
+  display:flex;justify-content:space-between;align-items:center;gap:8px}
+.ttl{font-size:8.5px;letter-spacing:.22em;color:var(--muted);text-transform:uppercase;
+  margin:17px 3px 8px;display:flex;justify-content:space-between;align-items:center}
+.ttl:first-child{margin-top:13px}
+.ttl b{color:var(--o);font-weight:700}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:8px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row .k{color:var(--muted);font-size:11.5px;letter-spacing:.04em}
+.row .v{font-weight:650;text-align:right;word-break:break-word;font-size:12.5px}
+.v.ok{color:var(--green)} .v.bad{color:var(--red)} .v.warn{color:var(--amber)}
+.v.hot{color:var(--o)}
+.muted{color:var(--muted);font-size:11.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tile{background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  border:1px solid var(--line);border-radius:11px;padding:10px 11px;position:relative;
+  overflow:hidden}
+.tile .l{font-size:7.5px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+.tile .n{font-size:20px;font-weight:700;letter-spacing:.01em;margin-top:3px}
+.tile .n small{font-size:11px;color:var(--muted);font-weight:400}
+.spark{display:block;width:100%;height:22px;margin-top:5px}
+
+/* ============ neural core ============ */
+.corewrap{position:relative;padding:14px 0 8px;text-align:center}
+.coreSvg{width:min(230px,64vw);height:min(230px,64vw);display:block;margin:0 auto}
+.edge{stroke:var(--o);stroke-width:.5;opacity:.16}
+.node{fill:var(--o);opacity:.55;animation:np 3.6s ease-in-out infinite}
+.node.big{opacity:.95}
+.halo{fill:none;stroke:var(--o);opacity:.10}
+.orb{fill:none;stroke:var(--o);opacity:.20;transform-origin:50% 50%;
+  animation:spin 22s linear infinite}
+.orb.b{animation-duration:15s;animation-direction:reverse;opacity:.13}
+@keyframes np{0%,100%{opacity:.25;r:1.6}50%{opacity:1;r:2.6}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.coreLabel{position:absolute;left:0;right:0;top:50%;transform:translateY(-58%);
+  pointer-events:none}
+.coreLabel .n{font-size:23px;letter-spacing:.42em;font-weight:300;text-indent:.42em;
+  color:#fff;text-shadow:0 0 18px rgba(255,122,24,.65)}
+.coreLabel .s{font-size:9px;letter-spacing:.34em;color:var(--o);margin-top:5px;
+  text-indent:.34em}
+.core.thinking .node{animation-duration:.9s}
+.core.thinking .orb{animation-duration:5s}
+.core.offline .node,.core.offline .edge,.core.offline .orb,.core.offline .halo{
+  stroke:var(--muted);fill:var(--muted);animation-play-state:paused;opacity:.12}
+.core.offline .coreLabel .s{color:var(--muted)}
+.legend{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:4px}
+.legend span{font-size:8px;letter-spacing:.14em;color:var(--muted);
+  display:flex;align-items:center;gap:5px}
+.legend i{width:5px;height:5px;border-radius:50%;background:var(--o);display:block}
+@media (prefers-reduced-motion:reduce){
+  .node,.orb{animation:none!important}
+}
+
+/* ============ buttons ============ */
+button{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+button.sm{padding:6px 10px;font-size:11px;border-radius:6px;min-height:unset}
+  padding:0 14px;min-height:44px;cursor:pointer;font-size:12px;letter-spacing:.1em}
+button:active{transform:translateY(1px);border-color:var(--line-hot)}
+button.primary{background:linear-gradient(180deg,var(--o-2),var(--o));
+  border-color:var(--o);color:#180900;font-weight:750;
+  box-shadow:0 3px 16px rgba(255,122,24,.28)}
+button.danger{border-color:rgba(255,87,87,.45);color:#ffb0b0;background:rgba(255,87,87,.07)}
+button.ghost{background:transparent}
+button[disabled]{opacity:.4}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.acts button{flex:1;min-width:calc(50% - 4px)}
+.quick{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.quick button{justify-content:flex-start;text-align:left;min-height:52px;
+  display:flex;align-items:center;gap:9px}
+.quick svg{width:16px;height:16px;color:var(--o);flex:none}
+
+/* ============ list items ============ */
+.item{padding:11px 0;border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item h4{margin:0 0 3px;font-size:12.5px;font-weight:650;line-height:1.35;
+  word-break:break-word}
+.meta{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.tag{font-size:8px;letter-spacing:.13em;text-transform:uppercase;padding:3px 7px;
+  border-radius:4px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.tag.o{border-color:var(--line-hot);color:var(--o);background:var(--o-dim)}
+.tag.g{border-color:rgba(53,208,127,.35);color:var(--green)}
+.tag.r{border-color:rgba(255,87,87,.45);color:var(--red);background:rgba(255,87,87,.08)}
+.tag.v{border-color:rgba(167,139,250,.35);color:var(--violet)}
+.bar{height:3px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--o),var(--o-2));
+  transition:width .4s ease}
+.ev{display:flex;gap:9px;align-items:baseline;padding:7px 0;
+  border-bottom:1px solid var(--line);font-size:11.5px}
+.ev:last-child{border-bottom:0}
+.ev time{color:var(--muted);font-size:10px;flex:none;font-variant-numeric:tabular-nums}
+.ev i{width:5px;height:5px;border-radius:50%;flex:none;background:var(--o);
+  align-self:center}
+.ev i.g{background:var(--green)} .ev i.r{background:var(--red)}
+.ev span{flex:1;word-break:break-word}
+
+/* ============ chat ============ */
+#chatLog{min-height:34vh;padding-top:4px}
+.msg{max-width:87%;padding:10px 12px;border-radius:12px;margin-bottom:9px;
+  font-size:12.5px;white-space:pre-wrap;word-break:break-word;line-height:1.5}
+.msg.me{margin-left:auto;background:linear-gradient(180deg,var(--o-2),var(--o));
+  color:#180900;border-bottom-right-radius:4px;font-weight:500}
+.msg.ai{background:var(--panel-2);border:1px solid var(--line);
+  border-bottom-left-radius:4px}
+.msg.err{background:rgba(255,87,87,.09);border:1px solid rgba(255,87,87,.4);color:#ffb0b0}
+.msg.wait{color:var(--muted)}
+.msg.wait::after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--o);margin-left:3px;animation:np 1s ease-in-out infinite}
+.composer{position:fixed;left:0;right:0;bottom:calc(70px + env(safe-area-inset-bottom));
+  background:linear-gradient(180deg,rgba(5,5,6,.86),rgba(5,5,6,.98));
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-top:1px solid var(--line);padding:9px 13px;z-index:25}
+.composer .wrap{max-width:560px;margin:0 auto;display:flex;gap:8px;align-items:center}
+.composer input{flex:1;min-height:46px;padding:0 14px;border-radius:12px;
+  border:1px solid var(--line);background:var(--panel-2);font-size:13px}
+.composer input:focus{outline:none;border-color:var(--o);
+  box-shadow:0 0 0 3px rgba(255,122,24,.10)}
+.composer button{flex:none;width:52px;padding:0;display:grid;place-items:center}
+.hint{font-size:9px;letter-spacing:.1em;color:var(--muted);text-align:center;
+  margin-top:6px}
+#micBtn{background:var(--panel-2)}
+#micDot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+#micBtn.listening{border-color:var(--o)}
+#micBtn.listening #micDot{background:var(--o);box-shadow:0 0 10px var(--o);
+  animation:micpulse 1.1s ease-in-out infinite}
+#micBtn.unsupported{opacity:.35;cursor:not-allowed}
+@keyframes micpulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.5);opacity:.55}}
+#muteBtn{flex:none;font-size:9px;padding:5px 9px;min-height:unset}
+#muteBtn.muted{color:var(--o);border-color:var(--line-hot)}
+.ttl span{display:flex;align-items:center;gap:6px}
+
+/* ============ forms ============ */
+.field{width:100%;min-height:44px;padding:10px 13px;border-radius:10px;
+  border:1px solid var(--line);background:var(--panel-2);font-size:12.5px;
+  margin-bottom:8px;display:block}
+textarea.field{min-height:76px;resize:vertical;line-height:1.5}
+.field:focus{outline:none;border-color:var(--o)}
+.inline{display:flex;gap:8px}
+.inline .field{margin-bottom:0}
+
+/* ============ skeleton ============ */
+.sk{height:10px;border-radius:5px;background:linear-gradient(90deg,
+  var(--line) 25%,#2b2b34 50%,var(--line) 75%);background-size:200% 100%;
+  animation:sh 1.25s linear infinite;margin:9px 0}
+@keyframes sh{to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.sk{animation:none}}
+
+/* ============ nav ============ */
+nav{position:fixed;bottom:0;left:0;right:0;z-index:30;
+  background:linear-gradient(180deg,rgba(8,8,10,.94),rgba(5,5,6,.99));
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  border-top:1px solid var(--line);display:flex;
+  padding:5px 4px calc(5px + env(safe-area-inset-bottom))}
+nav button{flex:1;min-width:0;background:transparent;border:0;color:var(--muted);
+  font-size:7.5px;letter-spacing:.09em;min-height:56px;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:0;
+  position:relative}
+nav button svg{width:18px;height:18px}
+nav button.active{color:var(--o)}
+nav button.active svg{filter:drop-shadow(0 0 7px rgba(255,122,24,.7))}
+nav button.active::before{content:"";position:absolute;top:0;left:26%;right:26%;
+  height:2px;background:var(--o);border-radius:0 0 3px 3px;
+  box-shadow:0 0 8px var(--o)}
+.nb{position:absolute;top:6px;right:calc(50% - 20px);background:var(--o);
+  color:#180900;font-size:8px;font-weight:800;min-width:15px;height:15px;
+  border-radius:999px;display:grid;place-items:center;padding:0 4px;line-height:1}
+
+section{display:none}
+section.active{display:block}
+
+/* ============ gate ============ */
+#gate{max-width:420px;margin:0 auto;padding:13vh 22px 22px}
+#gate .field{margin:16px 0 10px}
+#gate button{width:100%}
+.err{color:#ffb0b0;font-size:11.5px;margin-top:10px}
+</style>
+<script src="/standalone.js"></script>
+</head>
+<body>
+
+<!-- ==================== TOKEN GATE ==================== -->
+<div id="gate">
+  <div style="text-align:center">
+    <svg class="logo" viewBox="0 0 40 40" style="width:44px;height:44px;margin-bottom:10px">
+      <path d="M20 4 L34 32 L26 32 L20 19 L14 32 L6 32 Z" fill="none" stroke="#19d0e8" stroke-width="2.2"/>
+      <circle cx="20" cy="26" r="3" fill="#19d0e8"/>
+    </svg>
+    <div class="brand" style="font-size:24px">AION</div>
+    <div class="brandsub" style="margin-top:5px">MOBILE CONTROL</div>
+  </div>
+  <div class="panel hot" style="margin-top:26px">
+    <div class="lbl">Authentication</div>
+    <div class="muted" style="margin-top:8px">This AION requires your API token.
+      Nothing is shown until it is accepted.</div>
+    <input id="tokenInput" class="field" type="password" autocomplete="off"
+           placeholder="Paste token" aria-label="API token" style="margin-top:14px">
+    <button id="connectBtn" class="primary">CONNECT</button>
+    <div id="gateErr" class="err hidden"></div>
+  </div>
+  <div class="muted" style="text-align:center;font-size:10px;letter-spacing:.1em">
+    TAILSCALE + TOKEN · NO PUBLIC EXPOSURE</div>
+</div>
+
+<!-- ==================== APP ==================== -->
+<div id="shell" class="hidden">
+
+  <div class="hdr">
+    <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+      <path d="M20 4 L34 32 L26 32 L20 19 L14 32 L6 32 Z" fill="none" stroke="#19d0e8" stroke-width="2.4"/>
+      <circle cx="20" cy="26" r="2.6" fill="#19d0e8"/>
+    </svg>
+    <div class="brandwrap">
+      <div class="brand">AION</div>
+      <div class="brandsub">CONTROL</div>
+    </div>
+    <div class="sp"></div>
+    <div class="sysline">
+      <div class="l">SYSTEM STATUS</div>
+      <div class="v"><span class="dot" id="dot"></span><span id="conn">CONNECTING</span></div>
+    </div>
+    <button class="iconbtn" id="refreshBtn" aria-label="Refresh">
+      <svg id="refreshIcon" viewBox="0 0 24 24" width="16" height="16" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </div>
+
+  <div class="app">
+
+    <!-- ============ HOME ============ -->
+    <section id="tab-home" class="active">
+      <div class="panel hot" style="margin-top:11px;padding-bottom:10px">
+        <div class="lbl">AION Neural Core <span id="coreMeta">—</span></div>
+        <div class="corewrap core" id="core">
+          <svg class="coreSvg" viewBox="0 0 200 200" aria-hidden="true">
+            <circle class="halo" cx="100" cy="100" r="78" stroke-width="1"/>
+            <circle class="orb" cx="100" cy="100" r="88" stroke-width=".8"
+                    stroke-dasharray="40 14"/>
+            <circle class="orb b" cx="100" cy="100" r="66" stroke-width=".8"
+                    stroke-dasharray="18 10"/>
+            <ellipse class="halo" cx="100" cy="163" rx="62" ry="11" stroke-width=".8"/>
+            <ellipse class="halo" cx="100" cy="163" rx="42" ry="7" stroke-width=".8"/>
+            <g id="coreNet"></g>
+          </svg>
+          <div class="coreLabel">
+            <div class="n">AION</div>
+            <div class="s" id="coreState">CONNECTING</div>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i></i>ACTIVE NODE</span>
+          <span><i style="background:var(--muted)"></i>IDLE NODE</span>
+          <span id="coreUptime">—</span>
+        </div>
+      </div>
+
+      <div class="grid3">
+        <div class="tile"><div class="l">Engines</div><div class="n" id="tEngines">—</div></div>
+        <div class="tile"><div class="l">Events</div><div class="n" id="tEvents">—</div>
+          <svg class="spark" id="evSpark" viewBox="0 0 100 22" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="tile"><div class="l">Pending</div><div class="n" id="tPending">—</div></div>
+      </div>
+
+      <div class="panel" style="margin-top:10px">
+        <div class="row"><span class="k">VERSION</span><span class="v" id="hVersion">—</span></div>
+        <div class="row"><span class="k">UPTIME</span><span class="v" id="hUptime">—</span></div>
+        <div class="row"><span class="k">SAFE MODE</span><span class="v" id="hSafe">—</span></div>
+        <div class="row"><span class="k">MEMORIES</span><span class="v" id="hMem">—</span></div>
+      </div>
+
+      <div class="ttl">Active missions <b id="mCount"></b></div>
+      <div class="panel" id="hMissions"><div class="sk"></div><div class="sk" style="width:62%"></div></div>
+
+      <div class="ttl">Provider health</div>
+      <div class="panel" id="hProviders"><div class="sk"></div></div>
+
+      <div class="ttl">Recent events</div>
+      <div class="panel" id="hEvents"><div class="sk"></div><div class="sk" style="width:70%"></div></div>
+
+      <div class="ttl">Quick command</div>
+      <div class="quick" style="margin-bottom:20px">
+        <button data-go="command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.9"><path d="M4 6l5 5-5 5"/><path d="M12 18h8"/></svg>ASK AION</button>
+        <button data-go="approvals"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.9"><path d="M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7z"/>
+          <path d="M9 12l2 2 4-4"/></svg>APPROVALS</button>
+        <button data-go="missions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.9"><path d="M9 5h10M9 12h10M9 19h10"/><path d="M4 5l1 1 2-2"/></svg>MISSIONS</button>
+        <button data-go="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.9"><rect x="4" y="4" width="16" height="16" rx="2"/>
+          <path d="M9 9h6v6H9z"/></svg>SYSTEM</button>
+      </div>
+    </section>
+
+    <!-- ============ COMMAND ============ -->
+    <section id="tab-command">
+      <div class="ttl"><span>Command console <b id="chatState"></b></span><button class="sm ghost" id="muteBtn" type="button" aria-label="Mute voice output" title="Mute voice output">VOICE ON</button></div>
+      <div id="chatLog">
+        <div class="panel" id="chatHint">
+          <div class="lbl">Ask AION anything</div>
+          <div class="muted" style="margin-top:8px">Runs the same pipeline as
+            <b>aion chat</b> — memory recall, knowledge graph, provider router.
+            Replies spend real provider quota. Nothing is written to memory
+            until you approve it below a reply.</div>
+        </div>
+      </div>
+      <div id="proposedWrap" class="hidden">
+        <div class="ttl">Proposed memories <b>approval required</b></div>
+        <div class="panel" id="proposedList"></div>
+      </div>
+      <div style="height:74px"></div>
+      <div class="composer">
+        <div class="wrap">
+          <button id="micBtn" type="button" aria-label="Voice input" title="Voice input">
+            <span id="micDot"></span>
+          </button>
+          <input id="chatInput" placeholder="Ask AION anything…" aria-label="Message"
+                 autocomplete="off" autocapitalize="sentences" enterkeyhint="send">
+          <button class="primary" id="sendBtn" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MISSIONS ============ -->
+    <section id="tab-missions">
+      <div class="ttl">Missions <b id="mSummary"></b></div>
+      <div class="acts" style="margin-bottom:10px">
+        <button class="ghost" data-mf="active">ACTIVE</button>
+        <button class="ghost" data-mf="open">OPEN</button>
+        <button class="ghost" data-mf="done">DONE</button>
+        <button class="ghost" data-mf="all">ALL</button>
+      </div>
+      <div class="panel" id="mList"><div class="sk"></div><div class="sk" style="width:66%"></div></div>
+      <div class="muted" style="margin:0 3px 22px">Read-only. No endpoint creates or
+        edits a mission — use <b>aion plan</b> on the machine.</div>
+    </section>
+
+    <!-- ============ APPROVALS ============ -->
+    <section id="tab-approvals">
+      <div class="ttl">Pending <b id="aCount"></b></div>
+      <div class="panel" id="aPending"><div class="sk"></div><div class="sk" style="width:54%"></div></div>
+      <div class="ttl">Resolved history</div>
+      <div class="panel" id="aRecent"><div class="sk"></div></div>
+      <div class="muted" style="margin:0 3px 22px">Auto-refreshes every 15s while this
+        screen is open. Approving answers the question only — it does not run
+        anything, bypass Safe Mode, or grant standing trust.</div>
+    </section>
+
+    <!-- ============ MEMORY ============ -->
+    <section id="tab-memory">
+      <div class="ttl">Memory statistics</div>
+      <div class="panel" id="memStats"><div class="sk"></div></div>
+      <div class="ttl">Save a memory</div>
+      <div class="panel">
+        <textarea id="memContent" class="field" placeholder="What should AION remember?"
+                  aria-label="Memory content"></textarea>
+        <div class="inline" style="margin-bottom:8px">
+          <select id="memType" class="field" aria-label="Type">
+            <option value="fact">fact</option>
+            <option value="preference">preference</option>
+            <option value="decision">decision</option>
+            <option value="observation">observation</option>
+            <option value="experience">experience</option>
+          </select>
+          <select id="memImp" class="field" aria-label="Importance">
+            <option value="1">1 low</option><option value="2">2</option>
+            <option value="3" selected>3</option><option value="4">4</option>
+            <option value="5">5 high</option>
+          </select>
+        </div>
+        <input id="memTags" class="field" placeholder="tags, comma separated" aria-label="Tags">
+        <button class="primary" id="memSave" style="width:100%">SAVE TO MEMORY</button>
+        <div id="memMsg" class="muted" style="margin-top:9px"></div>
+      </div>
+      <div class="muted" style="margin:0 3px 22px">Statistics only — AION exposes no
+        endpoint for browsing memory content, so this screen cannot show it.
+        Search with <b>aion memory search</b>.</div>
+    </section>
+
+    <!-- ============ SYSTEM ============ -->
+    <section id="tab-system">
+      <div class="ttl">Connection</div>
+      <div class="panel" id="sConn"></div>
+      <div class="ttl">Voice output</div>
+      <div class="panel" id="sVoice">
+        <div class="muted" style="margin-bottom:8px">Which voice reads AION's replies aloud.
+          This list comes from your phone/browser, not the server, so it differs by device.</div>
+        <select id="voiceSelect" class="field" aria-label="Voice"></select>
+        <div class="acts" style="margin-top:10px">
+          <button id="voiceTestBtn" class="ghost">TEST VOICE</button>
+        </div>
+      </div>
+      <div class="ttl">Engines</div>
+      <div class="panel" id="sArch"><div class="sk"></div></div>
+      <div class="ttl">Providers</div>
+      <div class="panel" id="sProviders"><div class="sk"></div></div>
+      <div class="ttl">Knowledge graph</div>
+      <div class="panel" id="sGraph"><div class="sk"></div></div>
+      <div class="ttl">Skills <b>read-only</b></div>
+      <div class="panel" id="sSkills"><div class="sk"></div></div>
+      <div class="ttl">Daily briefing</div>
+      <div class="panel" id="sBrief">
+        <div class="muted">Runs the daily_briefing skill on demand.</div>
+        <div class="acts" style="margin-top:10px"><button id="briefBtn" class="ghost">RUN BRIEFING</button></div>
+      </div>
+      <div class="ttl">Event log</div>
+      <div class="panel" id="sEvents"><div class="sk"></div></div>
+      <div class="acts" style="margin-bottom:22px">
+        <button id="forgetBtn" class="danger">FORGET TOKEN</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<nav id="nav" class="hidden">
+  <button data-tab="home" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.8"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>HOME</button>
+  <button data-tab="command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.8"><path d="M4 6l5 5-5 5"/><path d="M12 18h8"/></svg>ASK</button>
+  <button data-tab="missions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.8"><path d="M9 5h10M9 12h10M9 19h10"/><path d="M4 5l1 1 2-2M4 12l1 1 2-2"/></svg>MISSIONS</button>
+  <button data-tab="approvals"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.8"><path d="M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7z"/>
+    <path d="M9 12l2 2 4-4"/></svg><span id="navBadge"></span>APPROVE</button>
+  <button data-tab="memory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.8"><path d="M12 3a4 4 0 0 0-4 4v1a3 3 0 0 0 0 6v3a4 4 0 0 0 8 0v-3a3 3 0 0 0 0-6V7a4 4 0 0 0-4-4z"/></svg>MEMORY</button>
+  <button data-tab="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/>
+    <path d="M9 9h6v6H9z"/></svg>SYSTEM</button>
+</nav>
+
+<script>
+(function(){
+  "use strict";
+
+  var KEY="aion_api_token";
+  var POLL_MS=15000;
+  /* Every turn resends the conversation, so an uncapped history grows the
+     prompt without limit: rising quota cost per message on a project with
+     a zero budget, and eventually a context-limit failure that surfaces as
+     a 502. The window is capped rather than the transcript - the screen
+     still shows everything that was said. */
+  var MAX_HISTORY=12;
+  var el=function(id){return document.getElementById(id)};
+  var token=function(){try{return localStorage.getItem(KEY)||""}catch(e){return""}};
+  var setToken=function(v){try{v?localStorage.setItem(KEY,v):localStorage.removeItem(KEY)}catch(e){}};
+
+  /* T-200 - voice input/output, ported from the desktop dashboard's
+     app.js (initVoiceInput/initVoiceOutput/speak/toggleMute) so the
+     phone gets the same mic + spoken-replies behavior, using this
+     page's own el()/bubble() helpers instead of app.js's. Needs HTTPS
+     to work on a phone browser (T-185 already closed that gap). */
+  var voiceMuted=false, ttsVoice=null, recognition=null, listening=false;
+
+  var VOICE_KEY = "aion_tts_voice_uri";
+  function loadStoredVoiceURI(){ try{ return localStorage.getItem(VOICE_KEY)||""; }catch(e){ return ""; } }
+  function storeVoiceURI(uri){ try{ uri ? localStorage.setItem(VOICE_KEY, uri) : localStorage.removeItem(VOICE_KEY); }catch(e){} }
+
+  function pickDefaultVoice(){
+    var voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    if(!voices.length) return null;
+    var stored = loadStoredVoiceURI();
+    if(stored){
+      for(var j=0;j<voices.length;j++){ if(voices[j].voiceURI === stored) return voices[j]; }
+    }
+    var i;
+    for(i=0;i<voices.length;i++){
+      if(/en-US/i.test(voices[i].lang) && /female|zira|samantha|google us english/i.test(voices[i].name))
+        return voices[i];
+    }
+    for(i=0;i<voices.length;i++){ if(/^en/i.test(voices[i].lang)) return voices[i]; }
+    return voices[0];
+  }
+
+  function populateVoiceSelect(){
+    var sel = el("voiceSelect");
+    if(!sel) return;
+    var voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    var english = voices.filter(function(v){ return /^en/i.test(v.lang); });
+    var list = english.length ? english : voices;
+    if(!list.length){
+      sel.innerHTML = '<option>No voices found yet - reopen this tab and check System again</option>';
+      return;
+    }
+    var stored = loadStoredVoiceURI();
+    sel.innerHTML = "";
+    list.forEach(function(v){
+      var opt = document.createElement("option");
+      opt.value = v.voiceURI;
+      opt.textContent = v.name + " (" + v.lang + ")" + (v.default ? " - default" : "");
+      sel.appendChild(opt);
+    });
+    if(stored && list.some(function(v){ return v.voiceURI === stored; })) sel.value = stored;
+  }
+
+  function initVoiceOutput(){
+    if(!("speechSynthesis" in window)){
+      var mb=el("muteBtn");
+      mb.disabled=true; mb.title="Voice output not supported in this browser";
+      var vsel=el("voiceSelect");
+      if(vsel){ vsel.disabled=true; vsel.innerHTML="<option>Not supported in this browser</option>"; }
+      return;
+    }
+    ttsVoice=pickDefaultVoice();
+    populateVoiceSelect();
+    /* Voices often load asynchronously on first page load - this can
+       fire seconds after initVoiceOutput() ran with an empty list. */
+    window.speechSynthesis.onvoiceschanged=function(){
+      ttsVoice=pickDefaultVoice();
+      populateVoiceSelect();
+    };
+    var vsel2=el("voiceSelect");
+    if(vsel2) vsel2.addEventListener("change", function(){
+      storeVoiceURI(this.value);
+      ttsVoice=pickDefaultVoice();
+    });
+    var testBtn=el("voiceTestBtn");
+    if(testBtn) testBtn.addEventListener("click", function(){
+      /* Bypasses the VOICE OFF mute so testing a voice works even
+         while replies are currently muted. */
+      if(!("speechSynthesis" in window)) return;
+      window.speechSynthesis.cancel();
+      var utter=new SpeechSynthesisUtterance("This is what I sound like now.");
+      if(ttsVoice) utter.voice=ttsVoice;
+      utter.rate=1.02; utter.pitch=1.0;
+      window.speechSynthesis.speak(utter);
+    });
+  }
+
+  /* Strip the markdown the model slips in despite being asked not to, so
+     neither TTS nor the plain-text chat bubble shows literal *asterisks* /
+     _underscores_ / `backticks`. Kept IN SYNC with app.js's cleanMarkdown
+     (same marker set, same order: double before single). mobile.html renders
+     bubbles with textContent, so there is no HTML-render twin here - the
+     bubble just shows the cleaned plain text. */
+  function cleanMarkdown(text){
+    return String(text==null?"":text)
+      .replace(/`{3,}/g,"")                                          // ``` fences
+      .replace(/`([^`]+)`/g,"$1")                                    // `inline code`
+      .replace(/\*\*([^\n]+?)\*\*/g,"$1")                            // **bold**
+      .replace(/__([^\n]+?)__/g,"$1")                               // __bold__
+      .replace(/(^|[^*])\*(?=\S)([^*\n]*?\S)\*/g,"$1$2")            // *italic*
+      .replace(/(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)/g,"$1$2")  // _italic_ (not snake_case)
+      .replace(/~~([^\n]+?)~~/g,"$1")                               // ~~strike~~
+      .replace(/\[([^\]]+)\]\([^)]*\)/g,"$1")                       // [text](url) -> text
+      .replace(/^\s{0,3}#{1,6}\s+/gm,"")                            // # heading
+      .replace(/^\s{0,3}>\s?/gm,"")                                 // > blockquote
+      .replace(/^\s{0,3}[-*+]\s+/gm,"");                            // - * + bullet
+  }
+
+  /* Emoji render fine on screen but TTS reads them by NAME ("musical note"), so
+     strip them for SPEECH ONLY - NOT in cleanMarkdown, which also feeds the
+     on-screen bubble (emoji stay there). Proper Unicode ranges, not a fixed list:
+     Extended_Pictographic plus the regional-indicator (flag), skin-tone, VS16,
+     keycap and ZWJ ranges that build multi-codepoint emoji. Kept IN SYNC with
+     app.js's stripEmoji. */
+  function stripEmoji(text){
+    return String(text==null?"":text)
+      .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u{FE0F}\u{20E3}\u{200D}]/gu,"")
+      .replace(/ {2,}/g," ")
+      .replace(/ +([,.!?;:])/g,"$1")
+      .trim();
+  }
+
+  function speakableText(text){
+    return stripEmoji(cleanMarkdown(text));
+  }
+
+  function speak(text){
+    if(voiceMuted || !("speechSynthesis" in window) || !text) return;
+    /* T-204: Anshul reported AION's own spoken reply getting picked up
+       by the phone mic and re-transcribed as a new message - garbled
+       looping messages, and enough repeat calls to trip the provider's
+       502 "quota exhausted" guard. If the mic is still open right as
+       AION starts talking, abort() it first (not stop() - abort()
+       discards whatever partial fragment the mic already caught
+       instead of firing onresult with garbled text that would itself
+       get sent as a message). The other half of the fix is in
+       startListening() below: recognition never STARTS while AION is
+       speaking, so the mic can't reopen mid-reply either. */
+    if(recognition && listening){
+      try{ recognition.abort(); }catch(e){}
+    }
+    window.speechSynthesis.cancel();
+    var utter=new SpeechSynthesisUtterance(speakableText(text));
+    if(ttsVoice) utter.voice=ttsVoice;
+    utter.rate=1.02; utter.pitch=1.0;
+    window.speechSynthesis.speak(utter);
+  }
+
+  function toggleMute(){
+    voiceMuted=!voiceMuted;
+    var btn=el("muteBtn");
+    btn.textContent = voiceMuted ? "VOICE OFF" : "VOICE ON";
+    btn.classList.toggle("muted", voiceMuted);
+    if(voiceMuted && "speechSynthesis" in window) window.speechSynthesis.cancel();
+  }
+
+  function initVoiceInput(){
+    var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var micBtn = el("micBtn");
+
+    if(!SpeechRecognitionCtor){
+      /* No browser Web Speech (common on some mobile browsers). Rather than a
+         dead button, fall back to SERVER-SIDE speech-to-text: record a short
+         clip and POST it to /api/transcribe (v0.7 THE VOICE, the listening
+         half). That endpoint is trust-gated - until the owner walks the Groq
+         Whisper candidate up to ACTIVE it answers 409 with the reason, which
+         we surface verbatim so the owner knows exactly why and what to do.
+         The tuned Web Speech path below is left completely untouched; this
+         only lights up a button that was otherwise inert. */
+      var MediaRecorderCtor = window.MediaRecorder;
+      var canRecord = MediaRecorderCtor && navigator.mediaDevices &&
+                      navigator.mediaDevices.getUserMedia;
+      if(!canRecord){
+        micBtn.classList.add("unsupported");
+        micBtn.title = "Voice input not supported in this browser";
+        micBtn.addEventListener("click", function(){
+          bubble("Voice input isn't supported in this browser. Type your message instead.","err");
+        });
+        return;
+      }
+      micBtn.title = "Voice input (server transcription)";
+      var mediaRecorder=null, chunks=[], recording=false, mediaStream=null;
+
+      function subtypeOf(mime){
+        var m=(mime||"").split(";")[0];          /* "audio/webm;codecs=opus" -> "audio/webm" */
+        var slash=m.indexOf("/");
+        return slash>=0 ? m.slice(slash+1) : "webm";
+      }
+      function stopTracks(){
+        if(mediaStream){
+          mediaStream.getTracks().forEach(function(t){try{t.stop()}catch(e){}});
+          mediaStream=null;
+        }
+      }
+      async function postClip(blob){
+        el("chatState").textContent="transcribing…";
+        var b64=await new Promise(function(resolve,reject){
+          var r=new FileReader();
+          r.onerror=function(){reject(new Error("could not read audio"))};
+          r.onload=function(){
+            var s=String(r.result||""); var c=s.indexOf(",");   /* strip data:...;base64, */
+            resolve(c>=0 ? s.slice(c+1) : s);
+          };
+          r.readAsDataURL(blob);
+        });
+        var res;
+        try{
+          res=await fetch("/api/transcribe",{
+            method:"POST", cache:"no-store",
+            headers:{"Authorization":"Bearer "+token(),"Content-Type":"application/json"},
+            body:JSON.stringify({audio_base64:b64, format:subtypeOf(blob.type)})
+          });
+        }catch(net){ el("chatState").textContent=""; bubble("Couldn't reach AION to transcribe.","err"); return; }
+        var body=null; try{ body=await res.json(); }catch(e){}
+        el("chatState").textContent="";
+        if(res.status===409){ bubble((body&&body.detail) || "Speech-to-text isn't available yet.","err"); return; }
+        if(!res.ok){ bubble("Transcription failed"+(body&&body.detail?": "+body.detail:" (HTTP "+res.status+")."),"err"); return; }
+        var text=((body&&body.data&&body.data.text)||"").trim();
+        if(!text){ bubble("Didn't catch any speech - try again.","err"); return; }
+        el("chatInput").value=text;
+        send();   /* mic -> transcribe -> chat, the same send() a typed message uses */
+      }
+      async function startRec(){
+        try{ mediaStream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+        catch(e){ bubble("Microphone permission was denied.","err"); return; }
+        chunks=[];
+        mediaRecorder=new MediaRecorderCtor(mediaStream);
+        mediaRecorder.ondataavailable=function(ev){ if(ev.data&&ev.data.size>0) chunks.push(ev.data); };
+        mediaRecorder.onstop=function(){
+          recording=false; micBtn.classList.remove("listening"); stopTracks();
+          if(chunks.length){ postClip(new Blob(chunks,{type:(mediaRecorder.mimeType||"audio/webm")})); }
+          else { el("chatState").textContent=""; }
+        };
+        recording=true; micBtn.classList.add("listening"); el("chatState").textContent="listening";
+        mediaRecorder.start();
+      }
+      micBtn.addEventListener("click", function(){
+        if(recording){
+          try{ mediaRecorder.stop(); }
+          catch(e){ recording=false; micBtn.classList.remove("listening"); stopTracks(); }
+          return;
+        }
+        startRec();
+      });
+      return;
+    }
+
+    recognition = new SpeechRecognitionCtor();
+    /* T-203: this used to hard-code "en-US". Anshul's own phone defaults
+       its speech-recognition language to "English (India)" (en-IN), and
+       with recognition.lang forced to en-US it failed 3/3 times with a
+       "network" error - a symptom the onerror comment below already
+       (wrongly) attributed to a generic Chrome-side reliability quirk.
+       Using the phone's own language, the way navigator.language reports
+       it, matches what every other app on the phone already does and is
+       what actually worked when tested directly against the phone's own
+       default. Falls back to en-US only if the browser reports nothing
+       at all, which no real browser does - the fallback exists so this
+       line can never leave recognition.lang unset. */
+    recognition.lang = navigator.language || "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    var micRetries = 0;
+    var MAX_MIC_RETRIES = 2; /* up to 3 attempts total per mic press */
+    var micNetworkRetryPending = false;
+
+    recognition.onstart = function(){
+      listening = true;
+      micBtn.classList.add("listening");
+      el("chatState").textContent = "listening";
+    };
+
+    /* Anshul's own on-phone testing (T-200, 25 Sep) showed the mic work
+       once, then fail with the same ambiguous "network" error on the
+       very next attempt on the same WiFi. This comment used to call
+       that a widely-reported reliability quirk of Chrome's own speech
+       service, not permissions or code - T-203 (27 Sep) found a real,
+       untested-until-then candidate cause instead: recognition.lang was
+       hard-coded to "en-US" while the phone's own speech-recognition
+       language defaults to en-IN, and Chrome's "network" error is a
+       catch-all that also fires when its speech backend rejects the
+       requested language, not only on an actual connectivity failure.
+       Fixed by reading navigator.language instead of hard-coding a
+       language (see above) - kept here, not deleted, because the retry
+       logic below is real protection regardless of what was causing the
+       errors it was written against, and is worth keeping either way.
+       First fix here retried once from inside onerror via a blind
+       setTimeout - that was itself buggy: recognition.start() throws
+       "already started" if called before the engine has genuinely
+       finished ending, which onerror alone does not guarantee, so the
+       retry could silently swallow itself and never actually happen.
+       This version only ever restarts from onend, which the spec
+       guarantees fires after every error - no race, and retries up to
+       MAX_MIC_RETRIES times before actually giving up. */
+    recognition.onend = function(){
+      listening = false;
+      micBtn.classList.remove("listening");
+      if(micNetworkRetryPending){
+        micNetworkRetryPending = false;
+        setTimeout(startListening, 300);
+        return;
+      }
+      if(el("chatState").textContent === "listening" || el("chatState").textContent === "reconnecting…")
+        el("chatState").textContent = "";
+    };
+
+    /* Ported once as a direct recognition.start() call - see the
+       onend comment above for why it now goes through this function
+       on both the first press and every automatic retry. */
+    function startListening(){
+      /* T-204: the other half of the mic feedback-loop fix (see speak()
+         above). Both the manual mic-tap path and the automatic
+         network-error retry (recognition.onend, further below) funnel
+         through this one function, so gating it here covers both:
+         recognition is never started while speechSynthesis.speaking is
+         true, and resumes on its own once AION finishes talking. */
+      if(window.speechSynthesis && window.speechSynthesis.speaking){
+        setTimeout(startListening, 250);
+        return;
+      }
+      if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+        navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+          stream.getTracks().forEach(function(t){ t.stop(); });
+          try{ recognition.start(); }catch(e){ /* already started - ignore */ }
+        }).catch(function(err){
+          bubble(
+            "Microphone blocked for this page (" + err.name + "). Tap the icon just left of " +
+            "the address bar, open site permissions, and set Microphone to Allow, then reload " +
+            "the page and try again.",
+            "err"
+          );
+        });
+      }else{
+        try{ recognition.start(); }catch(e){ /* already started - ignore */ }
+      }
+    }
+
+    recognition.onerror = function(event){
+      listening = false;
+      micBtn.classList.remove("listening");
+      var st = el("chatState");
+
+      if(event.error === "network" && micRetries < MAX_MIC_RETRIES){
+        micRetries += 1;
+        micNetworkRetryPending = true;
+        st.textContent = "reconnecting… (" + micRetries + "/" + MAX_MIC_RETRIES + ")";
+        return; /* onend fires next and does the actual restart */
+      }
+
+      if(st.textContent === "listening" || st.textContent.indexOf("reconnecting") === 0) st.textContent = "";
+
+      /* event.message (SpeechRecognitionErrorEvent) is not on every
+         Chrome build but when present carries more than the bare
+         error code - surfaced here because on-phone the bare word
+         "network" alone is not enough to tell a mic-permission
+         problem from an actual connectivity one. */
+      var detail = event.error + (event.message ? " - " + event.message : "");
+      bubble(
+        "Voice input error: " + detail +
+        (event.error === "network" ? " (tried " + (micRetries + 1) + " times)" : ""),
+        "err"
+      );
+    };
+    recognition.onresult = function(event){
+      var transcript = event.results[0][0].transcript;
+      el("chatInput").value = transcript;
+      send();
+    };
+
+    micBtn.addEventListener("click", function(){
+      if(listening){ recognition.stop(); return; }
+      micRetries = 0;
+      micNetworkRetryPending = false;
+      startListening();
+    });
+  }
+
+  function esc(v){
+    return String(v==null?"":v).replace(/[&<>"']/g,function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+
+  /* The ONLY place the token is attached. Header only - never a query
+     string, never logged, never written into the DOM. */
+  async function api(path,options){
+    options=options||{};
+    options.headers=Object.assign({},options.headers,{
+      "Authorization":"Bearer "+token()
+    });
+    options.cache="no-store";
+    var res;
+    try{ res=await fetch(path,options); }
+    catch(net){ var ne=new Error("network"); ne.code=0; throw ne; }
+    if(res.status===401){var e=new Error("unauthorized");e.code=401;throw e}
+    if(!res.ok){var e2=new Error("HTTP "+res.status);e2.code=res.status;throw e2}
+    return res.json();
+  }
+  function unwrap(b){return b&&Object.prototype.hasOwnProperty.call(b,"data")?b.data:b}
+
+  /* ---------- connection state ---------- */
+  /* This indicator is labelled SYSTEM STATUS, but until 8 Sep 2026 it
+     only ever knew whether the HTTP request had succeeded - it printed
+     OPERATIONAL because the page could talk to the server, and this file
+     contained no reference to Guardian at all. It said OPERATIONAL while
+     Guardian's overall state was ALERT and the disk was at 11.7% free.
+
+     A status light that reports its own connection while calling itself
+     the system's status is worse than no light: it is read as an
+     all-clear. So paint() now takes Guardian's verdict too, and a
+     connection that works while Guardian is unhappy says so. */
+  var online=null,busy=false,guardian=null;
+  function paint(){
+    var d=el("dot"),c=el("conn"),core=el("core");
+    core.classList.toggle("offline",online===false);
+    core.classList.toggle("thinking",busy);
+    if(online===false){d.className="dot off";c.textContent="OFFLINE";
+      el("coreState").textContent="OFFLINE";return}
+    if(busy){d.className="dot busy";c.textContent="THINKING";
+      el("coreState").textContent="THINKING";return}
+    var g=String(guardian||"").toUpperCase();
+    if(g==="CRITICAL"){d.className="dot off";c.textContent="CRITICAL";
+      el("coreState").textContent="CRITICAL";return}
+    if(g==="ALERT"||g==="WARN"){d.className="dot busy";c.textContent=g;
+      el("coreState").textContent=g;return}
+    d.className="dot on";
+    /* Only say OPERATIONAL when something actually checked. An unknown
+       Guardian state is unknown, not fine. */
+    c.textContent=g?"OPERATIONAL":"CONNECTED";
+    el("coreState").textContent="IDLE";
+  }
+  function setGuardian(v){guardian=v;paint()}
+  function setOnline(v){online=v;paint()}
+  function setBusy(v){busy=v;paint()}
+
+  function fail(e,node,label){
+    if(e.code===401){setToken("");showGate();return true}
+    if(e.code===0)setOnline(false);
+    if(node)node.innerHTML='<div class="muted">'+esc(label||"data")+
+      ' unavailable <span style="color:var(--red)">('+
+      esc(e.code===0?"offline":e.message)+')</span></div>';
+    return false;
+  }
+
+  function showGate(){el("gate").classList.remove("hidden");el("shell").classList.add("hidden");
+    el("nav").classList.add("hidden");stopPoll()}
+  function showApp(){el("gate").classList.add("hidden");el("shell").classList.remove("hidden");
+    el("nav").classList.remove("hidden")}
+
+  /* ---------- formatting ---------- */
+  function fmtUptime(s){
+    s=Math.max(0,Math.floor(Number(s)||0));
+    var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+    if(d)return d+"d "+h+"h";
+    if(h)return h+"h "+m+"m";
+    if(m)return m+"m";
+    return s+"s";
+  }
+  function ago(iso){
+    var t=Date.parse(iso); if(isNaN(t))return "";
+    var d=Math.floor((Date.now()-t)/1000);
+    if(d<60)return d+"s";
+    if(d<3600)return Math.floor(d/60)+"m";
+    if(d<86400)return Math.floor(d/3600)+"h";
+    return Math.floor(d/86400)+"d";
+  }
+  function clock(iso){
+    var t=new Date(iso); if(isNaN(t.getTime()))return "--:--";
+    return String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0")+
+      ":"+String(t.getSeconds()).padStart(2,"0");
+  }
+  function until(iso){
+    var t=Date.parse(iso); if(isNaN(t))return "";
+    var d=Math.floor((t-Date.now())/1000);
+    if(d<=0)return "EXPIRED";
+    if(d<60)return d+"s left";
+    if(d<3600)return Math.floor(d/60)+"m left";
+    return Math.floor(d/3600)+"h left";
+  }
+
+  /* ---------- neural core geometry (deterministic, not random) ---------- */
+  (function buildCore(){
+    var pts=[],i,g=el("coreNet"),html="";
+    for(i=0;i<22;i++){
+      var a=(i/22)*Math.PI*2, r=30+((i*37)%42);
+      pts.push([100+Math.cos(a)*r, 96+Math.sin(a)*r*0.82]);
+    }
+    for(i=0;i<pts.length;i++){
+      var j=(i+3)%pts.length, k=(i+7)%pts.length;
+      html+='<line class="edge" x1="'+pts[i][0].toFixed(1)+'" y1="'+pts[i][1].toFixed(1)+
+        '" x2="'+pts[j][0].toFixed(1)+'" y2="'+pts[j][1].toFixed(1)+'"/>';
+      html+='<line class="edge" x1="'+pts[i][0].toFixed(1)+'" y1="'+pts[i][1].toFixed(1)+
+        '" x2="'+pts[k][0].toFixed(1)+'" y2="'+pts[k][1].toFixed(1)+'"/>';
+    }
+    for(i=0;i<pts.length;i++){
+      html+='<circle class="node'+(i%4===0?" big":"")+'" cx="'+pts[i][0].toFixed(1)+
+        '" cy="'+pts[i][1].toFixed(1)+'" r="2" style="animation-delay:'+
+        ((i%9)*0.4).toFixed(1)+'s"/>';
+    }
+    g.innerHTML=html;
+  })();
+
+  /* ---------- sparkline from REAL event timestamps ---------- */
+  function drawSpark(events){
+    var svg=el("evSpark");
+    if(!events||events.length<2){svg.innerHTML="";return}
+    var times=events.map(function(e){return Date.parse(e.timestamp)})
+                    .filter(function(t){return !isNaN(t)});
+    if(times.length<2){svg.innerHTML="";return}
+    var min=Math.min.apply(null,times),max=Math.max.apply(null,times);
+    var span=Math.max(1,max-min),buckets=new Array(14).fill(0);
+    times.forEach(function(t){
+      buckets[Math.min(13,Math.floor((t-min)/span*13))]++;
+    });
+    var peak=Math.max.apply(null,buckets)||1;
+    var w=100/14, bars="";
+    buckets.forEach(function(v,i){
+      var h=Math.max(1,v/peak*20);
+      bars+='<rect x="'+(i*w+0.6).toFixed(2)+'" y="'+(22-h).toFixed(2)+
+        '" width="'+(w-1.2).toFixed(2)+'" height="'+h.toFixed(2)+
+        '" fill="var(--o)" opacity="'+(0.32+0.6*(v/peak)).toFixed(2)+'"/>';
+    });
+    svg.innerHTML=bars;
+  }
+
+  /* ================= HOME ================= */
+  async function loadStatus(){
+    try{
+      var d=unwrap(await api("/api/status"));
+      setOnline(true);
+      el("hVersion").textContent=d.version==null?"unavailable":"v"+d.version;
+      el("hUptime").textContent=fmtUptime(d.uptime_seconds);
+      el("coreUptime").textContent="UP "+fmtUptime(d.uptime_seconds);
+      el("tEvents").textContent=d.event_count==null?"—":d.event_count;
+      var s=el("hSafe");
+      s.textContent=d.safe_mode===true?"ON":d.safe_mode===false?"OFF":"unavailable";
+      s.className="v "+(d.safe_mode===true?"ok":"");
+      el("coreMeta").textContent="v"+(d.version||"?");
+    }catch(e){ if(!fail(e))setOnline(false) }
+  }
+
+  async function loadGuardian(){
+    try{
+      var g=unwrap(await api("/api/guardian/status"))||{};
+      setGuardian((g.report||{}).overall);
+    }catch(e){ setGuardian(null) }
+  }
+
+  async function loadArch(){
+    try{
+      var rows=unwrap(await api("/api/architecture"))||[];
+      var on=rows.filter(function(r){return r.status==="online"}).length;
+      el("tEngines").innerHTML=on+'<small>/'+rows.length+'</small>';
+      el("sArch").innerHTML=rows.length?rows.map(function(r){
+        return '<div class="row"><span class="k">'+esc(r.name)+'</span><span class="v '+
+          (r.status==="online"?"ok":"bad")+'">'+esc(r.status).toUpperCase()+'</span></div>';
+      }).join(""):'<div class="muted">No engines reported.</div>';
+    }catch(e){fail(e,el("sArch"),"Engines")}
+  }
+
+  async function loadEvents(){
+    try{
+      var evs=unwrap(await api("/api/events/recent?limit=20"))||[];
+      drawSpark(evs);
+      var render=function(list){
+        return list.length?list.map(function(ev){
+          var bad=/fail|error|denied|refus/i.test(ev.event_type||"");
+          var good=/complete|success|approved|ready/i.test(ev.event_type||"");
+          return '<div class="ev"><time>'+esc(clock(ev.timestamp))+'</time>'+
+            '<i class="'+(bad?"r":good?"g":"")+'"></i>'+
+            '<span>'+esc(ev.event_type)+'</span>'+
+            '<time>'+esc(ago(ev.timestamp))+'</time></div>';
+        }).join(""):'<div class="muted">No events recorded.</div>';
+      };
+      el("hEvents").innerHTML=render(evs.slice(0,6));
+      el("sEvents").innerHTML=render(evs);
+    }catch(e){fail(e,el("hEvents"),"Events");fail(e,el("sEvents"),"Events")}
+  }
+
+  async function loadProviders(){
+    var render=function(rows){
+      if(!rows.length)return '<div class="muted">No provider calls recorded yet.</div>';
+      return rows.map(function(p){
+        var total=Number(p.calls)||0,fails=Number(p.failed_calls)||0;
+        var rate=total?Math.round((total-fails)/total*100):null;
+        var cls=rate==null?"":rate>=95?"g":rate>=70?"o":"r";
+        return '<div class="item"><h4>'+esc(p.provider)+
+          ' <span class="tag '+cls+'">'+(rate==null?"no data":rate+"% ok")+'</span></h4>'+
+          '<div class="meta"><span class="tag">'+esc(total)+' calls</span>'+
+          '<span class="tag">'+esc(p.avg_latency_ms)+'ms avg</span>'+
+          (fails?'<span class="tag r">'+esc(fails)+' failed</span>':'')+'</div>'+
+          '<div class="muted" style="margin-top:5px">'+esc(p.tokens_in)+' in · '+
+          esc(p.tokens_out)+' out</div></div>';
+      }).join("");
+    };
+    try{
+      var rows=unwrap(await api("/api/providers/usage"))||[];
+      el("hProviders").innerHTML=render(rows.slice(0,3));
+      el("sProviders").innerHTML=render(rows);
+    }catch(e){fail(e,el("hProviders"),"Providers");fail(e,el("sProviders"),"Providers")}
+  }
+
+  /* ================= MISSIONS ================= */
+  var missionFilter="active",allMissions=[];
+  function missionCard(m){
+    var total=Number(m.task_count||0),done=Number(m.done_count||0);
+    /* doing_count arrives from the same /api/planner/missions call - no
+       extra request. ||0 covers a server that predates the field. */
+    var doing=Number(m.doing_count||0);
+    var pct=total>0?Math.round(done/total*100):0;
+    var st=String(m.status||"");
+    var cls=st==="done"?"g":st==="active"?"o":st==="blocked"?"r":"";
+    var h='<div class="item"><h4>'+esc(m.title||"Untitled mission")+'</h4>'+
+      '<div class="meta"><span class="tag '+cls+'">'+esc(st||"—").toUpperCase()+'</span>'+
+      '<span class="tag">PRIORITY '+esc(m.priority==null?"?":m.priority)+'</span>';
+    if(total>0)h+='<span class="tag">'+done+'/'+total+' TASKS</span>';
+    else h+='<span class="tag">NO TASKS</span>';
+    /* Only shown when something is actually held. A "0 DOING" tag on
+       every mission would be noise on a phone-sized card, and the point
+       of this tag is that it stands out when it appears. */
+    if(doing>0)h+='<span class="tag o">'+doing+' DOING</span>';
+    if(m.due_date)h+='<span class="tag v">DUE '+esc(String(m.due_date).slice(0,10))+'</span>';
+    h+='</div>';
+    if(total>0)h+='<div class="bar"><i style="width:'+pct+'%"></i></div>';
+    return h+'</div>';
+  }
+  function renderMissions(){
+    var f=missionFilter,list=allMissions.filter(function(m){
+      if(m.archived_at)return false;
+      if(f==="all")return true;
+      if(f==="active")return m.status==="active";
+      if(f==="done")return m.status==="done";
+      return m.status!=="done";
+    });
+    document.querySelectorAll("[data-mf]").forEach(function(b){
+      b.classList.toggle("primary",b.dataset.mf===f)});
+    el("mList").innerHTML=list.length?list.map(missionCard).join("")
+      :'<div class="muted">No missions in this view.</div>';
+    var act=allMissions.filter(function(m){return m.status==="active"&&!m.archived_at});
+    el("mSummary").textContent=list.length+" shown";
+    el("mCount").textContent=act.length?act.length:"";
+    el("hMissions").innerHTML=act.length?act.slice(0,3).map(missionCard).join("")
+      :'<div class="muted">Nothing active. '+
+        esc(allMissions.filter(function(m){return m.status!=="done"&&!m.archived_at}).length)+
+        ' open elsewhere.</div>';
+  }
+  async function loadMissions(){
+    try{
+      allMissions=unwrap(await api("/api/planner/missions"))||[];
+      renderMissions();
+    }catch(e){fail(e,el("mList"),"Missions");fail(e,el("hMissions"),"Missions")}
+  }
+  document.querySelectorAll("[data-mf]").forEach(function(b){
+    b.addEventListener("click",function(){missionFilter=b.dataset.mf;renderMissions()})});
+
+  /* ================= APPROVALS ================= */
+  function approvalCard(a){
+    var d=String(a.destructive)==="1"||a.destructive===true;
+    var exp=until(a.expires_at);
+    var isEgress=a.action_kind==="file_egress" && a.payload && a.payload.handle;
+    return '<div class="item"><h4>'+esc(a.action_name||"Request")+'</h4>'+
+      '<div class="muted">'+esc(a.description||"")+'</div>'+
+      '<div class="meta">'+
+        (d?'<span class="tag r">⚠ DESTRUCTIVE</span>':
+            '<span class="tag">'+esc(a.action_kind||"action").toUpperCase()+'</span>')+
+        '<span class="tag'+(exp==="EXPIRED"?" r":" o")+'">'+esc(exp)+'</span>'+
+        '<span class="tag">ASKED '+esc(ago(a.requested_at))+' AGO</span>'+
+      '</div>'+
+      '<div class="acts" style="margin-top:10px">'+
+        (isEgress?
+          '<button class="primary" data-deliver="'+esc(a.id)+'" data-handle="'+esc(a.payload.handle)+'" data-filename="'+esc(a.action_name||'download')+'">📥 APPROVE &amp; DOWNLOAD</button>':
+          '<button class="primary" data-approve="'+esc(a.id)+'">APPROVE</button>')+
+        '<button class="danger" data-deny="'+esc(a.id)+'">DENY</button>'+
+      '</div></div>';
+  }
+  async function loadPending(){
+    try{
+      var rows=unwrap(await api("/api/approvals/pending"))||[];
+      el("aPending").innerHTML=rows.length?rows.map(approvalCard).join("")
+        :'<div class="muted">No pending approvals.</div>';
+      el("tPending").textContent=rows.length;
+      el("aCount").textContent=rows.length?rows.length+" waiting":"";
+      var b=el("navBadge");
+      b.className=rows.length?"nb":"";
+      b.textContent=rows.length?rows.length:"";
+      return rows.length;
+    }catch(e){fail(e,el("aPending"),"Approvals");return 0}
+  }
+  async function loadRecent(){
+    try{
+      var rows=unwrap(await api("/api/approvals/recent?limit=15"))||[];
+      el("aRecent").innerHTML=rows.length?rows.map(function(a){
+        var cls=a.status==="approved"?"g":a.status==="denied"?"r":
+                a.status==="expired"?"":"o";
+        var isEgress=a.action_kind==="file_egress" && a.payload && a.payload.handle;
+        return '<div class="item"><h4>'+esc(a.action_name||"Request")+'</h4>'+
+          '<div class="meta"><span class="tag '+cls+'">'+esc(a.status).toUpperCase()+'</span>'+
+          '<span class="tag">'+esc(ago(a.resolved_at||a.requested_at))+' AGO</span>'+
+          (a.resolved_by?'<span class="tag">BY '+esc(a.resolved_by).toUpperCase()+'</span>':'')+
+          '</div>'+(a.resolution_note?'<div class="muted" style="margin-top:5px">'+
+          esc(a.resolution_note)+'</div>':'')+
+          (isEgress && a.status==="approved"?
+            '<div class="acts" style="margin-top:8px">'+
+            '<button class="primary sm" data-download-handle="'+esc(a.payload.handle)+'" data-filename="'+esc(a.action_name||'download')+'">📥 DOWNLOAD TO PHONE</button></div>'
+            :'')+'</div>';
+      }).join(""):'<div class="muted">No history yet.</div>';
+    }catch(e){fail(e,el("aRecent"),"History")}
+  }
+  async function resolve(id,action,btn){
+    var box=btn.parentNode;
+    box.querySelectorAll("button").forEach(function(b){b.disabled=true});
+    btn.textContent="…";
+    try{
+      await api("/api/approvals/"+encodeURIComponent(id)+"/"+action,{method:"POST"});
+      await loadPending(); await loadRecent();
+    }catch(e){
+      if(!fail(e)){
+        /* Terminal states never reopen, so a 409 means re-read, not retry. */
+        box.innerHTML='<div class="muted">'+
+          (e.code===409?"Already resolved or expired — refreshing."
+                       :"Failed ("+esc(e.message)+").")+'</div>';
+        setTimeout(function(){loadPending();loadRecent()},900);
+      }
+    }
+  }
+  el("aPending").addEventListener("click",function(e){
+    var del=e.target.closest("[data-deliver]");
+    if(del){
+      var id=del.dataset.deliver, h=del.dataset.handle, fn=del.dataset.filename;
+      resolve(id,"approve",del).then(function(){
+        return downloadHandle(h, fn);
+      });
+      return;
+    }
+    var a=e.target.closest("[data-approve]"),d=e.target.closest("[data-deny]");
+    if(a)resolve(a.dataset.approve,"approve",a);
+    if(d)resolve(d.dataset.deny,"deny",d);
+  });
+  el("aRecent").addEventListener("click",function(e){
+    var dl=e.target.closest("[data-download-handle]");
+    if(dl){
+      downloadHandle(dl.dataset.downloadHandle, dl.dataset.filename);
+    }
+  });
+
+  /* ================= COMMAND & FILE DELIVERY ================= */
+  var convo=[];
+  function formatBytes(bytes){
+    if(bytes==null)return "0 B";
+    if(bytes<1024)return bytes+" B";
+    if(bytes<1048576)return (bytes/1024).toFixed(1)+" KB";
+    return (bytes/1048576).toFixed(1)+" MB";
+  }
+  async function downloadHandle(handle, filename){
+    var t=token();
+    if(!t){setOnline(false);return;}
+    try{
+      var res=await fetch("/api/files/"+encodeURIComponent(handle),{
+        headers:{"Authorization":"Bearer "+t},
+        cache:"no-store"
+      });
+      if(res.status===403){
+        var body=await res.json().catch(function(){return {};});
+        var det=body.detail||{};
+        if(det.error==="approval_required"||det.approval_id){
+          bubble("File egress requires approval. Opening Approvals tab...","ai");
+          await loadPending();
+          go("approvals");
+          return;
+        }
+        throw new Error(det.message||"Access forbidden");
+      }
+      if(!res.ok){
+        throw new Error("HTTP "+res.status);
+      }
+      var blob=await res.blob();
+      var url=window.URL.createObjectURL(blob);
+      var link=document.createElement("a");
+      link.href=url;
+      link.download=filename||("aion-delivered-"+handle.slice(0,8));
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function(){window.URL.revokeObjectURL(url);},2000);
+      bubble("File delivered to phone: "+(filename||handle),"ai");
+    }catch(e){
+      fail(e,null,"File Delivery");
+    }
+  }
+  function bubble(text,cls){
+    var d=document.createElement("div");
+    d.className="msg "+cls; d.textContent=text;
+    el("chatLog").appendChild(d);
+    d.scrollIntoView({block:"end",behavior:"smooth"});
+    return d;
+  }
+  async function send(){
+    var input=el("chatInput"),text=input.value.trim();
+    if(!text||busy)return;
+    var hint=el("chatHint"); if(hint)hint.remove();
+    input.value="";
+    el("sendBtn").disabled=true;
+    el("chatState").textContent="working";
+    bubble(text,"me");
+    var pending=bubble("thinking","ai wait");
+    setBusy(true);
+    try{
+      var isCmd = text.startsWith("/cmd ") || /^(find|search|locate|look for|look up|show me)/i.test(text);
+      if(isCmd){
+        var cmdText = text.startsWith("/cmd ") ? text.slice(5).trim() : text;
+        var cRes = unwrap(await api("/api/command",{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({command:cmdText})
+        }));
+        pending.className="msg ai";
+        if(cRes && cRes.decision==="ran"){
+          var files = (cRes.result && cRes.result.candidates) || cRes.files || [];
+          if(files.length){
+            var criteria = (cRes.result && cRes.result.criteria) || {};
+            var roots = (cRes.result && cRes.result.searched_roots) || [];
+            var truncated = !!(cRes.result && cRes.result.truncated);
+
+            var html = '<div>Search criteria:</div><div style="margin-top:6px">';
+            if(criteria.name == null){
+              html += '<div>No name filter — listing everything in the searched folders.</div>';
+            }else{
+              html += '<div>Name contains: '+esc(criteria.name)+'</div>';
+            }
+            if(criteria.extensions && criteria.extensions.length){
+              html += '<div>Extensions: '+esc(Array.isArray(criteria.extensions) ? criteria.extensions.join(", ") : criteria.extensions)+'</div>';
+            }
+            if(criteria.modified_after){
+              html += '<div>Modified after: '+esc(criteria.modified_after)+'</div>';
+            }
+            if(criteria.modified_before){
+              html += '<div>Modified before: '+esc(criteria.modified_before)+'</div>';
+            }
+            if(roots.length){
+              html += '<div>Searched folders: '+esc(Array.isArray(roots) ? roots.join(", ") : roots)+'</div>';
+            }
+            html += '</div><div style="margin-top:8px">'+
+              (truncated ? 'Showing the first '+files.length+' — there are more.' : 'Found '+files.length+' file(s):')+
+              '</div><div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">';
+            files.forEach(function(f){
+              var listedOnly = Array.isArray(f.matched_on) && f.matched_on.length === 1 && f.matched_on[0] === "listed";
+              html += '<div class="panel" style="padding:8px 10px;margin:0"><b>'+esc(f.filename)+'</b> <span class="tag">'+esc(formatBytes(f.size_bytes))+'</span>'+
+                (listedOnly ? ' <span class="tag" style="background:#555;color:#fff;border:1px solid #777">LISTED</span>' : '')+
+                '<div style="margin-top:6px"><button class="primary sm" data-file-handle="'+esc(f.handle)+'" data-filename="'+esc(f.filename)+'">📱 DELIVER TO PHONE</button></div></div>';
+            });
+            html += '</div>';
+            pending.innerHTML = html;
+          }else{
+            pending.textContent = "No matching files found in allowed folders.";
+          }
+        }else if(cRes && cRes.decision==="refused"){
+          pending.textContent = "Command refused: " + (cRes.reason || "Not authorized");
+        }else if(cRes && cRes.decision==="needs_approval"){
+          pending.textContent = "Command requires approval: " + (cRes.reason || "Action is privileged");
+          await loadPending();
+          go("approvals");
+        }else{
+          pending.textContent = "Command executed.";
+        }
+        return;
+      }
+      var d=unwrap(await api("/api/chat",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({message:text,history:convo.slice(-MAX_HISTORY)})
+      }));
+      convo.push({role:"user",content:text});
+      convo.push({role:"assistant",content:d.reply||""});
+      pending.className="msg ai";
+      // Strip markdown for the on-screen bubble too (textContent would show it
+      // literally); speak() strips independently via speakableText.
+      pending.textContent=d.reply?cleanMarkdown(d.reply):"(empty reply)";
+      if(d.meta){ /* hybrid build: where it ran + how long (same facts as the desktop badge) */
+        var tag=document.createElement("div");
+        tag.className="meta";
+        tag.textContent=(d.meta.source==="on_device"?"On-Device (Gemini Nano)":"In-Cloud (Gemini Fallback)")+" · "+Number(d.meta.latency_ms||0).toLocaleString()+" ms";
+        pending.appendChild(tag);
+      }
+      renderProposed(d.proposed_memories||[]);
+      if(d.reply) speak(d.reply);
+    }catch(e){
+      if(e.code===401){setToken("");showGate();return}
+      pending.className="msg err";
+      pending.textContent=
+        e.code===0?"Network unreachable — is the tunnel up?":
+        e.code===502?"Provider failed (502). Quota exhausted, or every provider is degraded.":
+        "Failed: "+e.message;
+    }finally{
+      setBusy(false); el("sendBtn").disabled=false; el("chatState").textContent="";
+    }
+  }
+  el("chatLog").addEventListener("click",function(e){
+    var dl=e.target.closest("[data-file-handle]");
+    if(dl){
+      downloadHandle(dl.dataset.fileHandle, dl.dataset.filename);
+    }
+  });
+  function renderProposed(list){
+    var wrap=el("proposedWrap"),node=el("proposedList");
+    if(!list.length){wrap.classList.add("hidden");return}
+    wrap.classList.remove("hidden");
+    node.innerHTML=list.map(function(m,i){
+      return '<div class="item" data-pm="'+i+'"><h4>'+esc(m.content||"")+'</h4>'+
+        '<div class="meta"><span class="tag o">'+esc(m.type||"fact")+'</span>'+
+        '<span class="tag">IMPORTANCE '+esc(m.importance==null?3:m.importance)+'</span></div>'+
+        '<div class="acts" style="margin-top:9px">'+
+        '<button class="primary" data-save="'+i+'">SAVE</button>'+
+        '<button class="ghost" data-skip="'+i+'">SKIP</button></div></div>';
+    }).join("");
+    node._items=list;
+    wrap.scrollIntoView({block:"nearest",behavior:"smooth"});
+  }
+  el("proposedList").addEventListener("click",async function(ev){
+    var save=ev.target.closest("[data-save]"),skip=ev.target.closest("[data-skip]");
+    if(skip){var s=skip.closest("[data-pm]");if(s)s.remove();return}
+    if(!save)return;
+    var m=(el("proposedList")._items||[])[Number(save.dataset.save)];
+    if(!m)return;
+    save.disabled=true;save.textContent="…";
+    try{
+      await api("/api/memory/approve",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({content:m.content,type:m.type||"fact",
+          importance:m.importance==null?3:m.importance,tags:m.tags||[]})
+      });
+      save.closest("[data-pm]").innerHTML='<div class="muted">✓ Saved to memory.</div>';
+      loadMemory();
+    }catch(e){ if(!fail(e)){save.disabled=false;save.textContent="RETRY"} }
+  });
+
+  /* ================= MEMORY ================= */
+  async function loadMemory(){
+    var node=el("memStats");
+    try{
+      var d=unwrap(await api("/api/memory/stats"))||{};
+      var types=Object.keys(d.by_type||{}).map(function(k){
+        return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+
+          esc(d.by_type[k])+'</span></div>';
+      }).join("");
+      var tags=(d.most_used_tags||[]).slice(0,8).map(function(t){
+        return '<span class="tag o">'+esc(t[0])+' '+esc(t[1])+'</span>';
+      }).join("");
+      node.innerHTML='<div class="grid2" style="margin-bottom:9px">'+
+        '<div class="tile"><div class="l">Stored</div><div class="n">'+
+          esc(d.total==null?"—":d.total)+'</div></div>'+
+        '<div class="tile"><div class="l">Archived</div><div class="n">'+
+          esc(d.archived==null?"—":d.archived)+'</div></div></div>'+types+
+        (tags?'<div class="meta" style="margin-top:10px">'+tags+'</div>':'');
+      el("hMem").textContent=d.total==null?"unavailable":d.total;
+    }catch(e){fail(e,node,"Memory statistics")}
+  }
+  el("memSave").addEventListener("click",async function(){
+    var btn=this,content=el("memContent").value.trim(),msg=el("memMsg");
+    if(!content){msg.textContent="Nothing to save.";return}
+    btn.disabled=true;msg.textContent="Saving…";
+    try{
+      await api("/api/memory/approve",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          content:content,
+          type:el("memType").value,
+          importance:Number(el("memImp").value),
+          tags:el("memTags").value.split(",").map(function(t){return t.trim()})
+                 .filter(function(t){return t.length})
+        })
+      });
+      el("memContent").value="";el("memTags").value="";
+      msg.textContent="✓ Saved.";
+      loadMemory();
+    }catch(e){ if(!fail(e))msg.textContent="Failed ("+e.message+")." }
+    finally{ btn.disabled=false }
+  });
+
+  /* ================= SYSTEM ================= */
+  async function loadGraph(){
+    var node=el("sGraph");
+    try{
+      var d=unwrap(await api("/api/graph/stats"))||{};
+      node.innerHTML='<div class="grid2" style="margin-bottom:8px">'+
+        '<div class="tile"><div class="l">Objects</div><div class="n">'+
+          esc(d.total_objects==null?"—":d.total_objects)+'</div></div>'+
+        '<div class="tile"><div class="l">Links</div><div class="n">'+
+          esc(d.total_relationships==null?"—":d.total_relationships)+'</div></div></div>'+
+        Object.keys(d.by_type||{}).map(function(k){
+          return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+
+            esc(d.by_type[k])+'</span></div>'}).join("");
+    }catch(e){fail(e,node,"Graph")}
+  }
+  async function loadSkills(){
+    var node=el("sSkills");
+    try{
+      var rows=unwrap(await api("/api/skills"))||[];
+      node.innerHTML=rows.length?rows.map(function(s){
+        return '<div class="item"><h4>'+esc(s.name)+'</h4>'+
+          '<div class="muted">'+esc(s.description||"")+'</div>'+
+          (s.destructive?'<div class="meta"><span class="tag r">⚠ DESTRUCTIVE</span></div>':'')+
+          '</div>';
+      }).join(""):'<div class="muted">No skills registered.</div>';
+    }catch(e){fail(e,node,"Skills")}
+  }
+  function loadConn(){
+    el("sConn").innerHTML=
+      '<div class="row"><span class="k">TRANSPORT</span><span class="v">'+
+        esc(location.host)+'</span></div>'+
+      '<div class="row"><span class="k">SCHEME</span><span class="v">'+
+        esc(location.protocol.replace(":",""))+'</span></div>'+
+      '<div class="row"><span class="k">AUTH</span><span class="v ok">BEARER TOKEN</span></div>'+
+      '<div class="row"><span class="k">TOKEN STORED</span><span class="v">'+
+        (token()?"YES (this device)":"NO")+'</span></div>';
+  }
+  el("briefBtn").addEventListener("click",async function(){
+    var btn=this,node=el("sBrief");
+    btn.disabled=true;btn.textContent="RUNNING…";
+    try{
+      var d=unwrap(await api("/api/briefing"));
+      node.innerHTML='<pre style="margin:0;white-space:pre-wrap;word-break:break-word;'+
+        'font-size:11.5px;line-height:1.55">'+esc(
+          typeof d==="string"?d:JSON.stringify(d,null,2))+'</pre>';
+    }catch(e){
+      if(!fail(e))node.innerHTML='<div class="muted">Briefing failed ('+
+        esc(e.message)+').</div>';
+    }
+  });
+
+  /* ================= NAV ================= */
+  var current="home";
+  var loaders={
+    home:function(){return Promise.all([loadStatus(),loadGuardian(),loadArch(),
+      loadMissions(),loadProviders(),loadEvents(),loadPending(),loadMemory()])},
+    command:function(){return Promise.resolve()},
+    missions:loadMissions,
+    approvals:function(){return Promise.all([loadPending(),loadRecent()])},
+    memory:loadMemory,
+    system:function(){loadConn();return Promise.all([loadGuardian(),loadArch(),
+      loadProviders(),loadGraph(),loadSkills(),loadEvents()])}
+  };
+  function go(tab){
+    current=tab;
+    document.querySelectorAll("nav button").forEach(function(b){
+      b.classList.toggle("active",b.dataset.tab===tab)});
+    document.querySelectorAll("section").forEach(function(s){
+      s.classList.toggle("active",s.id==="tab-"+tab)});
+    window.scrollTo(0,0);
+    (loaders[tab]||function(){})();
+    if(tab==="command")setTimeout(function(){el("chatInput").focus()},90);
+  }
+  document.querySelectorAll("nav button").forEach(function(b){
+    b.addEventListener("click",function(){go(b.dataset.tab)})});
+  document.querySelectorAll("[data-go]").forEach(function(b){
+    b.addEventListener("click",function(){go(b.dataset.go)})});
+
+  el("refreshBtn").addEventListener("click",async function(){
+    var ic=el("refreshIcon");
+    ic.classList.add("spin");
+    try{ await (loaders[current]||function(){return Promise.resolve()})() }
+    finally{ ic.classList.remove("spin") }
+  });
+  el("sendBtn").addEventListener("click",send);
+  el("chatInput").addEventListener("keydown",function(e){
+    if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send()}});
+  el("forgetBtn").addEventListener("click",function(){
+    setToken("");convo=[];el("chatLog").innerHTML="";showGate()});
+
+  /* Polling pauses while hidden - a phone in a pocket waking the tunnel
+     every 15s to re-read an empty queue is pure battery cost. */
+  var timer=null;
+  function startPoll(){stopPoll();timer=setInterval(function(){
+    if(document.hidden)return;
+    if(current==="approvals"||current==="home")loadPending();
+  },POLL_MS)}
+  function stopPoll(){if(timer){clearInterval(timer);timer=null}}
+  document.addEventListener("visibilitychange",function(){
+    if(!document.hidden&&!el("shell").classList.contains("hidden"))
+      (loaders[current]||function(){})();
+  });
+
+  async function connect(){
+    var v=el("tokenInput").value.trim();
+    if(!v)return;
+    var btn=el("connectBtn");btn.disabled=true;btn.textContent="…";
+    setToken(v);
+    try{
+      await api("/api/status");
+      el("tokenInput").value="";
+      el("gateErr").classList.add("hidden");
+      showApp();go("home");startPoll();
+    }catch(e){
+      setToken("");
+      el("gateErr").textContent=
+        e.code===401?"That token was not accepted.":
+        e.code===0?"Cannot reach AION. Is the tunnel up?":
+        "Failed: "+e.message;
+      el("gateErr").classList.remove("hidden");
+    }finally{btn.disabled=false;btn.textContent="CONNECT"}
+  }
+  el("connectBtn").addEventListener("click",connect);
+  el("tokenInput").addEventListener("keydown",function(e){if(e.key==="Enter")connect()});
+
+  el("muteBtn").addEventListener("click",toggleMute);
+  initVoiceOutput();
+  initVoiceInput();
+
+  /* Hybrid build: no backend (hosted demo) means no token - run on the
+     browser-local store from standalone.js instead of showing the gate. */
+  function boot(){
+    if(token()||window.AionBackendMode==="standalone"){showApp();go("home");startPoll()}else{showGate()}
+  }
+  if(window.AionStandalone)window.AionStandalone.detectMode().then(boot);else boot();
+})();
+</script>
+</body>
+</html>

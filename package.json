@@ -1,0 +1,23 @@
+{
+  "name": "aion-hybrid-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AION Hybrid Web - standalone hybrid (on-device + cloud) AI dashboard for #BuildHybridAI 2026",
+  "license": "Apache-2.0",
+  "scripts": {
+    "vendor": "mkdir -p public/vendor public/fonts && cp node_modules/chart.js/dist/chart.umd.js public/vendor/chart.umd.min.js && cp node_modules/@fontsource/instrument-serif/files/instrument-serif-latin-400-normal.woff2 node_modules/@fontsource/instrument-serif/files/instrument-serif-latin-400-italic.woff2 node_modules/@fontsource/dm-mono/files/dm-mono-latin-400-normal.woff2 node_modules/@fontsource/dm-mono/files/dm-mono-latin-500-normal.woff2 node_modules/@fontsource/geist/files/geist-latin-400-normal.woff2 node_modules/@fontsource/geist/files/geist-latin-500-normal.woff2 public/fonts/",
+    "build": "esbuild src/hybrid.js --bundle --format=esm --minify --target=es2020 --outfile=public/hybrid.bundle.js",
+    "serve": "npx --yes http-server public -p 8080 -c-1",
+    "deploy": "npm run build && firebase deploy --only hosting"
+  },
+  "dependencies": {
+    "firebase": "^12.0.0"
+  },
+  "devDependencies": {
+    "@fontsource/dm-mono": "^5.3.0",
+    "@fontsource/geist": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
+    "chart.js": "^4.4.4",
+    "esbuild": "^0.25.0"
+  }
+}

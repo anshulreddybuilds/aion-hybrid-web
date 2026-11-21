@@ -1,0 +1,6 @@
+AION Hybrid Web
+Copyright 2026 the AION Hybrid Web authors
+
+This product includes the AION web dashboard front end (static files) that was
+copied from the author's private AION project, plus the Firebase AI Logic hybrid
+layer written for #BuildHybridAI 2026. See README.md for the split.

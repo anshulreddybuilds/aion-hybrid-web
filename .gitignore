@@ -1,0 +1,29 @@
+# dependencies and build output
+node_modules/
+dist/
+
+# secrets - never commit
+.env
+.env.*
+*.pem
+*.key
+service-account*.json
+*-service-account*.json
+*firebase-adminsdk*.json
+serviceAccount*.json
+credentials*.json
+.runtimeconfig.json
+
+# Firebase local state and logs
+.firebase/
+firebase-debug.log*
+firebase-debug.*.log
+*.log
+
+# editor / OS / backups
+*.bak*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+tests/shot.png

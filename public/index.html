@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AION</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- PWA (T-239): installable on a phone home screen -->
+<meta name="theme-color" content="#0e0f11" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="AION" />
+<script>
+  // Register the service worker so the shell is cached for flaky connections.
+  // Best-effort: a failure here must never break the dashboard.
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("/sw.js").catch(function () {});
+    });
+  }
+</script>
+<link rel="stylesheet" href="/fonts.css" />
+<script src="/vendor/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body id="hudBody" class="booting" data-view="home">
+
+<!-- PHONE HANDOFF (Day 19; extended to cover the token case below).
+     This page is the desktop Engineering Control Center. It has no token
+     entry and never has: it was built for a browser on the same machine,
+     where 127.0.0.1 needs no token.
+
+     A phone that opens "/" therefore gets a dead end - the page renders,
+     every /api call returns 401, and nothing on screen explains why or
+     offers a way forward. That is what happened on the first off-box
+     request, and it is a real defect even though the mobile surface
+     already existed.
+
+     The fix is a POINTER, not a second token implementation. /mobile
+     already prompts for the token, masks it, stores it in localStorage,
+     sends it only as an Authorization header, and offers FORGET TOKEN.
+     Reimplementing that here would put security-critical logic in two
+     places, and two homes for one rule is how they drift apart.
+
+     SECOND TRIGGER: the same dead end happens on a normal desktop
+     browser once AION_API_TOKEN is configured (e.g. for phone access) -
+     the middleware then requires the token on every /api call,
+     including local ones, and this page has nothing to present. app.js
+     calls window.__aionShowPhoneHandoff() the moment any /api call comes
+     back 401, so the same card and the same pointer to /mobile cover
+     that case too, without this page learning anything about tokens. -->
+<div id="phoneHandoff" hidden>
+  <div class="ph-card">
+    <div class="ph-title">AION</div>
+    <div class="ph-sub" id="phSub">This console is on a small screen.</div>
+
+    <!-- T-137. This block only appears on a 401. Until 8 Sep 2026 the
+         card said "It cannot take your token" and pointed at /mobile,
+         which was true and was the bug: with AION_API_TOKEN set there
+         was no way to open the desktop dashboard at all, and "stay on
+         desktop view" gave you an empty page that re-prompted every
+         poll. The field below COLLECTS the token and hands it straight
+         to app.js; this page still stores nothing and sends nothing.
+         The storage key and the Authorization header stay in one
+         place - see test_the_desktop_page_does_not_reimplement_token_handling. -->
+    <div id="phTokenBlock" hidden>
+      <label class="ph-label" for="phToken">API token</label>
+      <input id="phToken" class="ph-input" type="password" autocomplete="off"
+             spellcheck="false" placeholder="Paste your AION_API_TOKEN" />
+      <button class="ph-go ph-save" id="phSave" type="button">UNLOCK</button>
+      <div class="ph-note" id="phNote"></div>
+    </div>
+
+    <a class="ph-go" href="/mobile">OPEN MOBILE CONTROL</a>
+    <a class="ph-alt" href="/approve">approvals only</a>
+    <button class="ph-stay" type="button">stay on desktop view</button>
+  </div>
+</div>
+<script>
+  (function () {
+    var el = document.getElementById("phoneHandoff");
+    if (!el) return;
+
+    var STAY_KEY = "aion_stay_desktop";
+
+    function stayChosen() {
+      try { return sessionStorage.getItem(STAY_KEY) === "1"; } catch (e) { return false; }
+    }
+
+    /* Called by app.js on a 401 (see SECOND TRIGGER above) and by the
+       narrow-screen check below. `authRequired` distinguishes them: only
+       a 401 needs the token field, and only a 401 overrides a previous
+       "stay on desktop view". */
+    function showHandoff(authRequired) {
+      var tokenBlock = document.getElementById("phTokenBlock");
+      var sub = document.getElementById("phSub");
+      if (authRequired) {
+        if (tokenBlock) tokenBlock.hidden = false;
+        if (sub) sub.innerHTML = "This AION requires your API token.<br />It is sent as a header and never stored anywhere else.";
+      } else if (stayChosen()) {
+        // A screen-size nuisance the owner already dismissed. A 401 is
+        // not dismissible this way - there is nothing to show without it.
+        return;
+      }
+      el.hidden = false;
+    }
+    /* app.js calls this on a 401 from any /api call - see the SECOND
+       TRIGGER note above. Always defined, not gated behind the
+       narrow/coarse check below: a 401 is a hard requirement, not the
+       screen-size nuisance "stay on desktop" exists to dismiss. */
+    window.__aionShowPhoneHandoff = function () { showHandoff(true); };
+
+    var saveBtn = document.getElementById("phSave");
+    var input = document.getElementById("phToken");
+    if (saveBtn && input) {
+      var submit = function () {
+        var value = (input.value || "").trim();
+        var note = document.getElementById("phNote");
+        if (value.length < 16) {
+          // Mirrors auth.MIN_TOKEN_LENGTH. Said here so a typo is caught
+          // before it becomes another 401 and another re-prompt.
+          if (note) note.textContent = "That is shorter than 16 characters - AION will refuse it.";
+          return;
+        }
+        if (typeof window.__aionStoreToken === "function") window.__aionStoreToken(value);
+        input.value = "";
+        if (note) note.textContent = "";
+        el.hidden = true;
+        // The next poll picks it up; nothing needs reloading.
+      };
+      saveBtn.addEventListener("click", submit);
+      input.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+    }
+
+    var stayBtn = el.querySelector(".ph-stay");
+    if (stayBtn) {
+      stayBtn.addEventListener("click", function () {
+        try { sessionStorage.setItem(STAY_KEY, "1"); } catch (e) {}
+        el.hidden = true;
+      });
+    }
+
+    /* Narrow screen or a touch device with no fine pointer. Deliberately
+       not a user-agent sniff: the question is "can this thing show a
+       three-column HUD", not "what browser is this". */
+    try {
+      var narrow = window.matchMedia("(max-width: 820px)").matches;
+      var coarse = window.matchMedia("(pointer: coarse)").matches;
+      if (!(narrow || coarse)) return;
+      if (stayChosen()) return;
+      showHandoff(false);
+    } catch (e) { /* never let the handoff break the page */ }
+  })();
+</script>
+
+<div class="boot-overlay" id="bootOverlay">
+  <svg class="boot-rings" viewBox="0 0 400 400" aria-hidden="true">
+    <circle class="boot-ring boot-ring-1" cx="200" cy="200" r="160" />
+    <circle class="boot-ring boot-ring-2" cx="200" cy="200" r="120" />
+    <circle class="boot-ring boot-ring-3" cx="200" cy="200" r="80" />
+  </svg>
+  <div class="boot-text-wrap">
+    <span class="boot-text" id="bootTypeText"></span><span class="boot-cursor">_</span>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="ghostmark" aria-hidden="true">AION</div>
+
+  <!-- ============================ top bar ============================ -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="n">AION OS <em id="brandVersion">v0.5.0-dev</em></div>
+      <div class="s"><span class="d"></span><span class="label">Engineering Control Center</span></div>
+    </div>
+    <div class="creed"><span>HUMAN</span><b>&times;</b><span>AI</span><b>&times;</b><span>A KINDER WORLD</span></div>
+    <div class="topright">
+      <div class="pill" id="safeModePill"><span class="dot"></span>SAFE MODE</div>
+      <div class="pill live"><span class="dot pulse"></span>LIVE</div>
+      <div class="who"><span class="av"></span>DEMO USER</div>
+    </div>
+  </header>
+
+  <!-- Hybrid AI bar (#BuildHybridAI 2026): Gemini Nano light, route switcher, Offline Demo Mode -->
+  <section class="hy-bar" id="hybridBar" aria-label="Hybrid AI controls">
+    <span class="pill hy-nano hy-warn" id="nanoPill"><span class="dot"></span><span id="nanoLabel">Gemini Nano: checking…</span></span>
+    <button type="button" class="pill hy-btn" id="nanoDownloadBtn" hidden>DOWNLOAD NANO</button>
+    <label class="hy-select"><span>AI ROUTE</span>
+      <select id="inferenceMode" aria-label="AI route">
+        <option value="prefer_on_device">Prefer On-Device (Hybrid)</option>
+        <option value="only_on_device">Only On-Device (Offline)</option>
+        <option value="prefer_in_cloud">Prefer Cloud</option>
+      </select>
+    </label>
+    <label class="hy-toggle"><input type="checkbox" id="offlineDemo" /><span>Offline Demo Mode</span></label>
+    <span class="pill hy-warn" id="appCheckPill"><span class="dot"></span><span id="appCheckLabel">App Check: …</span></span>
+    <button type="button" class="pill hy-btn" id="appCheckCopyBtn" hidden title="Copy the App Check debug token to register it in Firebase console">COPY TOKEN</button>
+    <button type="button" class="pill hy-btn" id="appCheckSetBtn" hidden title="Paste the debug token you registered so reloads keep using it">SET TOKEN</button>
+    <span class="pill" id="backendPill"><span class="dot"></span><span id="backendLabel">Standalone demo data</span></span>
+    <span class="hy-hint" id="nanoHint"></span>
+    <div class="hy-note" id="offlineNote" hidden></div>
+  </section>
+
+  <div class="clock">
+    <div class="d" id="todayDate">&nbsp;</div>
+    <div class="t" id="clock">--:--:--</div>
+  </div>
+
+  <div class="shell">
+
+    <!-- ============================ nav ============================ -->
+    <nav class="nav" aria-label="Primary">
+      <a href="#home" data-view="home" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10.6L12 3.4l9 7.2"/><path d="M5.4 9.6V20.6h13.2V9.6"/></svg>Home<span class="live"></span></a>
+      <a href="#agents" data-view="agents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.1"/><circle cx="17.2" cy="9.2" r="2.4"/><path d="M3 20c0-3.3 2.7-5.2 6-5.2s6 1.9 6 5.2"/><path d="M15.8 20c0-2.4 1.4-3.7 3.4-3.7S22 17.6 22 20"/></svg>Agents</a>
+      <a href="#focus" data-view="focus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.2l3.6 2.1"/></svg>Focus</a>
+      <a href="#create" data-view="create"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12.5 20.5H21"/><path d="M16.6 3.6a2.1 2.1 0 0 1 3 3L7.4 18.8l-4 1 1-4z"/></svg>Create</a>
+      <a href="#automate" data-view="automate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="7" r="2.3"/><circle cx="18" cy="7" r="2.3"/><circle cx="12" cy="18" r="2.3"/><path d="M8.1 8.3L10.9 16M15.9 8.3L13.1 16M8.3 7h7.4"/></svg>Automate</a>
+      <a href="#knowledge" data-view="knowledge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5.6A2.6 2.6 0 0 1 6.6 3H19.4v18H6.6A2.6 2.6 0 0 1 4 18.4z"/><path d="M8 7.6h7.2M8 11.6h7.2"/></svg>Knowledge</a>
+      <a href="#guardian" data-view="guardian"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2.8l7.6 3v6.1c0 4.4-3.1 8.1-7.6 9.3-4.5-1.2-7.6-4.9-7.6-9.3V5.8z"/><path d="M9 12.2l2.2 2.2 4-4.2"/></svg>Guardian</a>
+      <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.4v3M12 18.6v3M4.4 4.4l2.1 2.1M17.5 17.5l2.1 2.1M2.4 12h3M18.6 12h3M4.4 19.6l2.1-2.1M17.5 6.5l2.1-2.1"/></svg>Settings</a>
+
+      <div class="nav-div"></div>
+      <div class="sig">
+        <div class="r1"><span>AION</span><i></i></div>
+        <div class="r2">Human First</div>
+      </div>
+
+      <div class="builtby">
+        <div class="k">BUILT BY</div>
+        <div class="v">ANSHUL</div>
+      </div>
+      <div class="mantra">THINK<br>BUILD<br>ALIGN<br>REPEAT</div>
+    </nav>
+
+    <!-- ========================== centre column ========================== -->
+    <main class="hero">
+      <div class="stack stack-a">IDEAS<br>SYSTEMS<br>PEOPLE<br>IMPACT<span class="u"></span></div>
+      <div class="stack stack-b">IDEAS<br>SYSTEMS<br>IMPACT<span class="u"></span></div>
+
+      <!-- ---------------------------- HOME ---------------------------- -->
+      <section class="view is-active" data-view="home">
+        <div class="label">Good morning,</div>
+        <h1 class="wordmark">AION<span class="spark">.</span></h1>
+        <div class="rule"></div>
+        <p class="credo">Small steps compound<br>extraordinary futures.</p>
+
+        <!-- The ask bar IS the chat composer. Same ids app.js has always
+             bound to - #chatForm, #chatInput, #sendBtn, #micBtn, #muteBtn. -->
+        <form class="ask chat-input-row" id="chatForm" autocomplete="off">
+          <span class="ask-icon"><i></i></span>
+          <button type="button" class="hud-btn mic-btn" id="micBtn" title="Voice input" aria-label="Voice input">
+            <span class="mic-dot"></span>
+          </button>
+          <button type="button" id="talkBtn" class="hud-btn talk-btn">TALK</button>
+          <input type="text" id="chatInput" class="chat-input" placeholder="Ask AION anything..." />
+          <button type="submit" class="hud-btn send-btn" id="sendBtn">SEND</button>
+          <button type="button" class="hud-btn mute-btn" id="muteBtn" title="Mute voice output" aria-label="Mute voice output">VOICE ON</button>
+        </form>
+        <span id="talkIndicator" class="talk-indicator" role="status" aria-live="polite" hidden></span>
+
+        <div class="verbs">
+          <button class="verb" type="button" data-ask="Research ">Research</button>
+          <button class="verb" type="button" data-ask="Build ">Build</button>
+          <button class="verb" type="button" data-ask="Plan ">Plan</button>
+          <button class="verb" type="button" data-ask="Analyze ">Analyze</button>
+          <button class="verb" type="button" data-ask="Create ">Create</button>
+        </div>
+
+        <p class="axis"><b>YOU</b> &nbsp;&times;&nbsp; <b>AION</b> &nbsp;&rarr;&nbsp; <b>REAL PROGRESS</b></p>
+
+        <div class="chat-log" id="chatLog"><div class="empty">Say something, or type above.</div></div>
+        <div class="chat-proposals" id="chatProposals"></div>
+        <div class="chat-status" id="chatStatus"></div>
+      </section>
+
+      <!-- ---------------------------- AGENTS --------------------------- -->
+      <section class="view" data-view="agents">
+        <div class="view-head">
+          <h2>Agents</h2>
+          <p>The provider router's live decision, and the skills AION is registered to perform. The selection reason is the router explaining itself - a router whose choices cannot be read is one nobody can correct.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card wide" id="intelligenceCard">
+            <h2>Provider Router</h2>
+            <div id="providerSelection"></div>
+            <div class="gauge-row" id="providerGauges"></div>
+            <div class="chart-wrap"><canvas id="providerChart"></canvas></div>
+            <div class="scroll-list small" id="providerList"></div>
+          </section>
+          <section class="card wide" id="capabilityLadderCard">
+            <h2>Capability Ladder</h2>
+            <p class="card-sub">REGISTERED &rarr; CONFIGURED &rarr; PROBED &rarr; BENCHMARK_PENDING &rarr; APPROVED &rarr; ACTIVE. Nothing above PROBED happens on its own - every rung past it is an owner act.</p>
+            <div class="scroll-list" id="capabilityLadderList"></div>
+          </section>
+          <section class="card wide" id="skillsCard">
+            <h2>Skills</h2>
+            <div class="scroll-list" id="skillsList"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ---------------------------- FOCUS ---------------------------- -->
+      <section class="view" data-view="focus">
+        <div class="view-head">
+          <h2>Focus</h2>
+          <p>Every number here is a mechanical read of docs/task-register.md, docs/v0.4-gate-walk.md and docs/roadmap.md. Nothing on this view is typed by hand.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card wide climb-card" id="climbCard">
+            <div class="climb-head">
+              <h2>The Climb &mdash; AION Roadmap</h2>
+              <div class="climb-overall">
+                <span class="climb-overall-num" id="climbOverallPct">-</span>
+                <span class="climb-overall-label">of registered work DONE</span>
+              </div>
+            </div>
+            <canvas class="climb-3d" id="climb3d" aria-hidden="true"></canvas>
+            <div class="climb-path-wrap">
+              <svg class="climb-path-svg" id="climbPathSvg" viewBox="0 0 1000 220" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <linearGradient id="climbLineGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#19d0e8" />
+                    <stop offset="100%" stop-color="#a98cff" />
+                  </linearGradient>
+                </defs>
+                <path class="climb-path-line" id="climbPathLine" d="" />
+              </svg>
+              <div class="climb-nodes" id="climbNodes"></div>
+            </div>
+            <div class="climb-weeks" id="climbWeeks"></div>
+            <div class="climb-gates">
+              <div class="climb-gate-group">
+                <div class="climb-gate-group-title">v0.4 gate walk</div>
+                <div class="gate-chips" id="gateChipsV4"></div>
+              </div>
+              <div class="climb-gate-group">
+                <div class="climb-gate-group-title">v0.5 release gates</div>
+                <div class="gate-chips" id="gateChipsV5"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card" id="progressCard">
+            <h2>Mission Progress</h2>
+            <div class="chart-wrap"><canvas id="missionChart"></canvas></div>
+          </section>
+
+          <section class="card" id="briefingCard">
+            <h2>Morning Briefing</h2>
+            <div class="briefing-text" id="briefingText">Loading today's brief...</div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ---------------------------- CREATE --------------------------- -->
+      <section class="view" data-view="create">
+        <div class="view-head">
+          <h2>Create</h2>
+          <p>Not built yet. This is where AION's own authoring surface will go &mdash; drafting, generating and revising work products under owner control. It is scheduled for v0.6 (Multimodal AION), and it is deliberately empty rather than filled with a mockup: a panel that looks like a capability is indistinguishable from one, which is the exact failure this project tests against.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card wide">
+            <h2>What is here today</h2>
+            <div class="row-item">
+              <div>
+                <div class="row-title">Ask AION on Home</div>
+                <div class="row-sub">The chat composer is live, with voice in and voice out, and proposes memories you classify and approve.</div>
+              </div>
+              <span class="badge safe">live</span>
+            </div>
+            <div class="row-item">
+              <div>
+                <div class="row-title">Authoring surface</div>
+                <div class="row-sub">Planned for v0.6 &mdash; not started.</div>
+              </div>
+              <span class="badge">planned</span>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- --------------------------- AUTOMATE -------------------------- -->
+      <section class="view" data-view="automate">
+        <div class="view-head">
+          <h2>Automate</h2>
+          <p>The engines AION is running and how they read right now. The core's verdict includes Guardian's - it printed OPERATIONAL while Guardian read ALERT until 8 Sep 2026, and that is why the two are now one reading.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card wide" id="overviewCard">
+            <h2>Executive Overview</h2>
+            <div class="overview-layout">
+              <div class="radar-core" id="radarCore">
+                <svg viewBox="0 0 300 300" class="radar-core-svg" id="radarCoreSvg" aria-hidden="true">
+                  <g id="radarTicks"></g>
+                  <circle class="rc-ring rc-ring-outer" cx="150" cy="150" r="135" />
+                  <circle class="rc-ring rc-ring-dash" cx="150" cy="150" r="112" />
+                  <circle class="rc-ring rc-ring-dash rc-ring-dash-rev" cx="150" cy="150" r="92" />
+                  <circle class="rc-ring rc-ring-core" cx="150" cy="150" r="60" />
+                  <g class="rc-sweep-group">
+                    <line class="rc-sweep" x1="150" y1="150" x2="150" y2="15" />
+                  </g>
+                  <g id="rcNodes"></g>
+                </svg>
+                <div class="radar-core-label">
+                  <div class="rc-state" id="rcState">BOOTING</div>
+                  <div class="rc-sub" id="rcSub">initializing</div>
+                </div>
+              </div>
+              <div class="scroll-list" id="architectureList"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- --------------------------- KNOWLEDGE ------------------------- -->
+      <section class="view" data-view="knowledge">
+        <div class="view-head">
+          <h2>Knowledge</h2>
+          <p>Memory and the object graph. A memory saved without a domain is quarantined and never recalled &mdash; which is why the approve card on Home asks for a domain and its one axis before it will let you save.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card wide" id="knowledgeCard">
+            <h2>Memory &amp; Graph</h2>
+            <div class="knowledge-layout">
+              <div class="radar-sweep-mini" id="knowledgeRadar" aria-hidden="true">
+                <svg viewBox="0 0 120 120">
+                  <circle class="ks-ring" cx="60" cy="60" r="52" />
+                  <circle class="ks-ring" cx="60" cy="60" r="34" />
+                  <circle class="ks-ring" cx="60" cy="60" r="16" />
+                  <g class="ks-sweep-group"><line class="ks-sweep" x1="60" y1="60" x2="60" y2="8" /></g>
+                </svg>
+              </div>
+              <div class="stat-row">
+                <div class="stat">
+                  <div class="stat-label">Memories</div>
+                  <div class="stat-value" id="statMemTotal">-</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">Objects</div>
+                  <div class="stat-value" id="statGraphObjects">-</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">Relationships</div>
+                  <div class="stat-value" id="statGraphRel">-</div>
+                </div>
+              </div>
+            </div>
+            <div class="chart-wrap small"><canvas id="memoryTypeChart"></canvas></div>
+          </section>
+          <section class="card wide" id="memoryGraphCard">
+            <div class="card-head-row">
+              <h2>Neuron Graph</h2>
+              <div class="graph-toggle" id="graphToggle" role="group" aria-label="Graph view">
+                <button type="button" data-graph-mode="all" class="graph-toggle-btn active" aria-pressed="true">All</button>
+                <button type="button" data-graph-mode="notes" class="graph-toggle-btn" aria-pressed="false">Notes</button>
+              </div>
+            </div>
+            <p class="card-sub"><strong>All</strong> &mdash; every active object and relationship in AION's knowledge graph (T-178 Phase 1). <strong>Notes</strong> &mdash; just your memory notes and the approved note&#8596;note links between them (T-212 Phase 3). Both are a live picture of <code>aion/graph/engine.py</code>'s own data, not a separate store.</p>
+            <div class="graph-wrap" id="memoryGraphWrap">
+              <svg id="memoryGraphSvg" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet" role="img" aria-label="AION's knowledge graph: objects as nodes, relationships as labelled edges"></svg>
+              <div class="empty graph-empty">No graph objects recorded yet.</div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- --------------------------- GUARDIAN -------------------------- -->
+      <section class="view" data-view="guardian">
+        <div class="view-head">
+          <h2>Guardian</h2>
+          <p>Read-only, by design. ADR 0002 Part 1.3: there is no route on this dashboard, or anywhere in the web layer, that can switch Guardian off. Being watched is not the same as being switchable.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card wide" id="guardianCard">
+            <h2>Checks</h2>
+            <div class="scroll-list" id="guardianList"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- --------------------------- SETTINGS -------------------------- -->
+      <section class="view" data-view="settings">
+        <div class="view-head">
+          <h2>Settings</h2>
+          <p>What this console is running, and the two other surfaces it hands off to.</p>
+        </div>
+        <div class="view-grid">
+          <section class="card">
+            <h2>Runtime</h2>
+            <div class="stat-mini-col">
+              <div>
+                <div class="stat-label">Version</div>
+                <div class="stat-value" id="statVersion">-</div>
+              </div>
+              <div>
+                <div class="stat-label">Safe Mode</div>
+                <div class="stat-value" id="statSafeMode">-</div>
+              </div>
+            </div>
+          </section>
+          <section class="card">
+            <h2>Other surfaces</h2>
+            <div class="row-item">
+              <div>
+                <div class="row-title"><a href="/mobile" style="color:var(--cyan);text-decoration:none">Mobile control</a></div>
+                <div class="row-sub">Phone-sized. Prompts for the token and can forget it.</div>
+              </div>
+            </div>
+            <div class="row-item">
+              <div>
+                <div class="row-title"><a href="/approve" style="color:var(--cyan);text-decoration:none">Approvals only</a></div>
+                <div class="row-sub">The approval queue on its own, for acting away from the desk.</div>
+              </div>
+            </div>
+            <div class="row-item">
+              <div>
+                <div class="row-title">Stored credential</div>
+                <div class="row-sub">Clears this browser's saved token. The token itself lives in one place; this button only asks for it to be dropped.</div>
+              </div>
+              <button class="hud-btn" type="button" id="forgetTokenBtn">FORGET</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <!-- ======================== right column (Home) ======================== -->
+    <aside class="aside">
+
+      <section class="card" id="systemHealthCard">
+        <div class="card-head">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2.6l8 4.4v9.4l-8 4.4-8-4.4V7z"/><path d="M12 11.6L20 7M12 11.6v9.2M12 11.6L4 7"/></svg>
+            System Status
+          </div>
+        </div>
+        <div class="overview-gauges">
+          <div><div class="gauge-slot" id="gaugeUptime" data-label="UPTIME (S)"></div></div>
+          <div><div class="gauge-slot" id="gaugeEvents" data-label="EVENTS LOGGED"></div></div>
+        </div>
+        <div class="scroll-list" id="systemHealthList"></div>
+      </section>
+
+      <section class="card" id="eventsCard">
+        <div class="card-head">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 7.2v5l3.4 2"/></svg>
+            Live Context
+          </div>
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="#7f7f7f" stroke-width="1.6"><path d="M2 13h4l2.6-6 3.4 12 2.6-6H22"/></svg>
+        </div>
+        <div class="scroll-list events" id="eventsList"></div>
+      </section>
+
+      <section class="card" id="observatoryCard">
+        <div class="card-head">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+            Evolution Observatory
+          </div>
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="#7f7f7f" stroke-width="1.6"><path d="M2 13h4l2.6-6 3.4 12 2.6-6H22"/></svg>
+        </div>
+        <div class="scroll-list" id="observatoryList"></div>
+      </section>
+
+      <section class="card" id="missionListCard">
+        <div class="card-head">
+          <div class="card-title">Today's Focus</div>
+          <a href="#focus" data-view="focus" aria-label="Open Focus"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="#c0c0c0" stroke-width="1.6"><path d="M4 12h15M13 6l6 6-6 6"/></svg></a>
+        </div>
+        <div class="scroll-list" id="missionList"><div class="empty">No missions yet.</div></div>
+      </section>
+
+    </aside>
+  </div>
+
+  <div class="mobile-sig">
+    <div class="r1"><span>AION</span><i></i></div>
+    <div class="r2">Human First</div>
+    <div class="k">BUILT BY</div>
+    <div class="v">ANSHUL</div>
+    <div class="m">THINK<br>BUILD<br>ALIGN<br>REPEAT</div>
+  </div>
+
+  <footer class="footline">
+    <span class="creedline">BUILT <span>/</span> LEARN <span>/</span> ITERATE <span>/</span> TOGETHER</span>
+    <span class="statusline"><span id="footerStatus">Connecting to AION kernel...</span><span id="footerPoll">poll: 5s</span></span>
+  </footer>
+</div>
+
+<script>
+  /* ------------------------------------------------------------------
+     View switching.
+
+     The old dashboard put thirteen panels on one screen at the same
+     volume. These are the same thirteen panels, behind the nav, so the
+     page answers one question at a time. Nothing here fetches, renders
+     or stores anything - app.js still owns every value on the page, and
+     every element it writes into is present in the DOM from first paint
+     whether or not its view is showing.
+
+     The resize dispatch matters: Chart.js and the climb wireframe size
+     themselves from their container, and a container that was display:none
+     when they were built measures zero. This nudges them the moment
+     their view becomes visible.
+     ------------------------------------------------------------------ */
+  (function () {
+    var links = document.querySelectorAll("[data-view]");
+    var views = document.querySelectorAll(".view[data-view]");
+
+    function show(name) {
+      var found = false;
+      views.forEach(function (v) {
+        var on = v.getAttribute("data-view") === name;
+        v.classList.toggle("is-active", on);
+        if (on) found = true;
+      });
+      if (!found) return show("home");
+      document.body.setAttribute("data-view", name);
+      document.querySelectorAll(".nav a").forEach(function (a) {
+        if (a.getAttribute("data-view") === name) a.setAttribute("aria-current", "page");
+        else a.removeAttribute("aria-current");
+      });
+      try { window.dispatchEvent(new Event("resize")); } catch (e) {}
+    }
+
+    links.forEach(function (el) {
+      if (el.tagName !== "A") return;
+      el.addEventListener("click", function (e) {
+        e.preventDefault();
+        show(el.getAttribute("data-view"));
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    });
+
+    if (location.hash) show(location.hash.slice(1));
+  })();
+
+  /* The verb pills seed the composer rather than sending anything on
+     their own - a one-word prompt fired without the owner reading it is
+     not a shortcut, it is a surprise. */
+  document.querySelectorAll(".verb").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var input = document.getElementById("chatInput");
+      if (!input) return;
+      input.value = b.getAttribute("data-ask") || "";
+      input.focus();
+    });
+  });
+
+  /* The boot overlay is a full-screen black panel that app.js clears
+     two seconds in. That made app.js load-bearing for whether anything
+     is visible at all: on 9 Sep 2026 a missing CDN threw at the top of
+     app.js and the page stayed black forever, with no error and nothing
+     to click. This clears it independently. A dashboard that cannot
+     fetch should show its panels and say so, not show nothing. */
+  setTimeout(function () {
+    document.body.classList.remove("booting");
+    var status = document.getElementById("footerStatus");
+    if (status && /Connecting to AION kernel/.test(status.textContent)) {
+      status.textContent = "No response from the dashboard script yet - check the browser console.";
+    }
+  }, 4000);
+
+  /* app.js updates #clock every second; the date changes once a day and
+     is not worth a poll. */
+  (function () {
+    var el = document.getElementById("todayDate");
+    if (!el) return;
+    el.textContent = new Date().toLocaleDateString(undefined, {
+      weekday: "short", day: "numeric", month: "short", year: "numeric",
+    });
+  })();
+
+  /* Delegates to app.js, which is the one place that knows where the
+     credential lives. This page holds no key name and no header. */
+  (function () {
+    var btn = document.getElementById("forgetTokenBtn");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      if (typeof window.__aionForgetToken === "function") {
+        window.__aionForgetToken();
+        btn.textContent = "CLEARED";
+      }
+    });
+  })();
+</script>
+
+<script src="/standalone.js"></script>
+<script src="/app.js"></script>
+<script type="module" src="/hybrid.bundle.js"></script>
+</body>
+</html>

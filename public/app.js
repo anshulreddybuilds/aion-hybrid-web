@@ -2239,8 +2239,26 @@ async function sendChatMessage(text) {
   appendChatMessage("user", message);
   setChatStatus("AION is thinking...");
 
+  /* The first cloud reply on a fresh page can take 30+ s (App Check has to
+     fetch its reCAPTCHA token first). Show a live "working" bubble so it is
+     obvious the app is not stuck. It is removed when the real reply (or the
+     error) arrives. */
+  const pending = appendChatMessage("assistant", "Connecting...");
+  pending.classList.add("pending");
+  const pendingStart = Date.now();
+  const pendingTimer = setInterval(() => {
+    const sec = Math.floor((Date.now() - pendingStart) / 1000);
+    const stage = sec < 4 ? "Connecting... routing your request"
+      : sec < 15 ? "Verifying App Check & routing..."
+      : "Still working - the first cloud reply on a fresh page can take about 30-40 s";
+    pending.innerHTML = '<span class="chat-msg-label">AION</span>' + stage + " (" + sec + " s)";
+    setChatStatus(stage);
+  }, 500);
+  const clearPending = () => { clearInterval(pendingTimer); pending.remove(); };
+
   try {
     const res = await apiPost("/api/chat", { message, history: chatHistory });
+    clearPending();
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
       throw new Error(detail.detail || "request failed (" + res.status + ")");
@@ -2263,6 +2281,7 @@ async function sendChatMessage(text) {
       setTimeout(() => bubble.classList.remove("speaking"), 2500);
     }
   } catch (err) {
+    clearPending();
     /* Show the exact error in the chat itself, not only in the status line,
        so a failed request can be read (and copied) without opening DevTools. */
     setChatStatus("Error: " + err.message);

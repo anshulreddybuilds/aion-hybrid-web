@@ -11,7 +11,7 @@
  * with no network. In standalone mode /api/* is answered inside the page, not
  * by the network, so Offline Demo Mode works with on-device Gemini Nano.
  */
-const CACHE = "aion-hybrid-shell-v5";
+const CACHE = "aion-hybrid-shell-v6";
 const SHELL = [
   "/",
   "/style.css",

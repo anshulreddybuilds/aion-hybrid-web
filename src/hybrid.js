@@ -19,7 +19,7 @@
  * UI says so instead of pretending.
  */
 import { initializeApp } from "firebase/app";
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+import { initializeAppCheck, getToken, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode } from "firebase/ai";
 
 const firebaseConfig = {
@@ -42,10 +42,17 @@ const RECAPTCHA_SITE_KEY = "6LdmoCouAAAAAF9w5FhIjQOyP6q3VtKIm3aM3QeQ"; // public
  * first is rejected as unknown / unsupported, the next one is tried and BOTH
  * errors are shown to the user. Re-check https://firebase.google.com/docs/ai-logic/models
  * - model names change. */
-const CLOUD_MODELS = ["gemini-4-hydrogen", "gemini-3.5-flash-lite"];
+/* Order matters. Measured on the live site (21 Nov 2026), same prompt, same
+ * App Check token: gemini-3.5-flash-lite answers in ~1 s; gemini-4-hydrogen took
+ * ~125 s to its first byte even for "Say hi in 3 words". So the fast model is
+ * first and hydrogen is only the backup. */
+const CLOUD_MODELS = ["gemini-3.5-flash-lite", "gemini-4-hydrogen"];
 
 const MODE_KEY = "aion_hybrid_mode";
 const OFFLINE_KEY = "aion_hybrid_offline_demo";
+/* Default route: cloud first, so visitors on ordinary laptops get a fast reply
+ * instead of slow local CPU inference. The other two routes stay selectable. */
+const DEFAULT_MODE = "prefer_in_cloud";
 const APPCHECK_TOKEN_KEY = "aion_appcheck_debug_token";
 const MODES = {
   prefer_on_device: InferenceMode.PREFER_ON_DEVICE,
@@ -56,7 +63,7 @@ const MODES = {
 /* Shared, read-only-ish state other scripts (standalone.js) look at. */
 const state = (window.AionHybridState = {
   ready: false,
-  mode: "prefer_on_device",
+  mode: DEFAULT_MODE,
   nano: "checking", // checking | ready | downloadable | downloading | unavailable | unsupported
   nanoDetail: "",
   appCheck: { status: "off", detail: "" },
@@ -109,10 +116,24 @@ if (app) {
         };
       }
     }
-    initializeAppCheck(app, {
+    const appCheck = initializeAppCheck(app, {
       provider: new ReCaptchaEnterpriseProvider(RECAPTCHA_SITE_KEY || "recaptcha-site-key-not-configured"),
       isTokenAutoRefreshEnabled: true,
     });
+    /* Warm-up: fetch the App Check token in the background right now, so the
+     * reCAPTCHA step is already done (and cached) by the time the first chat
+     * message is sent. Never blocks rendering; failures surface on the real call. */
+    if (!window.AION_OFFLINE_DEMO && lsGet(OFFLINE_KEY) !== "1") {
+      const t0 = performance.now();
+      state.appCheckWarm = "warming";
+      getToken(appCheck, false).then(
+        (r) => {
+          if (r && r.error) { state.appCheckWarm = "failed"; console.warn("[hybrid] App Check warm-up failed:", r.error && r.error.message); return; }
+          state.appCheckWarm = "ready"; state.appCheckWarmMs = Math.round(performance.now() - t0);
+        },
+        (e) => { state.appCheckWarm = "failed"; console.warn("[hybrid] App Check warm-up failed:", e && e.message); }
+      );
+    }
     state.appCheck = useDebug
       ? { status: "debug", detail: "App Check debug provider. The debug token must be registered in Firebase console (App Check > Apps > Manage debug tokens)." }
       : { status: "recaptcha", detail: "App Check with reCAPTCHA Enterprise." };
@@ -219,7 +240,7 @@ async function downloadNano() {
 
 const SOURCE = { on_device: "on_device", in_cloud: "in_cloud" };
 
-async function generate(prompt) {
+async function generate(prompt, onChunk) {
   const modeKey = state.mode;
   const attempts = [];
   /* On-device-only never touches the cloud model, so there is nothing to retry. */
@@ -229,9 +250,22 @@ async function generate(prompt) {
     try {
       const model = modelFor(modeKey, cloudModel);
       const t0 = performance.now();
-      const result = await model.generateContent(prompt);
+      /* Stream so text can appear as it is produced. onChunk(textSoFar) is
+       * optional; without it this behaves like a normal generateContent. */
+      const streamed = await model.generateContentStream(prompt);
+      let soFar = "";
+      let firstChunkMs = null;
+      for await (const chunk of streamed.stream) {
+        let piece = "";
+        try { piece = chunk.text(); } catch (e) { piece = ""; }
+        if (!piece) continue;
+        if (firstChunkMs === null) firstChunkMs = Math.round(performance.now() - t0);
+        soFar += piece;
+        if (typeof onChunk === "function") { try { onChunk(soFar); } catch (e) { /* UI errors must not break the reply */ } }
+      }
+      const result = { response: await streamed.response };
       const latencyMs = Math.round(performance.now() - t0);
-      const text = result.response.text();
+      const text = soFar || result.response.text();
       let source = result.response.inferenceSource;
       if (source !== SOURCE.on_device && source !== SOURCE.in_cloud) {
         // Older SDKs do not report it; infer conservatively.
@@ -243,6 +277,7 @@ async function generate(prompt) {
         text: text || "(The model returned an empty reply.)",
         source,
         latencyMs,
+        firstChunkMs,
         mode: modeKey,
         model: source === SOURCE.on_device ? "Gemini Nano" : cloudModel,
       };
@@ -334,7 +369,7 @@ function setOfflineDemo(on) {
     state.mode = state.modeBeforeOffline;
     state.modeBeforeOffline = null;
   } else {
-    state.mode = lsGet(MODE_KEY) && MODES[lsGet(MODE_KEY)] ? lsGet(MODE_KEY) : "prefer_on_device";
+    state.mode = lsGet(MODE_KEY) && MODES[lsGet(MODE_KEY)] ? lsGet(MODE_KEY) : DEFAULT_MODE;
   }
   document.body.classList.toggle("offline-demo", !!on);
   const note = $("offlineNote");
@@ -379,7 +414,7 @@ function wireBar() {
 
 function boot() {
   const saved = lsGet(MODE_KEY);
-  state.mode = saved && MODES[saved] ? saved : "prefer_on_device";
+  state.mode = saved && MODES[saved] ? saved : DEFAULT_MODE;
   wireBar();
   if (lsGet(OFFLINE_KEY) === "1") setOfflineDemo(true);
   renderBar();

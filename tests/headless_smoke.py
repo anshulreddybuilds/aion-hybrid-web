@@ -20,7 +20,9 @@ FAKE = """
 window.__nanoAvail = 'available';
 window.LanguageModel = {
   availability: async () => window.__nanoAvail,
-  create: async () => ({ prompt: async (m) => { window.__lastPrompt = JSON.stringify(m); return 'FAKE-NANO: noted. Keep long runs a week apart.'; }, destroy(){} }),
+  create: async () => ({ prompt: async (m) => { window.__lastPrompt = JSON.stringify(m); return 'FAKE-NANO: noted. Keep long runs a week apart.'; },
+    promptStreaming: (m) => { window.__lastPrompt = JSON.stringify(m); const parts = ['FAKE-NANO: noted. ', 'Keep long runs ', 'a week apart.'];
+      return new ReadableStream({ start(c){ parts.forEach(x => c.enqueue(x)); c.close(); } }); }, destroy(){} }),
 };
 """
 results = []
@@ -44,6 +46,8 @@ with sync_playwright() as p:
     ok("nano pill ready", "ready" in page.inner_text("#nanoLabel").lower(), page.inner_text("#nanoLabel"))
     ok("backend pill standalone", "standalone" in page.inner_text("#backendLabel").lower(), page.inner_text("#backendLabel"))
     ok("app check pill", "app check" in page.inner_text("#appCheckLabel").lower(), page.inner_text("#appCheckLabel"))
+    ok("default route is Prefer Cloud", page.input_value("#inferenceMode")=="prefer_in_cloud", page.input_value("#inferenceMode"))
+    page.select_option("#inferenceMode","prefer_on_device")
     ok("mode options", page.eval_on_selector_all("#inferenceMode option","o=>o.map(x=>x.value)")==["prefer_on_device","only_on_device","prefer_in_cloud"])
     # panels
     mem = page.inner_text("#statMemTotal"); ok("memories = 14", mem.strip()=="14", mem)
@@ -140,9 +144,13 @@ with sync_playwright() as p:
         j={**CORS,"content-type":"application/json"}
         if state_["mode"]=="allbad":
             return route.fulfill(status=400, headers=j, body=json.dumps({"error":{"code":400,"message":"bad request test","status":"INVALID_ARGUMENT"}}))
-        if "gemini-4-hydrogen" in req.url:
-            return route.fulfill(status=404, headers=j, body=json.dumps({"error":{"code":404,"message":"models/gemini-4-hydrogen is not found","status":"NOT_FOUND"}}))
-        return route.fulfill(status=200, headers=j, body=json.dumps({"candidates":[{"content":{"role":"model","parts":[{"text":"CLOUD-FAKE reply"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}))
+        if "gemini-3.5-flash-lite" in req.url:
+            return route.fulfill(status=404, headers=j, body=json.dumps({"error":{"code":404,"message":"models/gemini-3.5-flash-lite is not found","status":"NOT_FOUND"}}))
+        def sse(t, last=False):
+            c={"candidates":[{"content":{"role":"model","parts":[{"text":t}]}}]}
+            if last: c["candidates"][0]["finishReason"]="STOP"; c["usageMetadata"]={"promptTokenCount":10,"candidatesTokenCount":5}
+            return "data: "+json.dumps(c)+"\r\n\r\n"
+        return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body=sse("CLOUD-FAKE ")+sse("reply",True))
     ctx.route("**/firebasevertexai.googleapis.com/**", vertex)
     pg2 = ctx.new_page()
     pg2.goto(f"http://127.0.0.1:{PORT}/index.html")
@@ -153,8 +161,8 @@ with sync_playwright() as p:
     pg2.wait_for_function("document.querySelectorAll('.ai-badge').length>=1", timeout=15000)
     cb = pg2.locator(".ai-badge").last
     ok("cloud badge after model fallback", "in-cloud (gemini fallback)" in cb.inner_text().lower(), cb.inner_text())
-    ok("backup model used", "gemini-3.5-flash-lite" in (cb.get_attribute("title") or ""), cb.get_attribute("title"))
-    ok("cloud badge text shows model + ms", "gemini-3.5-flash-lite" in cb.inner_text().lower() and "ms" in cb.inner_text().lower(), cb.inner_text())
+    ok("backup model used", "gemini-4-hydrogen" in (cb.get_attribute("title") or ""), cb.get_attribute("title"))
+    ok("cloud badge text shows model + ms", "gemini-4-hydrogen" in cb.inner_text().lower() and "ms" in cb.inner_text().lower(), cb.inner_text())
     ok("cloud reply shown", "CLOUD-FAKE" in pg2.inner_text("#chatLog"))
     state_["mode"]="allbad"
     pg2.fill("#chatInput","Say hello again"); pg2.click("#sendBtn")

@@ -749,7 +749,7 @@
       return Promise.all([recall(message, includePrivate, 4), taskContext()]).then(function (both) {
         var rc = both[0], tasks = both[1];
         var prompt = buildPrompt(message, body.history, rc.memories, tasks);
-        return hybrid.generate(prompt).then(function (g) {
+        return hybrid.generate(prompt, window.AionOnChunk).then(function (g) {
           var proposals = extractProposals(message);
           return persistProposals(proposals).then(function (saved) {
             var detail = { provider: g.source === "on_device" ? "on-device (Gemini Nano)" : "in-cloud (Gemini)",
@@ -760,7 +760,7 @@
                 reply: g.text,
                 proposed_memories: saved,
                 citations: rc.memories.map(function (m) { return m.id; }),
-                meta: { source: g.source, latency_ms: g.latencyMs, model: g.model, mode: g.mode,
+                meta: { source: g.source, latency_ms: g.latencyMs, first_chunk_ms: g.firstChunkMs, model: g.model, mode: g.mode,
                   notes_used: rc.memories.length, tasks_used: tasks.lines.length, private_withheld: includePrivate ? 0 : rc.withheld,
                   tokens_estimated: true },
               };

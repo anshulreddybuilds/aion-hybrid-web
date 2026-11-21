@@ -13,7 +13,7 @@ It runs 100% in the browser. No server, no sign-in. Open the hosted URL and ever
 1. Use **desktop Chrome 139 or newer**. Other browsers still work, but chat then uses the cloud only and the header light says Gemini Nano is not supported.
 2. Open the hosted URL. The header bar shows:
    - **Gemini Nano: ready / needs download / unavailable** - live status of the on-device model.
-   - **AI Route** dropdown: `Prefer On-Device (Hybrid)`, `Only On-Device (Offline)`, `Prefer Cloud`.
+   - **AI Route** dropdown: `Prefer Cloud` (the default, so ordinary laptops get a quick reply), `Prefer On-Device (Hybrid)` and `Only On-Device (Offline)`.
    - **Offline Demo Mode** switch.
    - **App Check** and **Standalone demo data** status.
 3. If it says *needs download*, click **DOWNLOAD NANO** once (a few GB, one time). If Chrome says the Prompt API is off, enable `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` and restart Chrome.
@@ -62,8 +62,8 @@ Small edits to existing files: `index.html` (hybrid bar, scripts, local assets, 
   |        +--> ON-DEVICE: Gemini Nano (Chrome Prompt API)         |
   |        |        no network, private notes allowed here         |
   |        |                                                       |
-  |        +--> IN-CLOUD: Gemini (gemini-4-hydrogen, backup        |
-  |                 gemini-3.5-flash-lite) via Firebase AI Logic   |
+  |        +--> IN-CLOUD: Gemini (gemini-3.5-flash-lite, backup   |
+  |                 gemini-4-hydrogen) via Firebase AI Logic   |
   |                 |                                              |
   +-----------------|----------------------------------------------+
                     |  every request carries an App Check token
@@ -72,6 +72,7 @@ Small edits to existing files: `index.html` (hybrid bar, scripts, local assets, 
           Firebase AI Logic  ->  Gemini Developer API
 ```
 
+- **Speed:** replies stream into the chat bubble as they are generated, a "Thinking..." bubble appears the instant Send is pressed, and the App Check (reCAPTCHA) token is fetched in the background at page load so the first message does not wait for it.
 - **Route:** the header dropdown picks the `InferenceMode` (prefer on-device, only on-device, prefer cloud). The SDK decides per request and reports where it ran; the reply badge shows that plus latency.
 - **Protection:** the cloud path is guarded by **Firebase App Check** (reCAPTCHA Enterprise), so only this app can call the model. Localhost uses the debug provider instead.
 - **Data:** all demo data lives in the visitor's own browser. There is no server of ours.
@@ -82,7 +83,7 @@ Chat builds one prompt (instructions + the most relevant saved notes + the last 
 
 | Dropdown | `InferenceMode` | Behaviour |
 |---|---|---|
-| Prefer On-Device (Hybrid) | `PREFER_ON_DEVICE` | Gemini Nano if it is ready, otherwise cloud Gemini (`gemini-4-hydrogen`, backup `gemini-3.5-flash-lite`). |
+| Prefer On-Device (Hybrid) | `PREFER_ON_DEVICE` | Gemini Nano if it is ready, otherwise cloud Gemini (`gemini-3.5-flash-lite`, backup `gemini-4-hydrogen`). |
 | Only On-Device (Offline) | `ONLY_ON_DEVICE` | Gemini Nano only. If it is not ready, you get a clear error - never a silent cloud call. |
 | Prefer Cloud | `PREFER_IN_CLOUD` | Cloud first; falls back to Gemini Nano if the cloud call fails. |
 
@@ -117,13 +118,13 @@ Firebase console, project `aion-hybrid-ai`:
 1. **AI Logic** -> Get started -> choose the *Gemini Developer API* provider.
 2. **App Check** -> register the web app with the **reCAPTCHA Enterprise** provider. Create a reCAPTCHA Enterprise *website* key (score-based, checkbox challenge off) whose allowed domains include your hosting domains (`<project>.web.app`, `<project>.firebaseapp.com`), save it in App Check, put the public site key into `RECAPTCHA_SITE_KEY` in `src/hybrid.js`, rebuild, and enforce App Check. The `appId` in the Firebase config must match the registered web app exactly - a mismatch gives `App not registered`. On `localhost` the page uses the **debug provider** instead: click **COPY TOKEN** in the header bar, add it under *Manage debug tokens*, then **SET TOKEN** to keep it across reloads. Never ship debug tokens to production.
 3. The web API key in `src/hybrid.js` is not a secret, but restrict it to your hosting domains in Google Cloud console, and keep App Check enforcement on so only this app can call the model.
-4. Cloud models are listed in `CLOUD_MODELS` in `src/hybrid.js` (first `gemini-4-hydrogen`, then `gemini-3.5-flash-lite`). If the first is rejected as unknown, the second is tried and both errors are shown. Model names change - check Firebase's models page.
+4. Cloud models are listed in `CLOUD_MODELS` in `src/hybrid.js` (first `gemini-3.5-flash-lite`, then `gemini-4-hydrogen`). If the first is rejected as unknown, the second is tried and both errors are shown. Model names change - check Firebase's models page.
 
 ## Verification: what was and was not tested
 
 Tested (headless Chrome, `python tests/headless_smoke.py`, 54 checks): page and panel loading, seeded memories/tasks/approvals, privacy redaction and blocking, Edit -> re-check -> Approve, persistence after reload, mode switching, per-reply badge, Offline Demo Mode blocking external requests, the approvals and mobile pages, the backup-model retry, the exact-error chat bubble, and the saved App Check token.
 
-**Cloud path:** checked on the deployed site on 21 Nov 2026 - a clean browser session on https://aion-hybrid-ai.web.app, *Prefer Cloud*, "Summarize my tasks for today" returned a real `gemini-4-hydrogen` reply (HTTP 200, no App Check error) with the In-Cloud badge and latency. The author repeated this in a Chrome Incognito window. A reply took roughly 24 s in that test.
+**Cloud path:** checked on the deployed site on 21 Nov 2026 - a clean browser session on https://aion-hybrid-ai.web.app, *Prefer Cloud*, "Summarize my tasks for today" returned a real cloud Gemini reply (served by `gemini-4-hydrogen`, the first-choice model at that time) (HTTP 200, no App Check error) with the In-Cloud badge and latency. The author repeated this in a Chrome Incognito window. Before the speed changes, the first reply on a fresh page took roughly 24-120 s in that test . The cause turned out to be the model, not App Check: `gemini-4-hydrogen` needed ~125 s for a trivial prompt, while `gemini-3.5-flash-lite` answers in about 1 s. Flash-lite is now the first choice; streaming, an App Check warm-up and a live "Thinking..." bubble were also added.
 
 **Gemini Nano:** the automated tests use a **mock `LanguageModel`**. The author reports real Nano working on their own machine; this was not independently verified in the automated tests. Nano needs desktop Chrome 139+ with enough disk/RAM, and may be unavailable on low-spec machines (the page then falls back to cloud, or errors in *Only On-Device* mode).
 

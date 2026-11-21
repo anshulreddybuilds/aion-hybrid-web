@@ -2239,26 +2239,37 @@ async function sendChatMessage(text) {
   appendChatMessage("user", message);
   setChatStatus("AION is thinking...");
 
-  /* The first cloud reply on a fresh page can take 30+ s (App Check has to
-     fetch its reCAPTCHA token first). Show a live "working" bubble so it is
-     obvious the app is not stuck. It is removed when the real reply (or the
-     error) arrives. */
-  const pending = appendChatMessage("assistant", "Connecting...");
+  /* Live bubble: shows "Thinking..." the instant Send is clicked, then turns
+     into the streaming reply as tokens arrive. If the first reply is slow (App
+     Check / reCAPTCHA can take a while on a fresh page) it keeps counting. */
+  const hy = window.AionHybridState || {};
+  const routeWord = hy.mode === "only_on_device" ? "Routing to on-device Gemini Nano..."
+    : hy.mode === "prefer_on_device" ? "Thinking... routing to Gemini Nano / cloud"
+    : "Thinking... routing to Cloud Gemini";
+  const pending = appendChatMessage("assistant", routeWord);
   pending.classList.add("pending");
+  let streaming = false;
   const pendingStart = Date.now();
+  const labelHtml = '<span class="chat-msg-label">AION</span>';
   const pendingTimer = setInterval(() => {
+    if (streaming) return;
     const sec = Math.floor((Date.now() - pendingStart) / 1000);
-    const stage = sec < 4 ? "Connecting... routing your request"
+    const stage = sec < 4 ? routeWord
       : sec < 15 ? "Verifying App Check & routing..."
-      : "Still working - the first cloud reply on a fresh page can take about 30-40 s";
-    pending.innerHTML = '<span class="chat-msg-label">AION</span>' + stage + " (" + sec + " s)";
+      : "Still working - waiting on the first token";
+    pending.innerHTML = labelHtml + stage + " (" + sec + " s)";
     setChatStatus(stage);
   }, 500);
-  const clearPending = () => { clearInterval(pendingTimer); pending.remove(); };
+  window.AionOnChunk = (textSoFar) => {
+    if (!streaming) { streaming = true; pending.classList.remove("pending"); pending.classList.add("streaming"); }
+    pending.innerHTML = labelHtml + renderMarkdownLite(textSoFar);
+    const log = $("chatLog"); if (log) log.scrollTop = log.scrollHeight;
+  };
+  const stopLive = () => { clearInterval(pendingTimer); window.AionOnChunk = null; };
 
   try {
     const res = await apiPost("/api/chat", { message, history: chatHistory });
-    clearPending();
+    stopLive();
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
       throw new Error(detail.detail || "request failed (" + res.status + ")");
@@ -2267,7 +2278,10 @@ async function sendChatMessage(text) {
     const reply = body.data.reply;
     const proposed = body.data.proposed_memories || [];
 
-    const bubble = appendChatMessage("assistant", reply);
+    /* Reuse the live bubble as the final one (no flicker), then add the badge. */
+    const bubble = pending;
+    bubble.classList.remove("pending", "streaming");
+    bubble.innerHTML = labelHtml + renderMarkdownLite(reply);
     attachAiBadge(bubble, body.data.meta);
     chatHistory.push({ role: "user", content: message });
     chatHistory.push({ role: "assistant", content: reply });
@@ -2281,7 +2295,8 @@ async function sendChatMessage(text) {
       setTimeout(() => bubble.classList.remove("speaking"), 2500);
     }
   } catch (err) {
-    clearPending();
+    stopLive();
+    pending.remove();
     /* Show the exact error in the chat itself, not only in the status line,
        so a failed request can be read (and copied) without opening DevTools. */
     setChatStatus("Error: " + err.message);

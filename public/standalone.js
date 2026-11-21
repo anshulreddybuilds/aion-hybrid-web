@@ -724,7 +724,13 @@
         return { label: t.status === "doing" ? "in progress" : "to do", title: t.title, mission: t.mission };
       }).concat(waitingRows.map(function (p) { return { label: "awaiting your approval", title: p.content, mission: null }; }));
       var lines = items.map(function (it) { return "- [" + it.label + "] " + it.title + (it.mission ? " (" + it.mission + ")" : ""); });
-      return { lines: lines, items: items, openCount: openRows.length, waitingCount: waitingRows.length };
+      /* Every open task / pending task proposal - not just the ones listed in
+         the prompt - so sealing covers exactly what the private registry holds. */
+      var allPrivate = r[0].filter(function (t) { return t.status !== "done"; })
+        .map(function (t) { return { title: t.title, mission: t.mission }; })
+        .concat(r[1].filter(function (p) { return p.status === "pending" && p.kind === "task"; })
+          .map(function (p) { return { title: p.content, mission: null }; }));
+      return { lines: lines, items: items, allPrivate: allPrivate, openCount: openRows.length, waitingCount: waitingRows.length };
     });
   }
 
@@ -804,19 +810,362 @@
     /* Cloud-reachable: register every task title / project name first so the
        vault can find them anywhere (notes, history, the message itself). */
     var items = (tasks && tasks.items) || [];
+    ((tasks && tasks.allPrivate) || []).forEach(function (it) {
+      tokenFor("TASK", it.title);
+      if (it.mission) tokenFor("PROJECT", it.mission);
+    });
     var tlines = items.map(function (it) {
       return "- [" + it.label + "] " + tokenFor("TASK", it.title) + (it.mission ? " (" + tokenFor("PROJECT", it.mission) + ")" : "");
     });
-    var sctx = notes.length ? notes.map(function (n, i) { return (i + 1) + ". " + sealText(n.content); }).join("\n") : "(no relevant notes)";
-    var turns = sealedTurns.slice(-2);
-    var shist = turns.map(function (t) { return "User: " + t.user + "\nAION: " + t.assistant; }).join("\n");
+    /* Stored turns are sealed again with today's vault: words typed earlier
+       that have since become a private task title are covered too. */
+    var turns = sealedTurns.slice(-2).map(function (t) { return { user: sealText(t.user), assistant: sealText(t.assistant) }; });
     var smsg = sealText(message);
-    var prompt = SYSTEM_PROMPT + PLACEHOLDER_RULE + "\n\nNOTES:\n" + sctx + "\n\nTASKS:\n" + (tlines.length ? tlines.join("\n") : "(no open tasks)") +
-      (shist ? "\n\nRECENT CONVERSATION:\n" + shist : "") +
-      "\n\nUser: " + smsg + "\nAION:";
-    var placeholders = prompt.match(TOKEN_RE) || [];
+    /* Packet 2: a cloud-reachable request is no longer a prompt string. It is
+       a "chat" disclosure whose allowlisted fields hold only sealed text;
+       hybrid.js builds the cloud text from those fields. */
+    var payload = {
+      instructions: SYSTEM_PROMPT + PLACEHOLDER_RULE,
+      notes: notes.map(function (n) { return sealText(n.content).slice(0, 700); }).slice(0, 8),
+      tasks: tlines.slice(0, 24),
+      history: turns.map(function (t) { return { user: t.user, assistant: t.assistant }; }),
+      message: smsg.slice(0, 2000),
+    };
+    var all = [payload.message].concat(payload.notes, payload.tasks, turns.map(function (t) { return t.user + " " + t.assistant; })).join("\n");
+    var placeholders = all.match(TOKEN_RE) || [];
     var uniq = {}; placeholders.forEach(function (p) { uniq[p.replace(" ", "_")] = 1; });
-    return { prompt: prompt, sealedItems: Object.keys(uniq).length, historyTurns: turns.length };
+    return { payload: payload, sealedItems: Object.keys(uniq).length, historyTurns: turns.length };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Private case workspace + disclosure boundary (hybrid-v2, Packet 2)    */
+  /* ------------------------------------------------------------------ */
+  /* One persistent case, stored ONLY in this browser (IndexedDB "meta").
+   * Everything about it is private by default. What may go to the cloud is
+   * decided field by field: paragraphs the user marks "share", the bundled
+   * public sources, and the shareable requirements. Private constraints have
+   * no way into a disclosure at all - there is no field for them. */
+  var CASE_ID = "case-sample";
+  var CASE_INSTRUCTIONS =
+    "You are AION's public research assistant. You see only what the user approved for disclosure: some passages " +
+    "from a supplier proposal, excerpts from public sources, and the requirements the user chose to share. Base your " +
+    "answer only on that material. Cite proposal passages as [P#] and sources as [S#]. In under 150 words: say whether " +
+    "the supplier looks like a reasonable choice on this information, then list the questions the buyer should " +
+    "clarify before signing. Do not guess anything that was not provided.";
+
+  function sampleCase() {
+    return {
+      id: CASE_ID, kind: "case", sample: true, inputRevision: 1, updatedAt: nowIso(),
+      title: "Supplier evaluation — LED wall and sound for the Annual Partner Summit",
+      buyer: "Northwind Events (fictional)",
+      supplier: "Brightline Event Systems (fictional)",
+      paragraphs: [
+        { id: "P1", heading: "Overview", shared: true,
+          text: "Brightline Event Systems proposes to supply a 6 m x 3 m indoor LED video wall (2.6 mm pixel pitch), a line-array sound system for up to 400 guests and two wireless presenter microphones for the Annual Partner Summit." },
+        { id: "P2", heading: "Equipment", shared: true,
+          text: "LED panels: Brightline BL-26 (500 x 500 mm, 2.6 mm pitch, 4,500 nits, 3,840 Hz refresh). Video processor with 4K input and redundant power. Audio: eight line-array cabinets, two subwoofers and a 16-channel digital mixer." },
+        { id: "P3", heading: "Delivery", shared: true,
+          text: "Equipment is delivered to the venue loading bay on the morning of 11 December 2026, packed in road cases. The client signs a delivery note on arrival." },
+        { id: "P4", heading: "Warranty and support", shared: true,
+          text: "All equipment is covered by Brightline's standard rental warranty (see the public warranty terms). A phone support line is available during the event from 08:00 to 22:00." },
+        { id: "P5", heading: "Scope and exclusions", shared: false,
+          text: "Not included in this quotation: rigging, assembly and installation of the LED wall, cabling between the stage and the control desk, and on-site technicians. These can be quoted separately on request." },
+        { id: "P6", heading: "Price and payment", shared: false,
+          text: "Total rental price: Rs 3,85,000 plus GST for two event days. 50% advance on signing, balance on delivery. This quotation is valid until 30 November 2026." },
+        { id: "P7", heading: "Cancellation", shared: true,
+          text: "Cancellations made within 14 days of the event are charged at 60% of the rental price." },
+      ],
+      publicSources: [
+        { id: "S1", title: "Brightline BL-26 LED panel — spec sheet", label: "Sample public source (fictional), bundled with AION — not a live web search",
+          text: "Panel size 500 x 500 mm. Pixel pitch 2.6 mm. Brightness 4,500 nits. Refresh rate 3,840 Hz. Weight 7.5 kg per panel. Indoor use only. Walls taller than 2 m must be rigged and assembled by certified technicians." },
+        { id: "S2", title: "Brightline rental warranty terms", label: "Sample public source (fictional), bundled with AION — not a live web search",
+          text: "The rental warranty covers equipment faults during the rental period when the equipment is installed and operated by Brightline-certified technicians. Damage or faults caused by third-party installation are not covered." },
+      ],
+      shareableRequirements: [
+        "LED wall at least 5 m wide for a ballroom stage",
+        "Sound coverage for about 350 guests",
+        "Two wireless microphones for presenters",
+      ],
+      privateConstraints: {
+        maxBudget: "Rs 4,00,000 including GST",
+        readyBy: "2026-12-11 09:00 — fully working before doors open at 10:00",
+        installationRequired: true,
+        confidentialNote: "Internal: last year's AV vendor did not finish setup in time. Leadership will not accept another self-install.",
+      },
+      question: "Using only the shared proposal passages, the public sources and the stated requirements: is this supplier a reasonable choice, and what should the buyer clarify before signing?",
+    };
+  }
+
+  function loadCase() {
+    return store.get("meta", CASE_ID).then(function (c) {
+      if (c && c.kind === "case") return c;
+      var s = sampleCase();
+      return store.put("meta", s).then(function () { return s; });
+    });
+  }
+
+  function caseBody(c) {
+    var copy = JSON.parse(JSON.stringify(c));
+    delete copy.inputRevision; delete copy.updatedAt;
+    return JSON.stringify(copy);
+  }
+
+  /* mutate(copy) edits a copy; the revision goes up only if something changed. */
+  function updateCase(mutate) {
+    return loadCase().then(function (c) {
+      var next = JSON.parse(JSON.stringify(c));
+      mutate(next);
+      next.id = CASE_ID; next.kind = "case";
+      if (caseBody(next) === caseBody(c)) return c;
+      next.inputRevision = c.inputRevision + 1;
+      next.updatedAt = nowIso();
+      return store.put("meta", next).then(function () { return next; });
+    });
+  }
+
+  function resetCase() {
+    var s = sampleCase();
+    return loadCase().then(function (c) {
+      s.inputRevision = c.inputRevision + 1;   /* a reset is a change: old approvals go stale */
+      return store.put("meta", s).then(function () { return s; });
+    });
+  }
+
+  /* The ONLY fields of a case that can reach a disclosure. */
+  function casePayload(c, question) {
+    return {
+      instructions: CASE_INSTRUCTIONS,
+      question: String(question == null ? c.question : question).slice(0, 1000),
+      shared_passages: c.paragraphs.filter(function (p) { return p.shared; })
+        .map(function (p) { return { id: p.id, text: String(p.text).slice(0, 1500) }; }),
+      public_sources: c.publicSources.map(function (s) { return { id: s.id, title: s.title, text: s.text }; }),
+      shareable_requirements: (c.shareableRequirements || [])
+        .map(function (r) { return String(r).trim(); }).filter(Boolean).slice(0, 12),
+    };
+  }
+
+  function casePrivateValues(c) {
+    var pc = c.privateConstraints || {};
+    var vals = [pc.maxBudget, pc.readyBy, pc.confidentialNote];
+    String(pc.maxBudget || "").replace(/\d[\d,.]{3,}\d/g, function (m) { vals.push(m); return m; });
+    String(pc.readyBy || "").replace(/\d{4}-\d{2}-\d{2}/g, function (m) { vals.push(m); return m; });
+    return {
+      constraints: vals,
+      passages: c.paragraphs.filter(function (p) { return !p.shared; }).map(function (p) { return p.text; }),
+    };
+  }
+
+  /* Registers, for the last-line scan in hybrid.js, every value that must
+   * never appear in cloud text: open task titles and project names (they go
+   * as placeholders), private notes, the case's private constraints and its
+   * unshared passages. extraCase lets the leak test register a temp case. */
+  function syncPrivateRegistry(hybrid, extraCase) {
+    return Promise.all([store.all("tasks"), store.all("proposals"), store.all("memories"), loadCase()]).then(function (r) {
+      var E = hybrid.egress;
+      var open = r[0].filter(function (t) { return t.status !== "done"; });
+      E.setPrivate("task_title", open.map(function (t) { return t.title; })
+        .concat(r[1].filter(function (p) { return p.status === "pending" && p.kind === "task"; }).map(function (p) { return p.content; })));
+      E.setPrivate("project_name", open.map(function (t) { return t.mission; }));
+      E.setPrivate("private_note", r[2].filter(function (m) { return m.sensitivity === "owner_private"; }).map(function (m) { return m.content; }));
+      var cons = [], pas = [];
+      [r[3]].concat(extraCase ? [extraCase] : []).forEach(function (c) {
+        var v = casePrivateValues(c);
+        cons = cons.concat(v.constraints); pas = pas.concat(v.passages);
+      });
+      E.setPrivate("case_private_constraint", cons);
+      E.setPrivate("case_unshared_passage", pas);
+      return E.privateCounts();
+    });
+  }
+
+  /* Build a disclosure draft from the CURRENT case. Nothing is sent. */
+  function prepareCaseDisclosure(question, caseOverride) {
+    return waitForHybrid().then(function (hybrid) {
+      var getCase = caseOverride ? Promise.resolve(caseOverride) : loadCase();
+      return getCase.then(function (c) {
+        return syncPrivateRegistry(hybrid, caseOverride).then(function () {
+          return hybrid.egress.createDisclosure({ purpose: "case_research", payload: casePayload(c, question),
+            caseId: c.id, inputRevision: c.inputRevision });
+        }).then(function (d) {
+          var text = hybrid.egress.serialize(d);
+          var pc = c.privateConstraints || {};
+          return {
+            disclosure: d,
+            text: text,
+            bytes: text.length,
+            included: {
+              passages: d.payload.shared_passages.map(function (p) { return p.id; }),
+              sources: d.payload.public_sources.map(function (s) { return s.id; }),
+              requirements: d.payload.shareable_requirements.length,
+            },
+            excluded: c.paragraphs.filter(function (p) { return !p.shared; }).map(function (p) { return p.id + " " + p.heading; })
+              .concat(["maximum budget", "ready-by deadline", "installation rule (" + (pc.installationRequired ? "required" : "not required") + ")", "confidential note"]),
+            privateHits: hybrid.egress.scanPrivate(text),
+          };
+        });
+      });
+    });
+  }
+
+  /* Send an approved case disclosure. Cloud only - never falls back to the
+   * device - and only if the case is still at the approved revision. */
+  function sendCaseDisclosure(d) {
+    return waitForHybrid().then(function (hybrid) {
+      return loadCase().then(function (c) {
+        return syncPrivateRegistry(hybrid).then(function () {
+          return hybrid.generate(null, null, { mode: "only_in_cloud", disclosure: d, currentInputRevision: c.inputRevision });
+        });
+      }).then(function (g) {
+        return store.put("events", { id: Date.now() + "-r", event_id: uid("evt"), timestamp: nowIso(),
+          event_type: "case.research", source_engine: "hybrid-router",
+          detail: { disclosure: g.disclosure, actual_source: g.actual_source, source_verified: g.source_verified,
+            latency_ms: g.latencyMs, model: g.model } }).then(function () { return g; });
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 6-canary leak test                                                    */
+  /* ------------------------------------------------------------------ */
+  /* Plants six unique fake secrets - one in each place private data lives -
+   * runs two chat turns and one case research request through the normal
+   * code paths, then searches what left for the secrets. Everything planted
+   * is removed afterwards.
+   *   live    : the requests really go to the cloud; the bodies are read from
+   *             the outbound monitor in hybrid.js (what fetch actually sent).
+   *   dry_run : (offline / no cloud) the exact text that WOULD be sent is
+   *             built and searched instead. The report says which one ran.
+   * A finite test: it shows these six secrets did not appear in these
+   * inspected requests - not that nothing can ever leak. */
+  function leakTest(opts) {
+    opts = opts || {};
+    return waitForHybrid().then(function (hybrid) {
+      var E = hybrid.egress;
+      var rnd = function () { return Math.random().toString(36).slice(2, 8); };
+      var C = {
+        task_title: "zqcanary-task-" + rnd(),
+        private_note: "zqcanary-note-" + rnd(),
+        chat_history: "zqcanary-hist-" + rnd(),
+        source_document: "zqcanary-doc-" + rnd(),
+        reconstituted_reply: "zqcanary-reply-" + rnd(),
+        private_constraint: "zqcanary-cons-" + rnd(),
+      };
+      var WHERE = {
+        task_title: "Task title", private_note: "Private note", chat_history: "Chat history on screen",
+        source_document: "Unshared case passage", reconstituted_reply: "Reply with real name restored",
+        private_constraint: "Private constraint",
+      };
+      var live = opts.live !== false && navigator.onLine !== false && !window.AION_OFFLINE_DEMO && !!hybrid.state.ready;
+      var started = Date.now();
+      var dryTexts = [], errors = [], gateBlocked = 0;
+      var screenHistory = null, tempCase = null, controlText = "";
+      var turnsBefore = sealedTurns.length;
+      var t0 = nowIso();
+      var taskTitle = "Renew the insurance plan " + C.task_title;
+      var replyTitle = "Call the venue manager " + C.reconstituted_reply;
+      var plant = Promise.all([
+        store.put("tasks", { id: "leaktest-task", title: taskTitle, mission: "Leak test", status: "todo", created: t0 }),
+        store.put("tasks", { id: "leaktest-reply", title: replyTitle, mission: "Leak test", status: "todo", created: t0 }),
+        store.put("memories", { id: "leaktest-mem", content: "Private: my insurance renewal reference is " + C.private_note,
+          type: "fact", importance: 5, domain: "owner", tags: ["insurance", "renewal"], created: t0, status: "active",
+          sensitivity: "owner_private" }),
+      ]);
+
+      function send(d, extra) {
+        if (!live) { dryTexts.push(E.serialize(d)); return Promise.resolve(); }
+        return hybrid.generate(null, null, Object.assign({ mode: "only_in_cloud", disclosure: d }, extra || {}))
+          .catch(function (e) {
+            if (e && e.code === "private_value_blocked") gateBlocked += 1;
+            errors.push(String(e && e.message || e).slice(0, 200));
+          });
+      }
+      function chatTurn(message, screenHistory) {
+        return Promise.all([recall(message, false, 4), taskContext()]).then(function (both) {
+          /* screenHistory = what app.js shows and passes as body.history. The
+             cloud path must ignore it (it holds restored names and local-only turns). */
+          var built = buildPrompt(message, screenHistory || null, both[0].memories, both[1], true);
+          return syncPrivateRegistry(hybrid)
+            .then(function () { return E.createDisclosure({ purpose: "chat", payload: built.payload }); })
+            .then(function (d) { return E.approve(d, "leak_test"); })
+            .then(send);
+        });
+      }
+
+      return plant
+        .then(function () { return chatTurn("Leak test: what is next for my insurance renewal plan?"); })
+        .then(function () {
+          /* The screen now shows a restored reply naming the canary task, and the
+             on-screen history holds a canary. The model's own text used the
+             placeholder - that sealed form is what the next turn may carry. */
+          return taskContext().then(function () {
+            recordTurn(true, "What should I do after that?", "Next: " + tokenFor("TASK", replyTitle) + ".");
+          });
+        })
+        .then(function () {
+          screenHistory = [
+            { role: "user", content: "(asked in Only On-Device mode) my door code is " + C.chat_history },
+            { role: "assistant", content: "Noted. Next: " + replyTitle + "." },
+          ];
+          return chatTurn("And after that, should I call the venue?", screenHistory);
+        })
+        .then(function () {
+          return loadCase().then(function (c) {
+            var temp = tempCase = JSON.parse(JSON.stringify(c));
+            temp.paragraphs.push({ id: "P99", heading: "Leak test (unshared)", text: "Internal only: " + C.source_document, shared: false });
+            temp.privateConstraints.confidentialNote = (temp.privateConstraints.confidentialNote || "") + " Ref " + C.private_constraint;
+            return prepareCaseDisclosure(null, temp).then(function (prep) {
+              return E.approve(prep.disclosure, "leak_test").then(function (d) { return send(d, { currentInputRevision: temp.inputRevision }); });
+            });
+          });
+        })
+        .then(function () {
+          /* Positive control: the same local material, WITHOUT the boundary
+             (an Only On-Device prompt incl. private notes + the whole temp case).
+             Every fake secret must be found here - otherwise "not found" outbound
+             would prove nothing. */
+          return Promise.all([recall("insurance renewal plan", true, 8), taskContext()]).then(function (r) {
+            controlText = buildPrompt("control", screenHistory, r[0].memories, r[1], false).prompt + "\n" + JSON.stringify(tempCase);
+          });
+        })
+        .then(function () {
+          var bodies = live ? E.outboundSince(started).map(function (o) { return o.body || ""; }) : dryTexts;
+          var ctl = controlText.toLowerCase();
+          var results = Object.keys(C).map(function (k) {
+            var needle = C[k].toLowerCase();
+            return { where: WHERE[k], key: k, canary: C[k],
+              found: bodies.filter(function (b) { return b.toLowerCase().indexOf(needle) !== -1; }).length,
+              presentLocally: ctl.indexOf(needle) !== -1 };
+          });
+          var report = {
+            mode: live ? "live" : "dry_run",
+            inspected: bodies.length,
+            bytes: bodies.reduce(function (n, b) { return n + b.length; }, 0),
+            results: results,
+            leaked: results.filter(function (r) { return r.found > 0; }).length,
+            gateBlocked: gateBlocked,
+            errors: errors,
+            controlPresent: results.filter(function (r) { return r.presentLocally; }).length,
+            pass: bodies.length >= 3 && results.every(function (r) { return r.found === 0 && r.presentLocally; }),
+            at: nowIso(),
+          };
+          return report;
+        })
+        .then(function (report) {
+          return cleanup().then(function () {
+            return store.put("events", { id: Date.now() + "-l", event_id: uid("evt"), timestamp: nowIso(),
+              event_type: "guardian.leak_test", source_engine: "egress",
+              detail: { mode: report.mode, inspected: report.inspected, leaked: report.leaked, pass: report.pass } });
+          }).then(function () { return report; });
+        }, function (err) {
+          return cleanup().then(function () { throw err; });
+        });
+
+      function cleanup() {
+        sealedTurns.splice(turnsBefore);
+        return Promise.all([store.del("tasks", "leaktest-task"), store.del("tasks", "leaktest-reply"), store.del("memories", "leaktest-mem")])
+          .then(function () { return syncPrivateRegistry(hybrid); });
+      }
+    });
   }
 
   function waitForHybrid() {
@@ -839,12 +1188,21 @@
       return Promise.all([recall(message, includePrivate, 4), taskContext()]).then(function (both) {
         var rc = both[0], tasks = both[1];
         var built = buildPrompt(message, body.history, rc.memories, tasks, sealed);
-        var prompt = built.prompt;
         /* Live streaming text is un-sealed for display only. */
         var uiChunk = window.AionOnChunk;
         var onChunk = typeof uiChunk === "function"
           ? function (soFar) { uiChunk(sealed ? unsealText(soFar) : soFar); } : null;
-        return hybrid.generate(prompt, onChunk, { mode: mode, sealed: sealed }).then(function (g) {
+        /* Cloud-reachable: build a "chat" disclosure from the sealed fields.
+           Pressing Send is the approval for exactly this content. */
+        var dispatch = !sealed
+          ? hybrid.generate(built.prompt, onChunk, { mode: mode })
+          : syncPrivateRegistry(hybrid).then(function () {
+              return hybrid.egress.createDisclosure({ purpose: "chat", payload: built.payload });
+            }).then(function (d) { return hybrid.egress.approve(d, "send_click"); })
+              .then(function (d) { return hybrid.generate(null, onChunk, { mode: mode, disclosure: d }); });
+        var promptChars = sealed ? 0 : built.prompt.length;
+        return dispatch.then(function (g) {
+          if (g.disclosure) promptChars = g.disclosure.bytes;
           var shown = sealed ? unsealText(g.text) : g.text;
           recordTurn(sealed, message, g.text);   /* store the SEALED model text, not `shown` */
           var proposals = extractProposals(message);
@@ -859,7 +1217,8 @@
               requested_mode: g.requested_mode || mode, actual_source: g.actual_source || g.source,
               source_verified: !!g.source_verified, contributors: contributors,
               sealed: sealed, sealed_items: built.sealedItems,
-              latency_ms: g.latencyMs, tokens_in: Math.ceil(prompt.length / 4), tokens_out: Math.ceil(g.text.length / 4) };
+              disclosure: g.disclosure || null,
+              latency_ms: g.latencyMs, tokens_in: Math.ceil(promptChars / 4), tokens_out: Math.ceil(g.text.length / 4) };
             return store.put("events", { id: Date.now() + "-c", event_id: uid("evt"), timestamp: nowIso(),
               event_type: "chat.reply", source_engine: "hybrid-router", detail: detail }).then(function () {
               return {
@@ -870,6 +1229,7 @@
                   requested_mode: g.requested_mode || mode, actual_source: g.actual_source || g.source,
                   source_verified: !!g.source_verified, contributors: contributors,
                   sealed: sealed, sealed_items: built.sealedItems, history_turns_sent: built.historyTurns,
+                  disclosure: g.disclosure || null,
                   notes_used: rc.memories.length, tasks_used: tasks.lines.length, private_withheld: includePrivate ? 0 : rc.withheld,
                   tokens_estimated: true },
               };
@@ -1080,6 +1440,16 @@
     /* Read-only window onto the cloud boundary, for tests and the console. */
     boundary: { seal: function (t) { return sealText(t); }, unseal: function (t) { return unsealText(t); },
       sealedTurnCount: function () { return sealedTurns.length; } },
+    /* Private case workspace + disclosure boundary (Packet 2). */
+    caseApi: {
+      load: function () { return loadCase(); },
+      update: function (mutate) { return updateCase(mutate); },
+      reset: function () { return resetCase(); },
+      prepareDisclosure: function (question) { return prepareCaseDisclosure(question); },
+      send: function (d) { return sendCaseDisclosure(d); },
+      leakTest: function (opts) { return leakTest(opts); },
+      syncPrivateRegistry: function () { return waitForHybrid().then(function (h) { return syncPrivateRegistry(h); }); },
+    },
     privacy: privacyCheck,
   };
 })();

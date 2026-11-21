@@ -1040,3 +1040,46 @@ body.offline-demo .hy-bar { outline:1px dashed rgba(232,181,58,.35); outline-off
 /* hybrid-v2: hidden nav destinations and views stay hidden even where a
    class sets display (the [hidden] attribute alone would lose to it). */
 .nav a[hidden], .view[hidden] { display: none !important; }
+
+/* ---------------- Case view (hybrid-v2, Packet 2) ---------------- */
+.case-card { display:flex; flex-direction:column; gap:10px }
+.case-sub-title { margin-top:14px }
+.case-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:6px }
+.case-actions .hy-btn[disabled] { opacity:.4; cursor:not-allowed }
+.case-chip { font-family:var(--f-mono); font-size:11px; line-height:1.5; color:var(--ghost); border:1px solid var(--line-strong);
+  border-radius:var(--r-md); padding:5px 9px; max-width:62ch }
+.case-chip.is-approved { color:var(--green); border-color:rgba(61,220,151,.45) }
+.case-chip.is-stale { color:var(--gold); border-color:rgba(232,181,58,.5) }
+.case-chip.is-sent { color:var(--cyan); border-color:rgba(25,208,232,.45) }
+.case-para, .case-src { border:1px solid var(--line); border-radius:var(--r-lg); padding:10px 12px; background:var(--panel-soft) }
+.case-para.is-shared { border-color:rgba(25,208,232,.35) }
+.case-para-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; font-size:13px }
+.case-pid { font-family:var(--f-mono); font-size:11px; color:var(--cyan); border:1px solid rgba(25,208,232,.35); border-radius:6px; padding:1px 6px }
+.case-ph { flex:1; color:var(--paper) }
+.case-share { font-family:var(--f-mono); font-size:11px; color:var(--steel); display:flex; align-items:center; gap:6px; cursor:pointer }
+.case-ta, .case-field input[type=text] { width:100%; box-sizing:border-box; background:var(--midnight); color:var(--paper);
+  border:1px solid var(--line-strong); border-radius:var(--r-md); padding:8px 10px; font:13px/1.5 var(--f-body); resize:vertical }
+.case-ta:focus, .case-field input:focus { outline:1px solid var(--cyan); outline-offset:1px }
+.case-field { display:flex; flex-direction:column; gap:5px; font-family:var(--f-mono); font-size:11px; color:var(--steel) }
+.case-field.case-check { flex-direction:row; align-items:center; gap:8px; color:var(--ghost) }
+.case-src-label { font-family:var(--f-mono); font-size:10.5px; color:var(--gold); margin-bottom:4px }
+.case-src-text { font-size:13px; line-height:1.55; color:var(--ghost) }
+.case-kv { display:grid; grid-template-columns:150px 1fr; gap:10px; font-size:13px; padding:4px 0; border-bottom:1px dashed var(--line) }
+.case-kv span { font-family:var(--f-mono); font-size:11px; color:var(--steel) }
+.case-kv b { font-weight:400; color:var(--paper) }
+.case-details summary { cursor:pointer; font-family:var(--f-mono); font-size:11px; color:var(--cyan); margin:8px 0 }
+.case-pre { white-space:pre-wrap; word-break:break-word; max-height:320px; overflow:auto; background:var(--void); border:1px solid var(--line);
+  border-radius:var(--r-md); padding:10px; font:12px/1.55 var(--f-mono); color:var(--ghost) }
+.case-hint { font-family:var(--f-mono); font-size:11px; color:var(--steel); line-height:1.6 }
+.case-warn { border:1px solid rgba(255,77,94,.5); color:#ffb3ba; border-radius:var(--r-md); padding:8px 10px; font-size:13px; white-space:pre-wrap }
+.case-reply { border:1px solid rgba(25,208,232,.3); border-radius:var(--r-lg); padding:10px 12px; margin-top:6px }
+.case-reply-meta { font-family:var(--f-mono); font-size:11px; color:var(--cyan); margin-bottom:6px }
+.case-reply-text { white-space:pre-wrap; font-size:14px; line-height:1.6 }
+.case-leak-summary { font-size:14px; padding:8px 10px; border-radius:var(--r-md); border:1px solid var(--line-strong) }
+.case-leak-summary.is-good, .case-leak-table .is-good { color:var(--green) }
+.case-leak-summary.is-bad, .case-leak-table .is-bad { color:var(--red) }
+.case-leak-table { width:100%; border-collapse:collapse; font-size:12.5px }
+.case-leak-table th, .case-leak-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line) }
+.case-leak-table th { font-family:var(--f-mono); font-size:10.5px; color:var(--steel); font-weight:400 }
+.case-leak-table code { font-family:var(--f-mono); font-size:11.5px; color:var(--ghost) }
+@media (max-width: 720px) { .case-kv { grid-template-columns:1fr; gap:2px } }

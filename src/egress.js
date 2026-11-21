@@ -1,0 +1,202 @@
+/* AION Hybrid Web - egress boundary (hybrid-v2, Packet 2).
+ *
+ * The only way text reaches a cloud model:
+ *   1. createDisclosure()  - payload checked against the purpose's allowlist
+ *                            (unknown fields rejected), frozen, SHA-256 digest.
+ *   2. approve()           - records approval HERE, bound to that exact digest.
+ *                            Setting `approvalState = "approved"` on the object
+ *                            yourself does nothing.
+ *   3. verify()            - digest re-computed; approval must match it; the
+ *                            case must still be at the same revision; each
+ *                            approval can be used for ONE send.
+ *   4. serialize()         - cloud text built from the allowlisted fields only.
+ *   5. scanPrivate()       - last check: the text must not contain any value
+ *                            local code registered as private.
+ * hybrid.js runs 3-5 for every cloud-reachable request.
+ *
+ * Honest limit: this protects against mistakes and stale or edited content.
+ * Any script running on this page could still call approve() itself.
+ */
+import { PURPOSES, SCHEMA_VERSION, POLICY_VERSION, validatePayload } from "./contracts.js";
+
+/* ---------- canonical JSON + SHA-256 ---------- */
+export function canonical(v) {
+  if (Array.isArray(v)) return "[" + v.map(canonical).join(",") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonical(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+export async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(text)));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function deepFreeze(o) {
+  if (o && typeof o === "object" && !Object.isFrozen(o)) {
+    Object.freeze(o);
+    Object.keys(o).forEach((k) => deepFreeze(o[k]));
+  }
+  return o;
+}
+
+function uid() {
+  try { return crypto.randomUUID(); } catch (e) { return "d-" + Date.now() + "-" + Math.random().toString(16).slice(2); }
+}
+
+function boundaryError(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  return e;
+}
+
+/* ---------- disclosures ---------- */
+const revisions = new Map();   // purpose|caseId -> last disclosureRevision
+const approvals = new Map();   // requestId -> approved digest (the real record)
+const sent = new Set();        // requestIds already dispatched (one send per approval)
+const log = [];                // egress log for the UI (metadata only, no payload text)
+
+export async function createDisclosure({ purpose, payload, caseId = null, inputRevision = null }) {
+  const check = validatePayload(purpose, payload);
+  if (!check.ok) throw boundaryError("disclosure_invalid", "Disclosure rejected: " + check.errors.join("; "));
+  const clean = deepFreeze(JSON.parse(JSON.stringify(payload)));
+  const key = purpose + "|" + (caseId || "-");
+  const disclosureRevision = (revisions.get(key) || 0) + 1;
+  revisions.set(key, disclosureRevision);
+  return {
+    requestId: uid(),
+    purpose,
+    schemaVersion: SCHEMA_VERSION,
+    policyVersion: POLICY_VERSION,
+    caseId,
+    inputRevision,
+    disclosureRevision,
+    payload: clean,
+    contentDigest: await sha256Hex(canonical(clean)),
+    approvalState: "draft",
+    approvedBy: null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function approve(d, by) {
+  if (!d || !d.requestId) throw boundaryError("disclosure_invalid", "Nothing to approve.");
+  const check = validatePayload(d.purpose, d.payload);
+  if (!check.ok) throw boundaryError("disclosure_invalid", "Disclosure rejected: " + check.errors.join("; "));
+  const digest = await sha256Hex(canonical(d.payload));
+  if (digest !== d.contentDigest) throw boundaryError("disclosure_tampered", "The disclosure changed after it was prepared. Prepare it again.");
+  if (sent.has(d.requestId)) throw boundaryError("disclosure_used", "This disclosure was already sent. Prepare a new one.");
+  approvals.set(d.requestId, digest);
+  d.approvalState = "approved";
+  d.approvedBy = by || "user_click";
+  return d;
+}
+
+/** @returns {Promise<{ok: boolean, code?: string, reason?: string}>} */
+export async function verify(d, opts) {
+  if (!d || !d.requestId || !PURPOSES[d.purpose]) return { ok: false, code: "disclosure_missing", reason: "no disclosure" };
+  const check = validatePayload(d.purpose, d.payload);
+  if (!check.ok) return { ok: false, code: "disclosure_invalid", reason: check.errors.join("; ") };
+  const digest = await sha256Hex(canonical(d.payload));
+  if (digest !== d.contentDigest) return { ok: false, code: "disclosure_tampered", reason: "the content changed after it was prepared (digest mismatch)" };
+  if (sent.has(d.requestId)) return { ok: false, code: "disclosure_used", reason: "this approval was already used for one send; approve again" };
+  const approved = approvals.get(d.requestId);
+  if (!approved) return { ok: false, code: "disclosure_unapproved", reason: "it has not been approved" };
+  if (approved !== digest) return { ok: false, code: "disclosure_stale", reason: "the approval was for different content" };
+  const current = opts && opts.currentInputRevision;
+  if (d.caseId && current != null && d.inputRevision !== current) {
+    return { ok: false, code: "disclosure_stale", reason: "the case changed after approval (approved rev " + d.inputRevision + ", now rev " + current + ")" };
+  }
+  return { ok: true };
+}
+
+export function isApproved(d) { return !!(d && approvals.get(d.requestId) === d.contentDigest && !sent.has(d.requestId)); }
+
+export function markSent(d, meta) {
+  sent.add(d.requestId);
+  approvals.delete(d.requestId);
+  d.approvalState = "sent";
+  log.push(Object.assign({ requestId: d.requestId, purpose: d.purpose, digest: d.contentDigest,
+    disclosureRevision: d.disclosureRevision, caseId: d.caseId, at: new Date().toISOString() }, meta || {}));
+  if (log.length > 50) log.shift();
+}
+
+export function egressLog() { return log.slice(); }
+
+/* ---------- serializer: cloud text from allowlisted fields only ---------- */
+export function serialize(d) {
+  const p = d.payload;
+  if (d.purpose === "chat") {
+    const notes = (p.notes || []).length ? p.notes.map((n, i) => (i + 1) + ". " + n).join("\n") : "(no relevant notes)";
+    const tasks = (p.tasks || []).length ? p.tasks.join("\n") : "(no open tasks)";
+    const hist = (p.history || []).map((t) => "User: " + t.user + "\nAION: " + t.assistant).join("\n");
+    return p.instructions + "\n\nNOTES:\n" + notes + "\n\nTASKS:\n" + tasks +
+      (hist ? "\n\nRECENT CONVERSATION:\n" + hist : "") + "\n\nUser: " + p.message + "\nAION:";
+  }
+  if (d.purpose === "case_research") {
+    const passages = (p.shared_passages || []).map((x) => "[" + x.id + "] " + x.text).join("\n") || "(none shared)";
+    const srcs = (p.public_sources || []).map((s) => "[" + s.id + "] " + s.title + "\n" + s.text).join("\n\n") || "(none)";
+    const reqs = (p.shareable_requirements || []).map((r) => "- " + r).join("\n") || "(none stated)";
+    return p.instructions + "\n\nQUESTION:\n" + p.question + "\n\nSHARED PROPOSAL PASSAGES:\n" + passages +
+      "\n\nPUBLIC SOURCES:\n" + srcs + "\n\nSTATED REQUIREMENTS:\n" + reqs;
+  }
+  throw boundaryError("disclosure_invalid", "No serializer for purpose " + d.purpose);
+}
+
+/* ---------- private-value registry (last line of defence) ---------- */
+const registry = new Map();   // kind -> Set(normalised values)
+const norm = (s) => String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim();
+const MIN_LEN = 4;
+
+const MIN_FRAGMENT = 16;
+/** Replace the registered values of one kind (e.g. "task_title"). Each value
+ * is registered whole AND sentence by sentence (16+ characters), so copying
+ * one sentence of a private note is caught, not just the whole note. */
+export function setPrivate(kind, values) {
+  const set = new Set();
+  (values || []).forEach((v) => {
+    const n = norm(v);
+    if (n.length >= MIN_LEN) set.add(n);
+    n.split(/[.!?;\n]+/).forEach((f) => { const t = f.trim(); if (t.length >= MIN_FRAGMENT && t !== n) set.add(t); });
+  });
+  registry.set(kind, set);
+}
+export function clearPrivate(kind) { if (kind) registry.delete(kind); else registry.clear(); }
+export function privateCounts() {
+  const out = {};
+  registry.forEach((set, kind) => { out[kind] = set.size; });
+  return out;
+}
+/** @returns {{kind: string, preview: string}[]} registered values found in text */
+export function scanPrivate(text) {
+  const t = norm(text);
+  const hits = [];
+  registry.forEach((set, kind) => {
+    set.forEach((v) => { if (t.includes(v)) hits.push({ kind, preview: v.slice(0, 24) + (v.length > 24 ? "..." : "") }); });
+  });
+  return hits;
+}
+
+/* ---------- outbound monitor (evidence for the leak test) ---------- */
+/* Records the body of every request to the Firebase AI endpoint, in memory
+ * only (never stored), so the leak test can inspect what really left. */
+const outbound = [];
+let monitorInstalled = false;
+export function installOutboundMonitor() {
+  if (monitorInstalled || typeof window === "undefined" || typeof window.fetch !== "function") return;
+  monitorInstalled = true;
+  const prev = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === "string" ? input : input && input.url;
+      if (url && /firebasevertexai\.googleapis\.com|generativelanguage\.googleapis\.com/.test(url)) {
+        const body = init && typeof init.body === "string" ? init.body : "";
+        outbound.push({ at: Date.now(), url: String(url).replace(/\?.*$/, ""), bytes: body.length, body });
+        if (outbound.length > 40) outbound.shift();
+      }
+    } catch (e) { /* monitoring must never break a request */ }
+    return prev.apply(this, arguments);
+  };
+}
+export function outboundSince(ts) { return outbound.filter((o) => o.at >= (ts || 0)); }

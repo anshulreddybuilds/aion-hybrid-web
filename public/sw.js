@@ -11,7 +11,7 @@
  * with no network. In standalone mode /api/* is answered inside the page, not
  * by the network, so Offline Demo Mode works with on-device Gemini Nano.
  */
-const CACHE = "aion-hybrid-shell-v7";
+const CACHE = "aion-hybrid-shell-v8";
 
 /* hybrid-v2 privacy rule: this worker only ever caches the PUBLIC app shell.
  * It never stores private data, prompts or AI responses:
@@ -34,6 +34,7 @@ const SHELL = [
   "/style.css",
   "/app.js",
   "/standalone.js",
+  "/case.js",
   "/fonts.css",
   "/vendor/chart.umd.min.js",
   "/fonts/geist-latin-400-normal.woff2",

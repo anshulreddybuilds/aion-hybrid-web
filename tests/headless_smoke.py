@@ -205,7 +205,8 @@ with sync_playwright() as p:
     ok("v2: cloud prompt uses task placeholders", "[TASK_1]" in b1 and "[PROJECT_" in b1)
     ok("v2: cloud prompt has no email address", "alex.runner@example.com" not in b1 and "[email]" in b1)
     rep = pg3.locator(".chat-msg.assistant").last.inner_text()
-    ok("v2: reply shows real names (unsealed locally)", "Next up:" in rep and "[TASK_" not in rep and "[PROJECT_" not in rep and "Hackathon submission" in rep, rep[:200])
+    real = pg3.evaluate("window.AionStandalone.boundary.unseal('[TASK_1]|[PROJECT_1]')").split("|")
+    ok("v2: reply shows real names (unsealed locally)", "Next up:" in rep and "[TASK_" not in rep and "[PROJECT_" not in rep and real[0]!="[TASK_1]" and real[0] in rep and real[1] in rep, (real, rep[:200]))
     badge3 = pg3.locator(".ai-badge").last
     ok("v2: telemetry split on badge", badge3.get_attribute("data-requested-mode")=="prefer_in_cloud" and badge3.get_attribute("data-actual-source")=="in_cloud" and badge3.get_attribute("data-source-verified") in ("true","false"), (badge3.get_attribute("data-requested-mode"), badge3.get_attribute("data-actual-source"), badge3.get_attribute("data-source-verified")))
     ok("v2: contributors shown", "local code" in pg3.locator(".ai-badge-sub").last.inner_text() and "cloud AI" in pg3.locator(".ai-badge-sub").last.inner_text(), pg3.locator(".ai-badge-sub").last.inner_text())
@@ -278,6 +279,81 @@ with sync_playwright() as p:
         if path=="/mobile.html":
             ok("mobile shows app (no token gate)", pg.is_visible("#shell") or not pg.is_visible("#gate"), "")
             print("   mobile text:", pg.inner_text("body")[:160].replace("\n"," | "))
+    # ================= hybrid-v2 Packet 2: private case + disclosure boundary =================
+    pg4 = ctx.new_page(); b4=[]
+    def vertex4(route):
+        req=route.request
+        if req.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
+        b4.append(req.post_data or "")
+        c={"candidates":[{"content":{"role":"model","parts":[{"text":"Provisional: the supplier looks reasonable on the shared passages [P1][S1]. Clarify warranty conditions."}]},"finishReason":"STOP"}]}
+        return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body="data: "+json.dumps(c)+"\r\n\r\n")
+    pg4.route("**/firebasevertexai.googleapis.com/**", vertex4)
+    pg4.goto(f"http://127.0.0.1:{PORT}/index.html#case")
+    pg4.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready", timeout=15000)
+    pg4.wait_for_function("document.getElementById('caseDisclosureText') && document.getElementById('caseDisclosureText').textContent.length>50", timeout=15000)
+    PRIVATE = ["installation of the LED wall", "3,85,000", "4,00,000", "Leadership will not accept", "2026-12-11"]
+    ok("p2: Case tab visible in nav", pg4.is_visible('a[data-view="case"]'))
+    ok("p2: case shows P1..P7 with ids", pg4.locator(".case-para").count()==7 and pg4.inner_text('.case-para[data-pid="P5"] .case-pid')=="P5")
+    dt = pg4.inner_text("#caseDisclosureText")
+    ok("p2: preview excludes unshared passages + private constraints", all(x not in dt for x in PRIVATE), [x for x in PRIVATE if x in dt])
+    ok("p2: preview includes shared passages + public sources", "[P1]" in dt and "[P7]" in dt and "[S1]" in dt and "[S2]" in dt and "[P5]" not in dt)
+    ok("p2: not approved by default -> send disabled", pg4.is_disabled("#caseSendBtn") and "not approved" in pg4.inner_text("#caseApprovalChip").lower())
+    pg4.click("#caseApproveBtn"); pg4.wait_for_timeout(300)
+    ok("p2: approve binds to revision + fingerprint", "approved for case revision" in pg4.inner_text("#caseApprovalChip").lower() and not pg4.is_disabled("#caseSendBtn"), pg4.inner_text("#caseApprovalChip"))
+    pg4.focus('[data-ptext="P1"]'); pg4.keyboard.press("End"); pg4.keyboard.type("!"); pg4.wait_for_timeout(1300)
+    chip = pg4.inner_text("#caseApprovalChip")
+    ok("p2: 1-character edit makes the approval stale", "stale" in chip.lower() and pg4.is_disabled("#caseSendBtn"), chip)
+    stale = pg4.evaluate("""(async () => { const A = window.AionStandalone.caseApi, E = window.AionHybrid.egress;
+        const prep = await A.prepareDisclosure(null); await E.approve(prep.disclosure, 'test');
+        await A.update(c => { c.privateConstraints.confidentialNote += '.'; });
+        return A.send(prep.disclosure).then(() => 'SENT', e => e.code + '|' + e.message); })()""")
+    ok("p2: approved disclosure refused after any case edit (stale revision)", str(stale).startswith("disclosure_stale|Refused"), stale)
+    unk = pg4.evaluate("""window.AionHybrid.egress.createDisclosure({purpose:'case_research', payload:{instructions:'x', question:'y', budget:'Rs 4,00,000'}})
+        .then(() => 'CREATED', e => e.code + '|' + e.message)""")
+    ok("p2: unknown disclosure field rejected", str(unk).startswith("disclosure_invalid") and 'unknown field "budget"' in str(unk), unk)
+    fake = pg4.evaluate("""(async () => { const E = window.AionHybrid.egress;
+        const d = await E.createDisclosure({purpose:'chat', payload:{instructions:'x', message:'hello'}});
+        d.approvalState = 'approved'; d.approvedBy = 'user_click';
+        return window.AionHybrid.generate(null, null, {mode:'prefer_in_cloud', disclosure:d}).then(() => 'SENT', e => e.code + '|' + e.message); })()""")
+    ok("p2: self-declared approval refused", str(fake).startswith("disclosure_unapproved"), fake)
+    gate = pg4.evaluate("""(async () => { const E = window.AionHybrid.egress; await window.AionStandalone.caseApi.syncPrivateRegistry();
+        const d = await E.createDisclosure({purpose:'chat', payload:{instructions:'x', message:'Note: Leadership will not accept another self-install.'}});
+        await E.approve(d, 'test');
+        return window.AionHybrid.generate(null, null, {mode:'prefer_in_cloud', disclosure:d}).then(() => 'SENT', e => e.code + '|' + e.message); })()""")
+    ok("p2: private value in an approved disclosure is blocked by the last-line scan", str(gate).startswith("private_value_blocked"), gate)
+    n0 = len(b4)
+    pg4.evaluate("window.AionCase.reload()"); pg4.wait_for_timeout(800)
+    pg4.click("#caseApproveBtn"); pg4.wait_for_timeout(300); pg4.click("#caseSendBtn")
+    pg4.wait_for_selector("#caseReplyText, #caseResultError", timeout=20000); pg4.wait_for_timeout(300)
+    sent_body = b4[-1] if len(b4) > n0 else ""
+    ok("p2: approved send reaches cloud (only_in_cloud) and shows reply", pg4.is_visible("#caseReplyText") and "in the cloud" in pg4.inner_text("#caseReplyMeta"), pg4.inner_text("#caseResult")[:160])
+    ok("p2: sent body has shared passages only", "[P1]" in sent_body and all(x not in sent_body for x in PRIVATE), [x for x in PRIVATE if x in sent_body])
+    ok("p2: approval is one-shot (used up after send)", "used up" in pg4.inner_text("#caseApprovalChip") and pg4.is_disabled("#caseSendBtn"))
+    resend = pg4.evaluate("window.AionStandalone.caseApi.send(window.AionCase.state.prep.disclosure).then(() => 'SENT', e => e.code)")
+    ok("p2: same disclosure cannot be sent twice", resend=="disclosure_used", resend)
+    n1 = len(b4)
+    pg4.click("#caseLeakBtn"); pg4.wait_for_selector("#caseLeakSummary, #caseLeakError", timeout=60000)
+    leak = pg4.evaluate("window.AionCase.state.leak")
+    ok("p2: leak test PASS, live, >=3 requests inspected", leak.get("pass") and leak.get("mode")=="live" and leak.get("inspected",0)>=3, {k:leak.get(k) for k in ("pass","mode","inspected","leaked")})
+    ok("p2: leak test positive control 6/6 present locally", leak.get("controlPresent")==6, leak.get("controlPresent"))
+    canaries=[r["canary"] for r in leak.get("results",[])]
+    pw_bodies=b4[n1:]
+    ok("p2: independent check - no canary in Playwright-captured request bodies", len(canaries)==6 and len(pw_bodies)>=3 and not any(c in bb for c in canaries for bb in pw_bodies), len(pw_bodies))
+    left = pg4.evaluate("""Promise.all([window.AionStandalone.caseApi.load()]).then(() => new Promise(r => { const q = indexedDB.open('aion-hybrid-demo'); q.onsuccess = () => {
+        const db = q.result; const out = []; const tx = db.transaction(['tasks','memories'], 'readonly');
+        tx.objectStore('tasks').getAll().onsuccess = e => e.target.result.forEach(t => { if (String(t.id).startsWith('leaktest')) out.push(t.id); });
+        tx.objectStore('memories').getAll().onsuccess = e => e.target.result.forEach(m => { if (String(m.id).startsWith('leaktest')) out.push(m.id); });
+        tx.oncomplete = () => r(out); }; q.onerror = () => r(['open-failed']); }))""")
+    ok("p2: leak test removed everything it planted", left==[], left)
+    ok("p2: Focus wording no longer cites private AION docs", "docs/" not in pg4.inner_text('section[data-view="focus"] .view-head'))
+    ok("p2: hidden Create tab still hidden", not pg4.is_visible('a[data-view="create"]'))
+    pg4.evaluate("window.AionStandalone.caseApi.update(c => { c.question = 'edited before reset'; })"); pg4.wait_for_timeout(300)
+    rev_before = pg4.evaluate("window.AionStandalone.caseApi.load().then(c => c.inputRevision)")
+    pg4.evaluate("window.AionStandalone.resetDemo()")
+    pg4.wait_for_timeout(1500); pg4.wait_for_function("window.AionStandalone && window.AionStandalone.caseApi", timeout=15000)
+    after = pg4.evaluate("window.AionStandalone.caseApi.load().then(c => [c.inputRevision, c.question.slice(0, 20)])")
+    ok("p2: resetDemo() wipes the case", rev_before > 1 and after[0]==1 and after[1].startswith("Using only the"), (rev_before, after))
+    pg4.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]
     b.close()

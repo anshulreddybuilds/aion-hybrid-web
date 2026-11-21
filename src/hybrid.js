@@ -21,6 +21,12 @@
 import { initializeApp } from "firebase/app";
 import { initializeAppCheck, getToken, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode } from "firebase/ai";
+import * as egress from "./egress.js";
+import * as contracts from "./contracts.js";
+
+/* Record every request body sent to the Firebase AI endpoint (memory only),
+ * installed before the SDK makes any call. Used by the leak test. */
+egress.installOutboundMonitor();
 
 const firebaseConfig = {
   apiKey: "AIzaSyDHK53_j09cnCJfGhtdjleUBn654JJe2xM",
@@ -58,6 +64,9 @@ const MODES = {
   prefer_on_device: InferenceMode.PREFER_ON_DEVICE,
   only_on_device: InferenceMode.ONLY_ON_DEVICE,
   prefer_in_cloud: InferenceMode.PREFER_IN_CLOUD,
+  /* Not in the dropdown: used by flows that must run in the cloud and must
+   * never fall back to the device (case research, Packet 2+). */
+  only_in_cloud: InferenceMode.ONLY_IN_CLOUD,
 };
 
 /* Shared, read-only-ish state other scripts (standalone.js) look at. */
@@ -269,6 +278,7 @@ const LOCAL_TIMEOUT_MS = 120000;
 function expectedSource(modeKey) {
   if (modeKey === "only_on_device") return SOURCE.on_device;
   if (modeKey === "prefer_on_device") return state.nano === "ready" ? SOURCE.on_device : SOURCE.in_cloud;
+  if (modeKey === "only_in_cloud") return SOURCE.in_cloud;
   return navigator.onLine === false ? SOURCE.on_device : SOURCE.in_cloud;
 }
 
@@ -323,18 +333,40 @@ function streamWithWatchdog(model, prompt, onChunk, limitMs, label) {
   });
 }
 
-/* opts (optional, added on hybrid-v2):
- *   mode   - the route the caller built its prompt for. Used instead of the
- *            current dropdown value so the route cannot change mid-request.
- *   sealed - false means "this prompt holds raw private context". Such a
- *            prompt is refused on any route that can reach the cloud. */
+/* opts (hybrid-v2):
+ *   mode       - the route the caller prepared for. Used instead of the
+ *                current dropdown value, so the route cannot change mid-request.
+ *   disclosure - REQUIRED on every route that can reach the cloud. Must be an
+ *                approved, unchanged, unused Disclosure (see egress.js). The
+ *                cloud text is built here from its allowlisted fields; the
+ *                `prompt` argument is ignored on those routes.
+ *   currentInputRevision - for case disclosures: the case revision right now.
+ * Only On-Device takes a plain prompt: nothing leaves this browser there. */
+function refused(code, why) {
+  const err = new Error("Refused: " + why + " Nothing was sent.");
+  err.code = code || "unsealed_refused";
+  return err;
+}
+
 async function generate(prompt, onChunk, opts) {
   const modeKey = opts && MODES[opts.mode] ? opts.mode : state.mode;
-  if (opts && opts.sealed === false && modeKey !== "only_on_device") {
-    const err = new Error("Refused: this prompt contains unsealed private context and the route (" +
-      modeKey.replace(/_/g, " ") + ") can reach the cloud. Nothing was sent.");
-    err.code = "unsealed_refused";
-    throw err;
+  let disclosure = null;
+  if (modeKey !== "only_on_device") {
+    disclosure = opts && opts.disclosure;
+    if (!disclosure) {
+      throw refused("unsealed_refused", "the route (" + modeKey.replace(/_/g, " ") +
+        ") can reach the cloud, and cloud requests accept only an approved disclosure, never a raw prompt.");
+    }
+    const v = await egress.verify(disclosure, { currentInputRevision: opts.currentInputRevision });
+    if (!v.ok) throw refused(v.code, "the disclosure is not valid to send: " + v.reason + ".");
+    const text = egress.serialize(disclosure);
+    const hits = egress.scanPrivate(text);
+    if (hits.length) {
+      const kinds = Array.from(new Set(hits.map((h) => h.kind))).join(", ");
+      throw refused("private_value_blocked", "the outbound text contains values registered as private (" + kinds + ").");
+    }
+    egress.markSent(disclosure, { route: modeKey, bytes: text.length });
+    prompt = text;
   }
   const attempts = [];
   /* On-device-only never touches the cloud model, so there is nothing to retry. */
@@ -367,6 +399,8 @@ async function generate(prompt, onChunk, opts) {
         firstChunkMs: run.firstChunkMs,
         mode: modeKey,
         requested_mode: modeKey,
+        disclosure: disclosure ? { requestId: disclosure.requestId, digest: disclosure.contentDigest,
+          purpose: disclosure.purpose, bytes: prompt.length } : null,
         actual_source: source,
         source_verified: sourceVerified,
         model: source === SOURCE.on_device ? "Gemini Nano" : cloudModel,
@@ -530,6 +564,15 @@ function boot() {
      * seal private context whenever this is true (PREFER_* modes may go either
      * way, so they count as cloud-reachable). */
     mayReachCloud: (modeKey) => (modeKey || state.mode) !== "only_on_device",
+    /* The disclosure boundary (Packet 2). */
+    egress: {
+      createDisclosure: egress.createDisclosure, approve: egress.approve, verify: egress.verify,
+      isApproved: egress.isApproved, serialize: egress.serialize, sha256Hex: egress.sha256Hex,
+      setPrivate: egress.setPrivate, clearPrivate: egress.clearPrivate, privateCounts: egress.privateCounts,
+      scanPrivate: egress.scanPrivate, outboundSince: egress.outboundSince, log: egress.egressLog,
+    },
+    contracts: { PURPOSES: contracts.PURPOSES, validatePayload: contracts.validatePayload,
+      validateCase: contracts.validateCase, PROPOSAL_OPERATIONS: contracts.PROPOSAL_OPERATIONS },
     timeouts: { cloudMs: CLOUD_TIMEOUT_MS, localMs: LOCAL_TIMEOUT_MS },
   };
   if (window.__resolveAionHybrid) window.__resolveAionHybrid(window.AionHybrid);

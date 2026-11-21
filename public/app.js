@@ -2241,6 +2241,9 @@ function attachAiBadge(bubble, meta) {
     bits.push(meta.sealed_items + " private item" + (meta.sealed_items === 1 ? "" : "s") + " sent as placeholders, names restored here");
   }
   if (who.length) bits.push("By: " + who.join(" + "));
+  if (meta.disclosure && meta.disclosure.digest) {
+    bits.push("Sent as disclosure " + String(meta.disclosure.digest).slice(0, 8) + "\u2026 (" + meta.disclosure.bytes + " characters)");
+  }
   const sub = document.createElement("span");
   sub.className = "ai-badge-sub";
   sub.textContent = bits.join(" \u00B7 ");

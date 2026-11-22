@@ -166,11 +166,31 @@
     { name: "API key or token", re: /\b(?:AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{12,})\b/g },
     { name: "password or secret", re: /\b(?:password|passcode|passwd|pwd|pin|secret|api[ _-]?key|token)\b\s*(?:is|=|:)\s*\S+/gi },
     { name: "government ID number", re: /\b(?:\d{3}-\d{2}-\d{4}|\d{4}\s\d{4}\s\d{4}|[A-Z]{5}\d{4}[A-Z])\b/g },
+    /* Aadhaar in any spacing (12 digits, first 2-9), confirmed by its Verhoeff
+       checksum so ordinary 12-digit numbers are not blocked. */
+    { name: "Aadhaar number", re: /\b[2-9]\d{3}[ -]?\d{4}[ -]?\d{4}\b/g,
+      test: function (m) { return verhoeffOk(m.replace(/\D/g, "")); } },
+    /* A bank account number written next to its label (9-18 digits). */
+    { name: "bank account number", re: /\b(?:a\/c|acct|account)(?:\s*(?:no|number|num))?\.?\s*[:#-]?\s*\d[\d -]{7,20}\d\b/gi },
   ];
   var REDACT_RULES = [
     { name: "email address", re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, token: "[email]" },
+    /* UPI ID: name@handle with no dot after the @ (an email has one). */
+    { name: "UPI ID", re: /\b[A-Za-z0-9._-]{2,256}@(?:ok)?[A-Za-z]{2,64}\b(?!\.[A-Za-z])/g, token: "[upi]" },
     { name: "phone number", re: /(?:\+\d{1,3}[ -]?)?(?:\(\d{2,4}\)[ -]?)?\d{3,5}[ -]\d{3,5}(?:[ -]\d{2,5})?|\+\d{8,14}\b/g, token: "[phone]" },
   ];
+
+  /* Verhoeff checksum (used by Aadhaar). */
+  var VD = [[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],[3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],
+            [5,9,8,7,6,0,4,3,2,1],[6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],[9,8,7,6,5,4,3,2,1,0]];
+  var VP = [[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],[8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],
+            [4,2,8,6,5,7,3,9,0,1],[2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]];
+  function verhoeffOk(num) {
+    if (!/^\d{12}$/.test(num)) return false;
+    var c = 0, d = num.split("").reverse();
+    for (var i = 0; i < d.length; i++) c = VD[c][VP[i % 8][+d[i]]];
+    return c === 0;
+  }
 
   function privacyCheck(text) {
     var src = String(text == null ? "" : text);
@@ -454,6 +474,26 @@
     return store.put("tasks", row).then(function () { return logEvent("task.approved", "planner"); })
       .then(function () { return row; });
   }
+
+  /* One approval per proposal, for exactly the text that was shown.
+   * - A second approval (double click, a second tab, the phone page) gets 409
+   *   instead of a second task or note.
+   * - If the proposal's text changed after it was shown (edited elsewhere),
+   *   the old approval is refused and must be given again. */
+  var inFlight = {};
+  function guardApproval(id, shownText) {
+    if (!id) return Promise.resolve();
+    if (inFlight[id]) { var e0 = new Error("Already being saved - nothing was saved twice."); e0.status = 409; return Promise.reject(e0); }
+    inFlight[id] = true;
+    return store.get("proposals", id).then(function (p) {
+      var fail = function (msg) { delete inFlight[id]; var e = new Error(msg); e.status = 409; throw e; };
+      if (!p) return;
+      if (p.status !== "pending") fail("Already answered - nothing was saved twice.");
+      if (shownText != null && String(shownText) !== String(p.content))
+        fail("This proposal changed after you saw it. Review the new text and approve again.");
+    });
+  }
+  function releaseApproval(id) { if (id) delete inFlight[id]; }
 
   function resolveProposal(id, status, extra) {
     return store.get("proposals", id).then(function (p) {
@@ -934,15 +974,26 @@
   }
 
   /* The ONLY fields of a case that can reach a disclosure. */
+  /* Secrets and ID numbers are cut, contact details and UPI IDs redacted, in
+     every Case field that can be shared - the same rules chat uses. The
+     preview is built from this result, so it is exactly what would be sent. */
+  function filterSecrets(text) {
+    var out = String(text == null ? "" : text);
+    BLOCK_RULES.forEach(function (rule) {
+      out = out.replace(rule.re, function (m) { return !rule.test || rule.test(m) ? "[withheld secret]" : m; });
+    });
+    REDACT_RULES.forEach(function (rule) { out = out.replace(rule.re, rule.token); });
+    return out;
+  }
   function casePayload(c, question) {
     return {
       instructions: CASE_INSTRUCTIONS,
-      question: String(question == null ? c.question : question).slice(0, 1000),
+      question: filterSecrets(String(question == null ? c.question : question)).slice(0, 1000),
       shared_passages: c.paragraphs.filter(function (p) { return p.shared; })
-        .map(function (p) { return { id: p.id, text: String(p.text).slice(0, 1500) }; }),
-      public_sources: c.publicSources.map(function (s) { return { id: s.id, title: s.title, text: s.text }; }),
+        .map(function (p) { return { id: p.id, text: filterSecrets(p.text).slice(0, 1500) }; }),
+      public_sources: c.publicSources.map(function (s) { return { id: s.id, title: s.title, text: filterSecrets(s.text) }; }),
       shareable_requirements: (c.shareableRequirements || [])
-        .map(function (r) { return String(r).trim(); }).filter(Boolean).slice(0, 12),
+        .map(function (r) { return filterSecrets(String(r).trim()); }).filter(Boolean).slice(0, 12),
     };
   }
 
@@ -1479,14 +1530,14 @@
     if (method === "POST") {
       if (path === "/api/chat") return handleChat(body).then(envelope);
       if (path === "/api/memory/approve") {
-        return saveMemory(body).then(function (row) {
+        return guardApproval(body.proposal_id, body.content).then(function () { return saveMemory(body); }).then(function (row) {
           return (body.proposal_id ? resolveProposal(body.proposal_id, "approved") : null).then(function () { return envelope({ id: row.id }); });
-        });
+        }).finally(function () { releaseApproval(body.proposal_id); });
       }
       if (path === "/api/tasks/approve") {
-        return saveTask(body).then(function (row) {
+        return guardApproval(body.proposal_id, body.title || body.content).then(function () { return saveTask(body); }).then(function (row) {
           return (body.proposal_id ? resolveProposal(body.proposal_id, "approved") : null).then(function () { return envelope({ id: row.id }); });
-        });
+        }).finally(function () { releaseApproval(body.proposal_id); });
       }
       if (path === "/api/proposals/reject") {
         return resolveProposal(body.proposal_id, "rejected").then(function () { return logEvent("proposal.rejected", "approvals"); })
@@ -1507,10 +1558,13 @@
           if (!p) { var e = new Error("No such request."); e.status = 404; throw e; }
           if (p.status !== "pending") { var e2 = new Error("Already answered."); e2.status = 409; throw e2; }
           if (act === "deny") return resolveProposal(id, "rejected").then(function () { return envelope(approvalRecord(p)); });
+          if (inFlight[id]) { var e3 = new Error("Already being saved - nothing was saved twice."); e3.status = 409; throw e3; }
+          inFlight[id] = true;
           var save = p.kind === "task"
             ? saveTask({ title: p.content, proposal_id: id })
             : saveMemory({ content: p.content, type: p.type, importance: p.importance, tags: p.tags, domain: "owner", sensitivity: "internal" });
-          return save.then(function () { return resolveProposal(id, "approved"); }).then(function () { return envelope(approvalRecord(p)); });
+          return save.then(function () { return resolveProposal(id, "approved"); }).then(function () { return envelope(approvalRecord(p)); })
+            .finally(function () { delete inFlight[id]; });
         });
       }
       if (path === "/api/command" || path === "/api/transcribe" || path === "/api/chat/audio") {
@@ -1559,6 +1613,21 @@
       load: function () { return loadCase(); },
       update: function (mutate) { return updateCase(mutate); },
       reset: function () { return resetCase(); },
+      /* Replace the proposal with an imported quote (read on this device).
+         Private requirements, shareable requirements and the question stay;
+         every imported passage starts PRIVATE (not shared). */
+      importQuote: function (q) {
+        return updateCase(function (c) {
+          c.sample = false;
+          c.title = "Supplier evaluation - imported quote";
+          c.supplier = String(q.supplier || "Imported supplier").slice(0, 120);
+          c.paragraphs = (q.paragraphs || []).slice(0, 12).map(function (p, i) {
+            return { id: "P" + (i + 1), heading: String(p.heading || "Passage").slice(0, 60), shared: false, text: String(p.text || "").slice(0, 1400) };
+          });
+          c.publicSources = [];
+          c.importedBy = q.by || "text";
+        });
+      },
       prepareDisclosure: function (question) { return prepareCaseDisclosure(question); },
       send: function (d) { return sendCaseDisclosure(d); },
       leakTest: function (opts) { return leakTest(opts); },

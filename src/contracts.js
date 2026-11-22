@@ -92,6 +92,16 @@ function checkList(v, spec, where, errors, itemCheck) {
 
 /** Validate a disclosure payload against its purpose's allowlist.
  * @returns {{ok: boolean, errors: string[]}} */
+/* Images and binary blobs can never be part of a cloud disclosure, in any
+ * field: a data: URL, or a long unbroken base64 run. (Screenshots are read on
+ * the device; only text the user reviews can be shared.) */
+const BINARY_RE = /data:[a-z]+\/[a-z0-9.+-]+;base64,|[A-Za-z0-9+/]{300,}={0,2}/i;
+function findBinary(v, where, out) {
+  if (typeof v === "string") { if (BINARY_RE.test(v)) out.push(where + " contains image or binary data, which can never be sent to the cloud"); }
+  else if (Array.isArray(v)) v.forEach((x, i) => findBinary(x, where + "[" + i + "]", out));
+  else if (v && typeof v === "object") Object.keys(v).forEach((k) => findBinary(v[k], where + "." + k, out));
+}
+
 export function validatePayload(purpose, payload) {
   const errors = [];
   const def = PURPOSES[purpose];
@@ -125,6 +135,7 @@ export function validatePayload(purpose, payload) {
       }
     });
   });
+  if (isPlainObject(payload)) findBinary(payload, "payload", errors);
   return { ok: errors.length === 0, errors };
 }
 

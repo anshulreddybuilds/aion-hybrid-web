@@ -46,7 +46,7 @@
   var MONTHS = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
   function rupees(n) { return "Rs " + Math.round(n).toLocaleString("en-IN"); }
   function readAmount(text) {
-    var m = String(text || "").match(/(?:rs\.?|inr|\u20b9)\s*([\d][\d,]*(?:\.\d+)?)/i);
+    var m = String(text || "").match(/(?:\brs\b\.?|\binr\b|\u20b9)\s*([\d][\d,]*(?:\.\d+)?)/i);
     if (!m) return null;
     var n = parseFloat(m[1].replace(/,/g, ""));
     return isFinite(n) && n > 0 ? n : null;
@@ -83,7 +83,7 @@
     }
     for (var k = 0; k < ps.length; k++) {
       var u = ps[k].text || "";
-      if (/(installation|setup|set-up)[^.]*(is |are )?included|includes?[^.]*(installation|setup)|installed by/i.test(u)) return { state: "included", from: ps[k].id };
+      if (/(installation|setup|set-up)[^.]*(is |are )?included|includes?[^.]*(installation|setup)|installed by|(installation|setup|set-up)\s+(?:is\s+)?(?:done\s+|handled\s+|carried out\s+)?by\s+(?:our|the supplier|certified|brightline|its)/i.test(u)) return { state: "included", from: ps[k].id };
     }
     return { state: "unknown", from: null };
   }
@@ -95,7 +95,7 @@
     if (!isFinite(rate) || rate < 0 || rate > 50) rate = 18;
 
     /* 1. Budget */
-    var priceP = findPara(c, /price|cost|fee|commercial/i, /(rs\.?|inr|\u20b9)\s*\d/i);
+    var priceP = findPara(c, /price|cost|fee|commercial/i, /(\brs\b\.?|\binr\b|\u20b9)\s*\d/i);
     var quote = priceP ? readAmount(priceP.text) : null;
     var budget = readAmount(pc.maxBudget);
     if (!budget) {
@@ -175,6 +175,81 @@
     return m ? m[1].toLowerCase() : null;
   }
 
+  /* ---------------- quote intake ---------------- */
+  /* Text path: plain code sorts the quote's sentences into the passages the
+   * review reads (price, delivery, scope, warranty, cancellation). Image path:
+   * Gemini Nano reads the screenshot on this device and fills the same fields.
+   * Either way every passage starts PRIVATE; nothing is sent until you share
+   * a passage and approve the exact text. */
+  var BUCKETS = [
+    { key: "price", heading: "Price and payment", re: /(\brs\b\.?|\binr\b|\u20b9|\bprice|\bcost|\btotal\b|\bpayment|\badvance\b|\bgst\b|\btax)/i },
+    { key: "delivery", heading: "Delivery", re: /(deliver|dispatch|arriv|ship|lead time)/i },
+    { key: "scope", heading: "Scope and exclusions", re: /(install|setup|set-up|rigging|exclud|not included|includes|technician|scope)/i },
+    { key: "warranty", heading: "Warranty and support", re: /(warrant|guarantee|support|maintenance)/i },
+    { key: "cancellation", heading: "Cancellation", re: /(cancel|refund|termination)/i },
+  ];
+  function quoteFromText(text) {
+    var lines = String(text || "").replace(/\r/g, "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+    var supplier = "";
+    if (lines.length && lines[0].length <= 60 && !/\d/.test(lines[0]) && !/[.:]$/.test(lines[0])) supplier = lines.shift();
+    var sentences = [];
+    lines.forEach(function (l) { l.split(/(?<=[.!?])\s+(?=[A-Z\u20b9])/).forEach(function (x) { if (x.trim()) sentences.push(x.trim()); }); });
+    var bins = { other: [] };
+    BUCKETS.forEach(function (b) { bins[b.key] = []; });
+    sentences.forEach(function (x) {
+      for (var i = 0; i < BUCKETS.length; i++) if (BUCKETS[i].re.test(x)) { bins[BUCKETS[i].key].push(x); return; }
+      bins.other.push(x);
+    });
+    return fieldsToQuote({ supplier: supplier, price: bins.price.join(" "), delivery: bins.delivery.join(" "), scope: bins.scope.join(" "),
+      warranty: bins.warranty.join(" "), cancellation: bins.cancellation.join(" "), other: bins.other.join(" ") }, "text");
+  }
+  function fieldsToQuote(f, by) {
+    var order = [["other", "Overview"]].concat(BUCKETS.map(function (b) { return [b.key, b.heading]; }));
+    var paragraphs = [];
+    order.forEach(function (o) { var t = String(f[o[0]] || "").trim(); if (t) paragraphs.push({ heading: o[1], text: t }); });
+    return { supplier: String(f.supplier || "").trim() || "Imported supplier", paragraphs: paragraphs, by: by };
+  }
+
+  function renderIntake(msg, tone) {
+    var box = el("caseIntakeStatus");
+    if (!box) return;
+    box.className = "case-intake-status" + (tone ? " is-" + tone : "");
+    box.textContent = msg || "";
+  }
+  function applyQuote(q, note) {
+    if (!q.paragraphs.length) { renderIntake("No quote details found. Check the text and try again.", "warn"); return Promise.resolve(); }
+    clearTimeout(saveTimer); pendingMutations = [];
+    if (st.prep && eg().isApproved(st.prep.disclosure)) st.lastApproval = { rev: st.prep.disclosure.inputRevision, digest: st.prep.disclosure.contentDigest };
+    return api().importQuote(q).then(function (c) {
+      st.c = c; st.result = null; st.cloudAt = null;
+      renderAll();
+      renderIntake(note, "ok");
+      return prepare();
+    });
+  }
+  function readPasted() {
+    var t = (el("caseIntakeText") || {}).value || "";
+    if (!t.trim()) { renderIntake("Paste the quote text first.", "warn"); return; }
+    var q = quoteFromText(t);
+    applyQuote(q, "Sorted into " + q.paragraphs.length + " passage" + (q.paragraphs.length === 1 ? "" : "s") +
+      " by plain code in this browser. All passages start private. Check them below.");
+  }
+  function readImage(file) {
+    var H = window.AionHybrid;
+    if (!H || !H.intake) { renderIntake("The on-device reader is not loaded yet.", "warn"); return; }
+    var before = eg().outboundSince ? eg().outboundSince(0).length : 0;
+    renderIntake("Gemini Nano is reading the image on this device… (the first read can take a minute on an 8 GB laptop)", "");
+    st.busy = "intake";
+    H.intake.readQuoteImage(file).then(function (r) {
+      var sent = eg().outboundSince ? eg().outboundSince(0).length - before : 0;
+      var q = fieldsToQuote(r.fields, "nano-image");
+      return applyQuote(q, "Read by Gemini Nano on this device in " + (r.latencyMs / 1000).toFixed(1) + " s from a " + r.image.width + "x" + r.image.height +
+        " image. Requests to the cloud while reading: " + sent + ". All passages start private. Check every field: the model can misread.");
+    }, function (e) {
+      renderIntake(String(e && e.message || e), "warn");
+    }).then(function () { st.busy = ""; });
+  }
+
   /* ---------------- state ---------------- */
   function approvalStatus() {
     var p = st.prep;
@@ -252,6 +327,17 @@
         '<div class="card-sub">Buyer: ' + esc(c.buyer) + ' · Supplier: ' + esc(c.supplier) +
         ' · Sample case — every name and number is fictional. Stored only in this browser.</div>' +
         '<div class="case-actions"><button type="button" class="pill hy-btn" id="caseResetBtn">RESET SAMPLE CASE</button></div>' +
+      '</section>' +
+      '<section class="card wide case-card" id="caseIntakeCard">' +
+        '<div class="card-head"><div class="card-title">Add a supplier quote</div></div>' +
+        '<div class="card-sub">Paste the quote text, or drop a PNG/JPEG screenshot. Text is sorted by plain code; an image is read by Gemini Nano on this device. ' +
+        'Neither is uploaded. This replaces the proposal below; your private requirements stay. RESET SAMPLE CASE brings the sample back.</div>' +
+        '<textarea class="case-ta" rows="3" id="caseIntakeText" placeholder="Paste a supplier quote here"></textarea>' +
+        '<div class="case-actions">' +
+          '<button type="button" class="pill hy-btn" id="caseIntakeTextBtn">SORT PASTED TEXT</button>' +
+          '<label class="pill hy-btn case-file-btn">READ SCREENSHOT ON DEVICE<input type="file" id="caseIntakeFile" accept="image/png,image/jpeg" hidden></label>' +
+        '</div>' +
+        '<div class="case-intake-status" id="caseIntakeStatus"></div>' +
       '</section>' +
       '<section class="card case-card">' +
         '<div class="card-title">Supplier proposal</div>' +
@@ -457,6 +543,20 @@
     bind("caseReqs", function (c, v) { c.shareableRequirements = v.split("\n").map(function (x) { return x.trim(); }).filter(Boolean); });
     bind("caseQuestion", function (c, v) { c.question = v; });
 
+    el("caseIntakeTextBtn").addEventListener("click", function () { if (!st.busy) readPasted(); });
+    el("caseIntakeFile").addEventListener("change", function (ev) {
+      var f = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (f && !st.busy) readImage(f);
+    });
+    var drop = el("caseIntakeCard");
+    drop.addEventListener("dragover", function (ev) { ev.preventDefault(); drop.classList.add("is-drop"); });
+    drop.addEventListener("dragleave", function () { drop.classList.remove("is-drop"); });
+    drop.addEventListener("drop", function (ev) {
+      ev.preventDefault(); drop.classList.remove("is-drop");
+      var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+      if (f && !st.busy) readImage(f);
+    });
     el("caseApproveBtn").addEventListener("click", function () {
       if (!st.prep) return;
       st.busy = "approve";
@@ -508,6 +608,8 @@
     reconcile: reconcile,           /* pure: (case) -> verdict + checks; no network */
     cloudVerdict: cloudVerdict,
     compareVerdicts: compareVerdicts,
+    quoteFromText: quoteFromText,    /* pure: pasted text -> passages */
+    readImage: function (f) { return readImage(f); },
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },
   };

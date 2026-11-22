@@ -536,6 +536,78 @@ with sync_playwright() as p:
     ok("p4: when cloud AND the Nano fallback fail, the message names both (InvalidStateError, not code 11)", "InvalidStateError" in fb2 and "fallback" in fb2 and "did not answer in time" in fb2, fb2[:200])
     ok("p4: 403 after a failed App Check warm-up is reported as App Check, not as an API-key problem", "App Check" in ach2[0] and ach2[1]=="app_check" and ach2[2]=="permission", [ach2[0][:120], ach2[1], ach2[2]])
     pg5.close()
+    # ================= Batch 1 (22 Nov night): quote intake, ID protection, safe approvals =================
+    pg6 = ctx.new_page(); b6=[]
+    def vertex6(route):
+        req=route.request
+        if req.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
+        b6.append(req.post_data or "")
+        c={"candidates":[{"content":{"role":"model","parts":[{"text":"VERDICT: caution\nOK"}]},"finishReason":"STOP"}]}
+        return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body="data: "+json.dumps(c)+"\r\n\r\n")
+    pg6.route("**/firebasevertexai.googleapis.com/**", vertex6)
+    # a fake multimodal Nano: answers quote JSON when the prompt carries an image
+    pg6.add_init_script("""(() => { const base = window.LanguageModel; window.__imgPrompts = 0;
+      window.LanguageModel = { availability: async (o) => base.availability(o), create: async (o) => { const s = await base.create(o); const p0 = s.prompt;
+        s.prompt = async (m, opts) => { if (JSON.stringify(m).includes('"image"')) { window.__imgPrompts++; return JSON.stringify({ supplier: 'Lumen AV (fictional)',
+          price: 'Total: Rs 4,10,000 plus GST.', delivery: 'Delivered on 12 December 2026.', scope: 'Installation not included; quoted separately.',
+          warranty: 'Standard warranty.', cancellation: 'No refunds within 10 days.', other: 'LED wall 5 x 3 m.' }); } return p0(m, opts); }; return s; } }; })();""")
+    pg6.goto(f"http://127.0.0.1:{PORT}/index.html#case")
+    pg6.wait_for_function("document.getElementById('caseDisclosureText') && document.getElementById('caseDisclosureText').textContent.length>50", timeout=20000)
+    pg6.wait_for_timeout(1500)
+    QUOTE = "Apex Stage Rentals\nQuote for LED wall 6x3 m and sound for 350 guests. Contact ravi.k@example.com, PAN ABCDE1234F.\nTotal price: Rs 3,20,000 including GST. 40% advance.\nDelivery and installation by our technicians on 10 December 2026 by 18:00.\nWarranty covers faults during the event.\nCancellation within 7 days: 50% charged."
+    pg6.fill("#caseIntakeText", QUOTE); pg6.click("#caseIntakeTextBtn"); pg6.wait_for_timeout(1500)
+    ok("b1: pasted quote sorted into private passages by plain code", "Sorted into 5 passages" in pg6.inner_text("#caseIntakeStatus") and pg6.locator(".case-para").count()==5 and pg6.locator(".case-para.is-shared").count()==0, pg6.inner_text("#caseIntakeStatus"))
+    ok("b1: imported quote is reviewed locally (fits: price, date and installation all read)", "Fits your private requirements" in pg6.inner_text("#caseVerdictChip"), pg6.inner_text("#caseReview")[:300])
+    ok("b1: nothing was sent while importing text", len(b6)==0, len(b6))
+    pg6.check('.case-para[data-pid="P1"] [data-share]'); pg6.wait_for_timeout(1500)
+    dtx = pg6.inner_text("#caseDisclosureText")
+    ok("b1: a shared passage has its PAN cut and email redacted before sending (Case tab secret filter)", "[P1]" in dtx and "ABCDE1234F" not in dtx and "ravi.k@example.com" not in dtx and "[withheld secret]" in dtx and "[email]" in dtx, dtx[-300:])
+    # image path (fake multimodal Nano)
+    nreq = len(b6)
+    pg6.evaluate("""(async () => { const c = document.createElement('canvas'); c.width = 320; c.height = 200; const g = c.getContext('2d');
+        g.fillStyle = '#fff'; g.fillRect(0,0,320,200); g.fillStyle = '#000'; g.fillText('Lumen AV quote', 10, 20);
+        const blob = await new Promise(r => c.toBlob(r, 'image/png')); window.AionCase.readImage(new File([blob], 'quote.png', { type: 'image/png' })); })()""")
+    pg6.wait_for_function("/Read by Gemini Nano|not ready|could not/.test(document.getElementById('caseIntakeStatus').textContent)", timeout=20000)
+    st6 = pg6.inner_text("#caseIntakeStatus")
+    ok("b1: screenshot read by Nano on the device, image never sent (0 cloud requests)", "Read by Gemini Nano on this device" in st6 and "while reading: 0" in st6 and len(b6)==nreq and pg6.evaluate("window.__imgPrompts")>=1, st6)
+    ok("b1: Nano's fields become private passages and the review flags them (over budget, late, no installation)", "Lumen AV" in pg6.inner_text("#caseRoot") and pg6.locator("#caseReview .case-check-row.is-fail").count()==3, pg6.inner_text("#caseReview")[:300])
+    rcp = pg6.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().filter(x => x.model === 'Gemini Nano (image)').slice(-1)[0]; return r ? [r.route, r.status, r.egressAudit.disclosureTier, r.egressAudit.bytesSent] : null; })()")
+    ok("b1: the image read gets a receipt: on-device, nothing sent", rcp==["on-device-nano","completed","local_only",0], rcp)
+    pg6.evaluate("window.AionHybridState.nano = 'unavailable'")
+    pg6.evaluate("""(async () => { const c = document.createElement('canvas'); c.width = 10; c.height = 10; const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+        window.AionCase.readImage(new File([blob], 'q.png', { type: 'image/png' })); })()""")
+    pg6.wait_for_timeout(800)
+    ok("b1: without Nano the image is NOT sent to the cloud; the user is told to paste text", "Paste the quote's text instead" in pg6.inner_text("#caseIntakeStatus") and len(b6)==nreq, pg6.inner_text("#caseIntakeStatus"))
+    pg6.evaluate("window.AionHybridState.nano = 'ready'")
+    binv = pg6.evaluate("""window.AionHybrid.contracts.validatePayload('case_research', { instructions: 'x', question: 'see data:image/png;base64,iVBORw0KGgo=' })""")
+    ok("b1: the disclosure contract refuses image data in any field", (not binv["ok"]) and any("image or binary" in e for e in binv["errors"]), binv["errors"])
+    # Indian identifiers
+    pv = pg6.evaluate("""[window.AionStandalone.privacy('My Aadhaar is 2345 6789 0124'), window.AionStandalone.privacy('Order number 234567890125'),
+        window.AionStandalone.privacy('Pay to ravi@okhdfcbank'), window.AionStandalone.privacy('Refund to A/c no 123456789012 IFSC HDFC0001234')].map(r => [r.status, r.text])""")
+    ok("b1: valid Aadhaar (checksum) is blocked; a 12-digit number with a wrong checksum is not", pv[0][0]=="blocked" and pv[1][0]!="blocked", pv[:2])
+    ok("b1: UPI ID is redacted; a labelled bank account number is blocked", pv[2][0]=="redacted" and "[upi]" in pv[2][1] and pv[3][0]=="blocked", pv[2:])
+    # safe approvals: one task per proposal, and stale text refused
+    ap = pg6.evaluate("""(async () => {
+        const ps = await window.AionStandalone.store.all('proposals'); const p = ps.find(x => x.status === 'pending' && x.kind === 'task');
+        if (!p) return 'no pending task proposal';
+        const n0 = (await window.AionStandalone.store.all('tasks')).length;
+        const post = (b) => fetch('/api/tasks/approve', { method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(b) }).then(r => r.status);
+        const codes = await Promise.all([post({ title: p.content, proposal_id: p.id }), post({ title: p.content, proposal_id: p.id })]);
+        const again = await post({ title: p.content, proposal_id: p.id });
+        const n1 = (await window.AionStandalone.store.all('tasks')).length;
+        return { codes: codes.sort(), again, added: n1 - n0 }; })()""")
+    ok("b1: two approvals at once create exactly one task; a later repeat is refused (409)", isinstance(ap, dict) and ap["codes"]==[200,409] and ap["again"]==409 and ap["added"]==1, ap)
+    stale = pg6.evaluate("""(async () => {
+        const id = 'prop-stale-test'; await window.AionStandalone.store.put('proposals', { id, kind: 'task', status: 'pending', content: 'Book the venue', created: new Date().toISOString() });
+        await fetch('/api/proposals/update', { method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({ proposal_id: id, content: 'Book the venue and the caterer' }) });
+        const n0 = (await window.AionStandalone.store.all('tasks')).length;
+        const r = await fetch('/api/tasks/approve', { method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({ title: 'Book the venue', proposal_id: id }) });
+        const n1 = (await window.AionStandalone.store.all('tasks')).length;
+        await window.AionStandalone.store.del ? window.AionStandalone.store.del('proposals', id) : null;
+        return { status: r.status, added: n1 - n0 }; })()""")
+    ok("b1: approving text that changed after it was shown is refused (409), nothing saved", stale=={"status":409,"added":0}, stale)
+    pg6.evaluate("window.AionStandalone.caseApi.reset()")
+    pg6.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]
     b.close()

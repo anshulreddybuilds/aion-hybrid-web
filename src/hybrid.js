@@ -485,6 +485,84 @@ async function plannerCloudCall(req) {
   }
 }
 
+/* ------------------------- quote intake: image -> Nano -------------------------
+ * Reads a PNG/JPEG supplier quote ON THIS DEVICE with Gemini Nano (multimodal,
+ * ONLY_ON_DEVICE). The image is redrawn on a canvas first (max 1600 px, JPEG),
+ * which also drops hidden metadata such as GPS location. There is NO cloud path
+ * here at all: if Nano is not ready, the caller is told so and the user can
+ * paste text instead. The image never enters a disclosure (contracts.js refuses
+ * image data in any cloud payload). */
+const QUOTE_FIELDS = ["supplier", "price", "delivery", "scope", "warranty", "cancellation", "other"];
+const QUOTE_SCHEMA = { type: "object", properties: Object.fromEntries(QUOTE_FIELDS.map((k) => [k, { type: "string" }])), required: QUOTE_FIELDS };
+const QUOTE_PROMPT = "Read this supplier quotation image. For each field copy the exact wording from the image, or use an empty string " +
+  "if the image does not say it. supplier: the company name. price: the total price with currency, and whether tax or GST is included. " +
+  "delivery: the delivery date and time. scope: what is included and excluded, especially installation and setup. warranty: warranty " +
+  "and support. cancellation: cancellation terms. other: anything else important. Do not invent anything.";
+const INTAKE_TIMEOUT_MS = 90000;
+
+async function imageToJpegBase64(file) {
+  if (!file || !/^image\/(png|jpeg)$/.test(file.type)) {
+    const e = new Error("Only PNG or JPEG images can be read on the device."); e.code = "unsupported_image"; throw e;
+  }
+  if (file.size > 12 * 1024 * 1024) { const e = new Error("That image is larger than 12 MB."); e.code = "image_too_large"; throw e; }
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.9));
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return { data: btoa(bin), width: w, height: h, bytes: buf.length };
+}
+
+async function readQuoteImage(file) {
+  const t0 = performance.now();
+  try {
+    if (state.nano !== "ready") {
+      const e = new Error("Gemini Nano is not ready in this browser, so the image cannot be read on this device. Paste the quote's text instead; it is not uploaded.");
+      e.code = "nano_unavailable"; throw e;
+    }
+    if (!ai) throw new Error("Firebase AI Logic is not initialised.");
+    const img = await imageToJpegBase64(file);
+    const model = getGenerativeModel(ai, {
+      mode: MODES.only_on_device,
+      onDeviceParams: {
+        createOptions: { expectedInputs: [{ type: "text", languages: ["en"] }, { type: "image" }], expectedOutputs: [{ type: "text", languages: ["en"] }] },
+        promptOptions: { responseConstraint: QUOTE_SCHEMA },
+      },
+      inCloudParams: { model: CLOUD_MODELS[0] },
+    });
+    const run = model.generateContent([{ text: QUOTE_PROMPT }, { inlineData: { mimeType: "image/jpeg", data: img.data } }]);
+    const stop = new Promise((_, reject) => setTimeout(() => {
+      const e = new Error("Gemini Nano did not finish reading the image within " + Math.round(INTAKE_TIMEOUT_MS / 1000) + " s (timeout).");
+      e.code = "timeout"; reject(e);
+    }, INTAKE_TIMEOUT_MS));
+    const result = await Promise.race([run, stop]);
+    let fields = {};
+    try { fields = JSON.parse(result.response.text()); } catch (e) { fields = {}; }
+    const clean = {};
+    QUOTE_FIELDS.forEach((k) => { clean[k] = typeof fields[k] === "string" ? fields[k].slice(0, 1400) : ""; });
+    if (!QUOTE_FIELDS.some((k) => clean[k].trim())) {
+      const e = new Error("Gemini Nano could not read any quote details from that image. Try a clearer screenshot, or paste the text."); e.code = "empty_read"; throw e;
+    }
+    state.nanoWarm = true;
+    const latencyMs = Math.round(performance.now() - t0);
+    const receipt = telemetry.recordReceipt({ route: "on-device-nano", status: "completed", model: "Gemini Nano (image)", requestedMode: "only_on_device",
+      latencyMs, egress: { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY }, contributors: { local_deterministic: true, local_ai: true } });
+    return { fields: clean, latencyMs, image: { width: img.width, height: img.height, bytes: img.bytes }, receipt };
+  } catch (err) {
+    try {
+      telemetry.recordReceipt({ route: "on-device-nano", status: err && err.code === "timeout" ? "timed_out" : "failed", model: "Gemini Nano (image)",
+        requestedMode: "only_on_device", latencyMs: Math.round(performance.now() - t0), egress: { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY },
+        errorCode: (err && err.code) || "intake_failed" });
+    } catch (e) { /* receipt is best-effort */ }
+    throw err;
+  }
+}
+
 /* Gemini Nano with a JSON response constraint (on-device plan fallback). */
 async function plannerLocalCall(prompt, jsonSchema, opts) {
   const limitMs = (opts && opts.timeoutMs) || LOCAL_TIMEOUT_MS;
@@ -644,6 +722,7 @@ function boot() {
     planner,
     telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt,
       evidenceFor, exportReceipts },
+    intake: { readQuoteImage, QUOTE_FIELDS },
     getMode: () => state.mode,
     setMode,
     setOfflineDemo,

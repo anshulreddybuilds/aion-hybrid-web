@@ -35,6 +35,8 @@ const SHELL = [
   "/app.js",
   "/standalone.js",
   "/case.js",
+  "/glass.css",
+  "/motion.js",
   "/fonts.css",
   "/vendor/chart.umd.min.js",
   "/fonts/geist-latin-400-normal.woff2",

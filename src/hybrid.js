@@ -371,7 +371,7 @@ function refused(code, why) {
   return err;
 }
 
-async function generate(prompt, onChunk, opts) {
+async function generate_(prompt, onChunk, opts) {
   const modeKey = opts && MODES[opts.mode] ? opts.mode : state.mode;
   let disclosure = null;
   if (modeKey !== "only_on_device") {
@@ -485,6 +485,30 @@ async function plannerCloudCall(req) {
   }
 }
 
+
+/* ---------------- busy signal for the motion layer ----------------
+ * While Gemini Nano may be working, decorative motion pauses so an 8 GB
+ * laptop keeps its memory and GPU for the model (motion.js listens). */
+let busyCount = 0;
+function busyMark(delta) {
+  busyCount = Math.max(0, busyCount + delta);
+  try { window.dispatchEvent(new CustomEvent("aion:busy", { detail: { count: busyCount } })); } catch (e) { /* ignore */ }
+}
+function mayUseDevice(opts) {
+  const m = (opts && opts.mode) || state.mode;
+  return m === "only_on_device" || m === "prefer_on_device" || state.offlineDemo;
+}
+async function withBusy(onDevice, fn) {
+  if (!onDevice) return fn();
+  busyMark(1);
+  try { return await fn(); } finally { busyMark(-1); }
+}
+function generate(prompt, onChunk, opts) { return withBusy(mayUseDevice(opts), () => generate_(prompt, onChunk, opts)); }
+function readQuoteImage(file) { return withBusy(true, () => readQuoteImage_(file)); }
+function localText(prompt, opts) { return withBusy(true, () => localText_(prompt, opts)); }
+function localJSON(prompt, schema, opts) { return withBusy(true, () => localJSON_(prompt, schema, opts)); }
+function plannerLocalCall(prompt, jsonSchema, opts) { return withBusy(true, () => plannerLocalCall_(prompt, jsonSchema, opts)); }
+
 /* ------------------------- quote intake: image -> Nano -------------------------
  * Reads a PNG/JPEG supplier quote ON THIS DEVICE with Gemini Nano (multimodal,
  * ONLY_ON_DEVICE). The image is redrawn on a canvas first (max 1600 px, JPEG),
@@ -520,7 +544,7 @@ async function imageToJpegBase64(file) {
   return { data: btoa(bin), width: w, height: h, bytes: buf.length };
 }
 
-async function readQuoteImage(file) {
+async function readQuoteImage_(file) {
   const t0 = performance.now();
   try {
     if (state.nano !== "ready") {
@@ -568,7 +592,7 @@ async function readQuoteImage(file) {
 /* Short on-device text jobs (explanations, wording). ONLY_ON_DEVICE: if Nano
  * is not ready this throws and the caller uses its plain-code text instead.
  * Each run gets a receipt that shows nothing was sent. */
-async function localText(prompt, opts) {
+async function localText_(prompt, opts) {
   const t0 = performance.now();
   const label = (opts && opts.label) || "Gemini Nano";
   try {
@@ -603,7 +627,7 @@ async function warmNano() {
 }
 
 /* On-device JSON job (structured output). ONLY_ON_DEVICE, with a receipt. */
-async function localJSON(prompt, schema, opts) {
+async function localJSON_(prompt, schema, opts) {
   const t0 = performance.now();
   const label = (opts && opts.label) || "Gemini Nano";
   const limitMs = (opts && opts.timeoutMs) || 60000;
@@ -632,7 +656,7 @@ async function localJSON(prompt, schema, opts) {
 }
 
 /* Gemini Nano with a JSON response constraint (on-device plan fallback). */
-async function plannerLocalCall(prompt, jsonSchema, opts) {
+async function plannerLocalCall_(prompt, jsonSchema, opts) {
   const limitMs = (opts && opts.timeoutMs) || LOCAL_TIMEOUT_MS;
   if (!ai) throw new Error("Firebase AI Logic is not initialised.");
   const model = getGenerativeModel(ai, {

@@ -39,6 +39,19 @@ export const PURPOSES = {
     },
     required: ["instructions", "message"],
   },
+  /* Blindfold Planner (hybrid-v2, Packet 7). The cloud sees the goal, task
+   * REFERENCES such as "[TASK_3] | in progress | [PROJECT_1]" (never real
+   * titles) and the user's constraints. Nothing else. */
+  plan: {
+    label: "Plan (blindfold)",
+    fields: {
+      instructions: str(1800),
+      goal: str(800),
+      task_refs: strList(200, 24),
+      constraints: strList(200, 8),
+    },
+    required: ["instructions", "goal"],
+  },
   case_research: {
     label: "Case research (public)",
     fields: {
@@ -214,3 +227,68 @@ export const PROPOSAL_OPERATIONS = ["create_task", "reschedule_task"];
  * @property {{local_ai:boolean, local_deterministic:boolean, cloud_ai:boolean, human_confirmed:boolean}} contributors
  * @property {Object<string, number>} timingsMs  ui, model_init, local_inference, cloud_ttft, cloud_total, deterministic, execution
  */
+
+
+/* ------------------------------------------------------------------ */
+/* Receipts and plans (hybrid-v2: telemetry.js, router.js, planner.js)  */
+/* ------------------------------------------------------------------ */
+export const RECEIPT_SCHEMA_VERSION = "aion.receipt.v1";
+export const PLAN_STEP_SCHEMA_VERSION = "aion.plan.v1";
+
+/** What happened to the user's data on this request. */
+export const DISCLOSURE_TIERS = Object.freeze({
+  LOCAL_ONLY: "local_only",         // nothing left this browser
+  APPROVED_CLOUD: "approved_cloud", // an approved, allowlisted disclosure was sent
+  BLOCKED: "blocked",               // the boundary refused; nothing was sent
+});
+
+export const RECEIPT_ROUTES = Object.freeze([
+  "on-device-nano", "cloud-sealed-chat", "cloud-blindfold", "local-fallback", "local-deterministic",
+]);
+export const RECEIPT_STATUSES = Object.freeze([
+  "completed", "timed_out", "blocked_egress", "rejected", "fallback", "failed",
+]);
+
+/** Steps a plan may contain. Only these can change anything, and only after approval. */
+export const PLAN_OPS = Object.freeze(["create_task", "propose_memory", "note"]);
+export const PLAN_MUTATING_OPS = Object.freeze(["create_task", "propose_memory"]);
+const PLAN_STEP_KEYS = ["op", "title", "taskRef", "due", "reason"];
+const TASK_REF = /^\[TASK_\d{1,3}\]$/;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const clean = (v, max) => String(v == null ? "" : v).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+
+/** Checks a plan the cloud (or Nano) produced. Unknown keys / ops are errors.
+ * Mutating steps come back as PENDING_APPROVAL; nothing is ever applied here.
+ * @param {*} raw  parsed JSON
+ * @param {{knownRefs?: string[]}} [opts]
+ * @returns {{ok: boolean, errors: string[], plan?: {schemaVersion: string, summary: string, steps: Object[]}}} */
+export function validatePlan(raw, opts) {
+  const errors = [];
+  const known = (opts && opts.knownRefs) || [];
+  if (!isPlainObject(raw)) return { ok: false, errors: ["plan must be an object"] };
+  Object.keys(raw).forEach((k) => { if (k !== "summary" && k !== "steps") errors.push("unknown field \"" + k + "\" in plan"); });
+  if (typeof raw.summary !== "string" || !raw.summary.trim()) errors.push("summary must be text");
+  if (!Array.isArray(raw.steps)) { errors.push("steps must be a list"); return { ok: false, errors }; }
+  if (raw.steps.length === 0) errors.push("a plan needs at least one step");
+  if (raw.steps.length > 8) errors.push("too many steps (" + raw.steps.length + " > 8)");
+  const steps = [];
+  raw.steps.slice(0, 8).forEach((st, i) => {
+    const w = "steps[" + i + "]";
+    if (!isPlainObject(st)) { errors.push(w + " must be an object"); return; }
+    Object.keys(st).forEach((k) => { if (!PLAN_STEP_KEYS.includes(k)) errors.push("unknown field \"" + k + "\" in " + w); });
+    if (!PLAN_OPS.includes(st.op)) { errors.push(w + ".op must be one of " + PLAN_OPS.join(", ")); return; }
+    const title = clean(st.title, 120);
+    if (!title) errors.push(w + ".title is empty");
+    const taskRef = st.taskRef == null ? "" : String(st.taskRef);
+    if (taskRef && (!TASK_REF.test(taskRef) || (known.length && !known.includes(taskRef)))) errors.push(w + ".taskRef \"" + taskRef.slice(0, 20) + "\" is not a task reference we sent");
+    const due = st.due == null ? "" : String(st.due);
+    if (due && !ISO_DATE.test(due)) errors.push(w + ".due must be YYYY-MM-DD or empty");
+    steps.push({
+      schemaVersion: PLAN_STEP_SCHEMA_VERSION, op: st.op, title, taskRef, due,
+      reason: clean(st.reason, 200),
+      status: PLAN_MUTATING_OPS.includes(st.op) ? "PENDING_APPROVAL" : "INFO",
+    });
+  });
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, errors: [], plan: { schemaVersion: PLAN_STEP_SCHEMA_VERSION, summary: clean(raw.summary, 300), steps } };
+}

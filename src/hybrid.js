@@ -23,6 +23,9 @@ import { initializeAppCheck, getToken, ReCaptchaEnterpriseProvider } from "fireb
 import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode } from "firebase/ai";
 import * as egress from "./egress.js";
 import * as contracts from "./contracts.js";
+import * as telemetry from "./telemetry.js";
+import { createRouter } from "./router.js";
+import { createPlanner } from "./planner.js";
 
 /* Record every request body sent to the Firebase AI endpoint (memory only),
  * installed before the SDK makes any call. Used by the leak test. */
@@ -427,6 +430,57 @@ async function generate(prompt, onChunk, opts) {
   }
 }
 
+/* ------------------------- planner model access ------------------------- */
+/* The Blindfold Planner needs generateContent with tools / a response schema,
+ * which the streaming text path above does not offer. Cloud only; the planner
+ * itself enforces the egress boundary and the 15 s budget before it gets here. */
+async function plannerCloudCall(req) {
+  if (!ai) throw new Error("Firebase AI Logic is not initialised.");
+  const attempts = [];
+  for (let i = 0; i < CLOUD_MODELS.length; i++) {
+    const cloudModel = CLOUD_MODELS[i];
+    try {
+      const inCloudParams = { model: cloudModel };
+      if (req.tools) inCloudParams.tools = req.tools;
+      if (req.generationConfig) inCloudParams.generationConfig = req.generationConfig;
+      const model = getGenerativeModel(ai, { mode: MODES.only_in_cloud, inCloudParams });
+      const result = await model.generateContent({ contents: req.contents }, req.signal ? { signal: req.signal } : undefined);
+      if (result.response && result.response.inferenceSource === SOURCE.on_device) {
+        throw new Error("Planner request ran on-device although it was meant for the cloud.");
+      }
+      state.cloudModel = cloudModel;
+      return { response: result.response, model: cloudModel };
+    } catch (e) {
+      const msg = describeError(e);
+      attempts.push(cloudModel + ": " + msg);
+      const modelProblem = /model|not found|404|unsupported|not supported|invalid argument|400/i.test(msg) &&
+        !/app.?check|api.?key|permission|quota|network|failed to fetch/i.test(msg);
+      if (!modelProblem || i === CLOUD_MODELS.length - 1) {
+        const err = new Error(attempts.join("\n"));
+        err.code = e && e.code;
+        throw err;
+      }
+    }
+  }
+}
+
+/* Gemini Nano with a JSON response constraint (on-device plan fallback). */
+async function plannerLocalCall(prompt, jsonSchema) {
+  if (!ai) throw new Error("Firebase AI Logic is not initialised.");
+  const model = getGenerativeModel(ai, {
+    mode: MODES.only_on_device,
+    onDeviceParams: { promptOptions: { responseConstraint: jsonSchema } },
+    inCloudParams: { model: CLOUD_MODELS[0] },
+  });
+  const run = model.generateContent(prompt);
+  const stop = new Promise((_, reject) => setTimeout(() => {
+    const e = new Error("On-device Gemini Nano did not finish the plan within " + Math.round(LOCAL_TIMEOUT_MS / 1000) + " s (timeout).");
+    e.code = "timeout"; reject(e);
+  }, LOCAL_TIMEOUT_MS));
+  const result = await Promise.race([run, stop]);
+  return { text: result.response.text(), model: "Gemini Nano" };
+}
+
 /* ---------------------------------- header bar ---------------------------------- */
 
 const NANO_LABEL = {
@@ -552,8 +606,20 @@ function boot() {
   setInterval(checkNano, 6000);
   state.ready = !!ai;
 
+  /* Receipts: every model attempt, appended in telemetry.js. The UI hears
+   * about each one through the "aion:receipt" event. */
+  telemetry.onReceipt((receipt) => {
+    try { window.dispatchEvent(new CustomEvent("aion:receipt", { detail: receipt })); } catch (e) { /* UI only */ }
+  });
+  const router = createRouter({ generate, egress, recordReceipt: telemetry.recordReceipt, getState: () => state });
+  const planner = createPlanner({ cloudCall: plannerCloudCall, localCall: plannerLocalCall, egress,
+    recordReceipt: telemetry.recordReceipt, getState: () => state });
+
   window.AionHybrid = {
     generate,
+    router,
+    planner,
+    telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt },
     getMode: () => state.mode,
     setMode,
     setOfflineDemo,
@@ -572,7 +638,9 @@ function boot() {
       scanPrivate: egress.scanPrivate, outboundSince: egress.outboundSince, log: egress.egressLog,
     },
     contracts: { PURPOSES: contracts.PURPOSES, validatePayload: contracts.validatePayload,
-      validateCase: contracts.validateCase, PROPOSAL_OPERATIONS: contracts.PROPOSAL_OPERATIONS },
+      validateCase: contracts.validateCase, PROPOSAL_OPERATIONS: contracts.PROPOSAL_OPERATIONS,
+      validatePlan: contracts.validatePlan, DISCLOSURE_TIERS: contracts.DISCLOSURE_TIERS,
+      RECEIPT_SCHEMA_VERSION: contracts.RECEIPT_SCHEMA_VERSION, PLAN_STEP_SCHEMA_VERSION: contracts.PLAN_STEP_SCHEMA_VERSION },
     timeouts: { cloudMs: CLOUD_TIMEOUT_MS, localMs: LOCAL_TIMEOUT_MS },
   };
   if (window.__resolveAionHybrid) window.__resolveAionHybrid(window.AionHybrid);

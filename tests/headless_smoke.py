@@ -354,6 +354,103 @@ with sync_playwright() as p:
     after = pg4.evaluate("window.AionStandalone.caseApi.load().then(c => [c.inputRevision, c.question.slice(0, 20)])")
     ok("p2: resetDemo() wipes the case", rev_before > 1 and after[0]==1 and after[1].startswith("Using only the"), (rev_before, after))
     pg4.close()
+    # ================= hybrid-v2 Packet 3: telemetry + router + blindfold planner =================
+    pg5 = ctx.new_page(); b5=[]; mode5 = {"m":"ok"}
+    def sse(parts): return "data: "+json.dumps({"candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP"}]})+"\r\n\r\n"
+    def vertex5(route):
+        req=route.request
+        stream = ":streamGenerateContent" in req.url
+        def reply(parts):
+            if stream: return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body=sse(parts))
+            return route.fulfill(status=200, headers={**CORS,"content-type":"application/json"}, body=json.dumps({"candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP"}]}))
+        if req.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
+        body=req.post_data or ""; b5.append(body)
+        if mode5["m"]=="403": return route.fulfill(status=403, headers={**CORS,"content-type":"application/json"}, body=json.dumps({"error":{"code":403,"message":"App Check token invalid","status":"PERMISSION_DENIED"}}))
+        if "check_local_capability" in body or "responseSchema" in body or "responseMimeType" in body:
+            has_tool_result = "functionResponse" in body
+            if "responseSchema" in body or "responseMimeType" in body:
+                plan={"summary":"Two steps.","steps":[{"op":"create_task","title":"Draft outline","taskRef":"[TASK_1]"},{"op":"note","title":"Keep it short"}]}
+                return reply([{"text":json.dumps(plan)}])
+            if not has_tool_result:
+                return reply([{"functionCall":{"name":"count_memories_by_type","args":{}}}])
+            return reply([{"text":"ok"}])
+        return reply([{"text":"Cloud reply."}])
+    pg5.route("**/firebasevertexai.googleapis.com/**", vertex5)
+    pg5.add_init_script(FAKE)
+    pg5.add_init_script("if (sessionStorage.getItem('nanoOff')) window.__nanoAvail = 'unavailable';")
+    pg5.goto(f"http://127.0.0.1:{PORT}/index.html")
+    pg5.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionHybrid.router && window.AionHybrid.planner", timeout=15000)
+    pg5.wait_for_timeout(1500)
+    H = "window.AionHybrid"
+    ok("p3: router, planner, telemetry exposed", pg5.evaluate("!!(%s.router.decide && %s.planner.plan && %s.telemetry.getReceipts)" % (H,H,H)))
+    d1 = pg5.evaluate("%s.router.decide({mode:'prefer_in_cloud', message:'hello there', offlineDemo:false, online:true})" % H)
+    ok("p3: router keeps requested mode for a plain message", d1["effectiveMode"]=="prefer_in_cloud" and not d1["overridden"], d1)
+    d2 = pg5.evaluate("%s.router.decide({mode:'prefer_in_cloud', message:'my password is hunter2 and card 4111 1111 1111 1111', offlineDemo:false, online:true})" % H)
+    ok("p3: sensitive message is kept on-device when Nano is ready", d2["effectiveMode"]=="only_on_device" and d2["overridden"], d2)
+    d3 = pg5.evaluate("%s.router.decide({mode:'prefer_in_cloud', message:'hi', offlineDemo:true, online:true})" % H)
+    ok("p3: offline demo forces on-device", d3["effectiveMode"]=="only_on_device", d3)
+    ok("p3: error classifier", pg5.evaluate("[%s.router.classifyError({code:'timeout'}), %s.router.classifyError({message:'403 App Check token invalid'}), %s.router.classifyError({message:'quota exceeded 429'})]" % (H,H,H))==["timeout","app_check","quota"], "")
+    # receipt via a real cloud chat through the disclosure boundary
+    n_before = pg5.evaluate("%s.telemetry.getReceipts().length" % H)
+    r1 = pg5.evaluate("""%s.router.dispatchChat({mode:'only_in_cloud', requestedMode:'prefer_in_cloud', decision:{effectiveMode:'only_in_cloud'}, payload:{instructions:'Be brief.', message:'Say hi', notes:[], tasks:[], history:[]}, prompt:null, approvedBy:'send_click'}).then(r => ({text:r.text, receipt:r.receipt}), e => ({err:e.code||e.message}))""" % H)
+    rc = r1.get("receipt") or {}
+    ok("p3: cloud chat returns text and a receipt", r1.get("text")=="Cloud reply." and rc.get("route")=="cloud-sealed-chat" and rc.get("status")=="completed", r1)
+    ok("p3: receipt latency is a measured number, hardware unavailable", isinstance(rc.get("latencyMs"),(int,float)) and rc.get("latencyMs")>=0 and rc.get("hardware")=="unavailable", rc.get("latencyMs"))
+    ok("p3: receipt egress audit has digest and bytes", len(rc.get("egressAudit",{}).get("digest",""))>=8 and rc.get("egressAudit",{}).get("bytesSent",0)>0 and rc.get("egressAudit",{}).get("disclosureTier")=="approved_cloud", rc.get("egressAudit"))
+    ok("p3: receipt count grew by one", pg5.evaluate("%s.telemetry.getReceipts().length" % H)==n_before+1)
+    fr = pg5.evaluate("(() => { const r = %s.telemetry.getReceipts(); const x = r[r.length-1]; try { x.status='tampered'; } catch(e) {} return [Object.isFrozen(x), x.status]; })()" % H)
+    ok("p3: receipts are frozen (cannot be edited)", fr[0] and fr[1]=="completed", fr)
+    summ = pg5.evaluate("%s.telemetry.summarizeTelemetry()" % H)
+    ok("p3: telemetry summary gives counts, no percent-local claim", summ.get("localShare")=="not-applicable" and "total" in json.dumps(summ).lower(), summ)
+    # purpose allowlist: unknown field must be refused before anything is sent
+    n_req = len(b5)
+    bad = pg5.evaluate("""%s.router.dispatchChat({mode:'only_in_cloud', requestedMode:'only_in_cloud', decision:{effectiveMode:'only_in_cloud'}, payload:{instructions:'Be brief.', message:'x', notes:[], tasks:[], history:[], secret_notes:'LEAK'}, prompt:null, approvedBy:'send_click'}).then(() => 'SENT', e => e.code||e.message)""" % H)
+    ok("p3: extra payload field is blocked and nothing is sent", bad!="SENT" and len(b5)==n_req, bad)
+    # cloud failure -> on-device fallback, with a reason and receipts
+    mode5["m"]="403"
+    FB_JS = """%s.router.dispatchChat({mode:'%s', requestedMode:'%s', decision:{effectiveMode:'%s'}, payload:{instructions:'Be brief.', message:'Say hi', notes:[], tasks:[], history:[]}, prompt:null, buildLocalPrompt:() => Promise.resolve('Say hi'), approvedBy:'send_click'}).then(r => ({text:r.text, source:r.source, fb:r.fallback, rs:(r.receipts||[]).map(x => [x.route,x.status,x.egressAudit.disclosureTier])}), e => ({err:e.code||e.message, cls:e.errorClass, msg:String(e.message).slice(0,160)}))"""
+    fb = pg5.evaluate(FB_JS % (H,"prefer_in_cloud","prefer_in_cloud","prefer_in_cloud"))
+    ok("p3: Prefer Cloud + App Check 403 -> on-device answer, receipt says fallback and that the sealed text was sent", fb.get("source")=="on_device" and (fb.get("fb") or {}).get("errorClass")=="unreported" and fb.get("rs")==[["local-fallback","fallback","approved_cloud"]], fb)
+    pg5.evaluate("sessionStorage.setItem('nanoOff','1')"); pg5.reload(); pg5.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionHybrid.router", timeout=15000); pg5.wait_for_timeout(800)
+    nf = pg5.evaluate(FB_JS % (H,"prefer_in_cloud","prefer_in_cloud","prefer_in_cloud"))
+    ok("p3: App Check 403 with no Nano -> classified app_check, no fake answer", nf.get("cls")=="app_check" and "FAKE-NANO" not in json.dumps(nf), nf)
+    nf2 = pg5.evaluate("(() => { const r = %s.telemetry.getReceipts(); const x = r[r.length-1]; return [x.status, x.route, x.errorCode]; })()" % H)
+    ok("p3: failed cloud receipt has a non-completed status", nf2[0] in ("rejected","failed","timed_out") and nf2[1]=="cloud-sealed-chat", nf2)
+    mode5["m"]="ok"
+    # planner
+    plan_in = {"goal":"Plan my week","taskRefs":[{"ref":"[TASK_1]","line":"[TASK_1] | to do"}],"constraints":[],"taskTitles":{"[TASK_1]":"Write report"},"memoryCounts":{"total":3,"fact":3},"localContext":""}
+    n_req = len(b5)
+    pr = pg5.evaluate("%s.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => r, e => ({err:e.code||e.message}))" % (H, json.dumps(plan_in)))
+    ok("p3: planner returns a validated cloud plan", pr.get("ok") and pr.get("source")=="cloud-blindfold" and len(pr["plan"]["steps"])==2, pr.get("err") or [pr.get("source"), pr.get("fallback"), [x[:300] for x in b5[n_req:]]])
+    steps = pr["plan"]["steps"] if pr.get("plan") else []
+    ok("p3: mutating step needs approval, note is info only", [x["status"] for x in steps]==["PENDING_APPROVAL","INFO"], [x.get("status") for x in steps])
+    ok("p3: tool round happened (function call recorded, no text values)", any(c["name"]=="count_memories_by_type" for c in pr["receipts"][-1]["functionCalls"]) if pr.get("receipts") else False)
+    sent = "".join(b5[n_req:])
+    ok("p3: planner request contains no real task title", "Write report" not in sent and "[TASK_1]" in sent)
+    ok("p3: planner makes at most 2 tool rounds + 1 JSON request", 2 <= len(b5)-n_req <= 4, len(b5)-n_req)
+    props = pg5.evaluate("%s.planner.stepsToProposals(%s, x => x).length" % (H, json.dumps(pr["plan"])))
+    ok("p3: only the mutating step becomes an approval proposal", props==1, props)
+    # planner cloud failure -> local fallback, never silent
+    mode5["m"]="403"
+    pf = pg5.evaluate("%s.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => ({ok:r.ok, source:r.source, fb:r.fallback}), e => ({err:e.code||e.message}))" % (H, json.dumps(plan_in)))
+    ok("p3: planner falls back (on-device or deterministic) and says why", pf.get("ok") and pf.get("source") in ("on-device-nano","deterministic") and pf.get("fb"), pf)
+    mode5["m"]="ok"
+    # chat + /plan through the real UI: badge carries the receipt line, events grow
+    ev0 = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.length)")
+    pg5.select_option("#inferenceMode","prefer_in_cloud")
+    pg5.fill("#chatInput", "Give me one tip for a calm weekend"); pg5.click("#sendBtn")
+    pg5.wait_for_function("document.querySelectorAll('#chatLog .ai-badge-sub').length>=1 && /Receipt /.test(document.querySelector('#chatLog').innerText)", timeout=20000)
+    log = pg5.inner_text("#chatLog")
+    ok("p3: UI chat bubble shows a receipt line with measured characters sent", "Receipt " in log and "characters sent" in log and "undefined" not in log and "NaN" not in log, log[-220:])
+    pg5.fill("#chatInput", "/plan finish the hackathon video"); pg5.click("#sendBtn")
+    try: pg5.wait_for_function("/waiting for your approval|note only/.test(document.querySelector('#chatLog').innerText)", timeout=25000)
+    except Exception as e: print("   /plan wait timed out; chat tail:", pg5.inner_text("#chatLog")[-400:].replace("\n"," | "))
+    log = pg5.inner_text("#chatLog")
+    ok("p3: /plan command answers with numbered steps and approval status", "1. " in log and ("waiting for your approval" in log or "note only" in log), log[-260:])
+    ev1 = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.length)")
+    kinds = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.map(e => e.event_type))")
+    ok("p3: EVENTS LOGGED grows after chat + plan (chat.reply + plan.created)", ev1 >= ev0 + 2 and "chat.reply" in kinds and "plan.created" in kinds, (ev0, ev1, kinds[-4:]))
+    pg5.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]
     b.close()

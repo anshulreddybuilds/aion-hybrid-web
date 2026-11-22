@@ -2211,11 +2211,15 @@ function attachAiBadge(bubble, meta) {
     return;
   }
   const onDevice = meta.source === "on_device";
-  badge.classList.add(onDevice ? "on-device" : "in-cloud");
+  const offlinePlan = meta.source === "local_deterministic";
+  badge.classList.add(onDevice || offlinePlan ? "on-device" : "in-cloud");
   const ms = Number(meta.latency_ms || 0).toLocaleString() + " ms";
-  badge.textContent = onDevice
+  badge.textContent = offlinePlan
+    ? "Offline plan (no AI, made in this browser) \u00B7 " + ms
+    : onDevice
     ? "On-Device (Gemini Nano) \u00B7 " + ms
     : "In-Cloud (Gemini Fallback) \u00B7 " + (meta.model || "cloud model") + " \u00B7 " + ms;
+  if (meta.fallback) badge.classList.add("fell-back");
   /* Telemetry split (hybrid-v2): requested route vs what actually ran, whether
      the SDK reported the source itself, and who contributed to this reply. */
   const c = meta.contributors || {};
@@ -2243,6 +2247,20 @@ function attachAiBadge(bubble, meta) {
   if (who.length) bits.push("By: " + who.join(" + "));
   if (meta.disclosure && meta.disclosure.digest) {
     bits.push("Sent as disclosure " + String(meta.disclosure.digest).slice(0, 8) + "\u2026 (" + meta.disclosure.bytes + " characters)");
+  }
+  /* Routing receipt (hybrid-v2 router): why this route, what happened, and
+     how much left the browser. Every number here was measured, never guessed. */
+  if (meta.routing && meta.routing.overridden) {
+    const why = (meta.routing.reasons || []).map((r) => r === "sensitive_kept_local" ? "message looked sensitive, kept on this device"
+      : r === "offline_demo" ? "Offline Demo Mode" : r === "offline" ? "browser is offline" : r.replace(/_/g, " "));
+    bits.push("Route changed: " + why.join(", "));
+  }
+  if (meta.fallback) bits.push("Fallback: " + meta.fallback.reason);
+  if (meta.receipt) {
+    const r = meta.receipt;
+    bits.push("Receipt " + String(r.id || "").slice(0, 8) + " \u00B7 " + String(r.route || "").replace(/-/g, " ") + " \u00B7 " +
+      (r.bytes_sent ? r.bytes_sent + " characters sent" : "nothing sent to the cloud") +
+      (r.function_calls && r.function_calls.length ? " \u00B7 tools: " + r.function_calls.join(", ") : ""));
   }
   const sub = document.createElement("span");
   sub.className = "ai-badge-sub";

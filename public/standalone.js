@@ -407,7 +407,7 @@
         var chk = privacyCheck(p.content);
         var row = { id: uid("prop"), kind: p.kind, content: chk.status === "redacted" ? chk.text : p.content,
           type: p.type, importance: p.importance, tags: p.tags || [], privacy: chk, status: "pending",
-          created: nowIso(), source: "chat" };
+          created: nowIso(), source: p.source || "chat" };
         saved.push(row);
         jobs.push(store.put("proposals", row));
       });
@@ -1177,12 +1177,17 @@
 
   function handleChat(body) {
     var message = String(body.message || "").trim();
+    var planCmd = message.match(/^\/plan\s+([\s\S]{3,})$/i);
+    if (planCmd) return handlePlan({ goal: planCmd[1] });
     return waitForHybrid().then(function (hybrid) {
-      /* The mode is read ONCE and passed to generate(), so the route cannot
-         change between "build the prompt" and "send it" (e.g. a dropdown
-         change during recall), which would otherwise send an unsealed prompt
-         to the cloud. */
-      var mode = hybrid.getMode();
+      /* The route is decided ONCE, before anything is built: the dropdown
+         choice can be overridden (offline, or a sensitive message while Nano
+         is ready), and the prompt is then built for that route only, so a
+         dropdown change mid-request cannot send an unsealed prompt to the
+         cloud. The badge shows requested vs actual. */
+      var requestedMode = hybrid.getMode();
+      var decision = hybrid.router.decide({ mode: requestedMode, message: message, offlineDemo: !!window.AION_OFFLINE_DEMO });
+      var mode = decision.effectiveMode;
       var includePrivate = mode === "only_on_device";
       var sealed = typeof hybrid.mayReachCloud === "function" ? hybrid.mayReachCloud(mode) : mode !== "only_on_device";
       return Promise.all([recall(message, includePrivate, 4), taskContext()]).then(function (both) {
@@ -1192,19 +1197,30 @@
         var uiChunk = window.AionOnChunk;
         var onChunk = typeof uiChunk === "function"
           ? function (soFar) { uiChunk(sealed ? unsealText(soFar) : soFar); } : null;
-        /* Cloud-reachable: build a "chat" disclosure from the sealed fields.
-           Pressing Send is the approval for exactly this content. */
-        var dispatch = !sealed
-          ? hybrid.generate(built.prompt, onChunk, { mode: mode })
-          : syncPrivateRegistry(hybrid).then(function () {
-              return hybrid.egress.createDisclosure({ purpose: "chat", payload: built.payload });
-            }).then(function (d) { return hybrid.egress.approve(d, "send_click"); })
-              .then(function (d) { return hybrid.generate(null, onChunk, { mode: mode, disclosure: d }); });
+        /* If the cloud fails and Nano is ready, the router answers on-device. That
+           prompt may use private notes (nothing leaves the browser), so it is
+           built here, only when needed. */
+        var localCtx = null;
+        var buildLocalPrompt = function () {
+          return Promise.all([recall(message, true, 4), taskContext()]).then(function (b2) {
+            localCtx = { notes: b2[0].memories.length, tasks: b2[1].lines.length };
+            return buildPrompt(message, body.history, b2[0].memories, b2[1], false).prompt;
+          });
+        };
+        /* Pressing Send is the approval for exactly this content. The router
+           runs it through createDisclosure (validatePayload) -> approve ->
+           generate and records a receipt for every attempt. */
+        var dispatch = (sealed ? syncPrivateRegistry(hybrid) : Promise.resolve()).then(function () {
+          return hybrid.router.dispatchChat({ mode: mode, requestedMode: requestedMode, decision: decision,
+            payload: sealed ? built.payload : null, prompt: sealed ? null : built.prompt, onChunk: onChunk,
+            buildLocalPrompt: buildLocalPrompt, approvedBy: "send_click" });
+        });
         var promptChars = sealed ? 0 : built.prompt.length;
         return dispatch.then(function (g) {
+          var fell = !!g.fallback;
           if (g.disclosure) promptChars = g.disclosure.bytes;
           var shown = sealed ? unsealText(g.text) : g.text;
-          recordTurn(sealed, message, g.text);   /* store the SEALED model text, not `shown` */
+          recordTurn(sealed && !fell, message, g.text);   /* the SEALED model text; local-fallback turns stay local */
           var proposals = extractProposals(message);
           return persistProposals(proposals).then(function (saved) {
             var contributors = {
@@ -1213,11 +1229,18 @@
               cloud_ai: g.source === "in_cloud",
               human_confirmed: false,                    /* nothing in a chat reply is approved yet */
             };
+            var rcp = g.receipt || null;
+            var rcpMeta = rcp ? { id: rcp.receiptId, route: rcp.route, status: rcp.status, latency_ms: rcp.latencyMs,
+              tier: rcp.egressAudit.disclosureTier, bytes_sent: rcp.egressAudit.bytesSent, attempts: (g.receipts || []).length } : null;
+            var routing = { requested: requestedMode, effective: mode, overridden: !!decision.overridden, reasons: decision.reasons };
+            var fbMeta = fell ? { reason: g.fallback.reason, error_class: g.fallback.errorClass } : null;
+            var notesUsed = fell && localCtx ? localCtx.notes : rc.memories.length;
+            var tasksUsed = fell && localCtx ? localCtx.tasks : tasks.lines.length;
             var detail = { provider: g.source === "on_device" ? "on-device (Gemini Nano)" : "in-cloud (Gemini)",
-              requested_mode: g.requested_mode || mode, actual_source: g.actual_source || g.source,
+              requested_mode: g.requested_mode || requestedMode, actual_source: g.actual_source || g.source,
               source_verified: !!g.source_verified, contributors: contributors,
-              sealed: sealed, sealed_items: built.sealedItems,
-              disclosure: g.disclosure || null,
+              sealed: sealed && !fell, sealed_items: built.sealedItems,
+              disclosure: g.disclosure || null, receipt: rcpMeta, routing: routing, fallback: fbMeta,
               latency_ms: g.latencyMs, tokens_in: Math.ceil(promptChars / 4), tokens_out: Math.ceil(g.text.length / 4) };
             return store.put("events", { id: Date.now() + "-c", event_id: uid("evt"), timestamp: nowIso(),
               event_type: "chat.reply", source_engine: "hybrid-router", detail: detail }).then(function () {
@@ -1226,11 +1249,11 @@
                 proposed_memories: saved,
                 citations: rc.memories.map(function (m) { return m.id; }),
                 meta: { source: g.source, latency_ms: g.latencyMs, first_chunk_ms: g.firstChunkMs, model: g.model, mode: g.mode,
-                  requested_mode: g.requested_mode || mode, actual_source: g.actual_source || g.source,
+                  requested_mode: g.requested_mode || requestedMode, actual_source: g.actual_source || g.source,
                   source_verified: !!g.source_verified, contributors: contributors,
-                  sealed: sealed, sealed_items: built.sealedItems, history_turns_sent: built.historyTurns,
-                  disclosure: g.disclosure || null,
-                  notes_used: rc.memories.length, tasks_used: tasks.lines.length, private_withheld: includePrivate ? 0 : rc.withheld,
+                  sealed: sealed && !fell, sealed_items: built.sealedItems, history_turns_sent: built.historyTurns,
+                  disclosure: g.disclosure || null, receipt: rcpMeta, routing: routing, fallback: fbMeta,
+                  notes_used: notesUsed, tasks_used: tasksUsed, private_withheld: (includePrivate || fell) ? 0 : rc.withheld,
                   tokens_estimated: true },
               };
             });
@@ -1239,11 +1262,75 @@
       });
     }).catch(function (err) {
       var src = (window.AionHybridState && window.AionHybridState.mode) || "prefer_on_device";
+      var last = err && err.receipts && err.receipts.length ? err.receipts[err.receipts.length - 1] : null;
       return store.put("events", { id: Date.now() + "-e", event_id: uid("evt"), timestamp: nowIso(),
         event_type: "chat.error", source_engine: "hybrid-router",
-        detail: { provider: src === "only_on_device" ? "on-device (Gemini Nano)" : "in-cloud (Gemini)" } }).then(function () {
+        detail: { provider: src === "only_on_device" ? "on-device (Gemini Nano)" : "in-cloud (Gemini)",
+          receipt_id: last ? last.receiptId : null, status: last ? last.status : null, error_class: (err && err.errorClass) || null } }).then(function () {
         var e = new Error(friendlyAiError(err)); e.status = 502; throw e;
       });
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Blindfold Planner (/plan <goal>)                                      */
+  /* ------------------------------------------------------------------ */
+  /* The cloud gets the goal and task REFERENCES only ("[TASK_3] | to do |
+   * [PROJECT_1]"), may ask the browser for counts and yes/no facts, and
+   * returns a plan. Each step that would change anything becomes a normal
+   * approval card; nothing is applied until you approve it. */
+  function handlePlan(body) {
+    var goal = String(body.goal || "").trim();
+    return waitForHybrid().then(function (hybrid) {
+      var mode = hybrid.getMode();
+      var titles = {};
+      return Promise.all([taskContext(), store.all("memories"), syncPrivateRegistry(hybrid)]).then(function (r) {
+        var tasks = r[0];
+        var refs = [];
+        tasks.items.forEach(function (it) {
+          if (it.label === "awaiting your approval") return;
+          var tok = tokenFor("TASK", it.title);
+          var proj = it.mission ? tokenFor("PROJECT", it.mission) : "";
+          refs.push({ ref: tok, line: tok + " | " + it.label + (proj ? " | " + proj : "") });
+          titles[tok] = it.title;
+        });
+        var counts = { total: 0 };
+        r[1].forEach(function (m) {
+          if (m.status === "forgotten" || m.status === "archived") return;
+          counts.total += 1;
+          if (/^(fact|preference|experience|capability)$/.test(m.type)) counts[m.type] = (counts[m.type] || 0) + 1;
+        });
+        return hybrid.planner.plan({ goal: sealText(goal).slice(0, 800), localGoal: goal, taskRefs: refs.slice(0, 24),
+          taskTitles: titles, memoryCounts: counts, localContext: tasks.lines.join("\n") }, { mode: mode });
+      }).then(function (res) {
+        var proposals = hybrid.planner.stepsToProposals(res.plan, unsealText);
+        return persistProposals(proposals).then(function (saved) {
+          var lines = res.plan.steps.map(function (st, i) {
+            return (i + 1) + ". " + unsealText(st.title) + (st.due ? " (by " + st.due + ")" : "") +
+              (st.status === "PENDING_APPROVAL" ? " - waiting for your approval" : " - note only");
+          });
+          var reply = unsealText(res.plan.summary) + "\n\n" + lines.join("\n");
+          var last = res.receipts[res.receipts.length - 1];
+          var fb = res.fallback ? { reason: res.fallback.reason, error_class: res.fallback.errorClass } : null;
+          var src = res.source === "cloud-blindfold" ? "in_cloud" : res.source === "on-device-nano" ? "on_device" : "local_deterministic";
+          var rcpMeta = { id: last.receiptId, route: last.route, status: last.status, latency_ms: last.latencyMs,
+            tier: last.egressAudit.disclosureTier, bytes_sent: last.egressAudit.bytesSent, attempts: res.receipts.length,
+            function_calls: last.functionCalls.map(function (c) { return c.name; }) };
+          return store.put("events", { id: Date.now() + "-p", event_id: uid("evt"), timestamp: nowIso(),
+            event_type: "plan.created", source_engine: "hybrid-planner",
+            detail: { receipt: rcpMeta, fallback: fb, steps: res.plan.steps.length, proposals: saved.length } }).then(function () {
+            return {
+              reply: reply, proposed_memories: saved, citations: [], plan: res.plan,
+              meta: { source: src, latency_ms: last.latencyMs, model: last.model, mode: mode, requested_mode: mode,
+                actual_source: src, source_verified: false, receipt: rcpMeta, fallback: fb, planner: true,
+                contributors: { local_deterministic: true, local_ai: src === "on_device", cloud_ai: src === "in_cloud", human_confirmed: false },
+                notes_used: 0, tasks_used: Object.keys(titles).length, private_withheld: 0, tokens_estimated: true },
+            };
+          });
+        });
+      });
+    }).catch(function (err) {
+      var e = new Error(friendlyAiError(err)); e.status = 502; throw e;
     });
   }
 

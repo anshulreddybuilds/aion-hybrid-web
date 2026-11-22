@@ -134,6 +134,11 @@ export function serialize(d) {
     return p.instructions + "\n\nNOTES:\n" + notes + "\n\nTASKS:\n" + tasks +
       (hist ? "\n\nRECENT CONVERSATION:\n" + hist : "") + "\n\nUser: " + p.message + "\nAION:";
   }
+  if (d.purpose === "plan") {
+    const refs = (p.task_refs || []).length ? p.task_refs.join("\n") : "(no open tasks)";
+    const cons = (p.constraints || []).length ? p.constraints.map((c) => "- " + c).join("\n") : "(none stated)";
+    return p.instructions + "\n\nGOAL:\n" + p.goal + "\n\nTASK REFERENCES:\n" + refs + "\n\nCONSTRAINTS:\n" + cons;
+  }
   if (d.purpose === "case_research") {
     const passages = (p.shared_passages || []).map((x) => "[" + x.id + "] " + x.text).join("\n") || "(none shared)";
     const srcs = (p.public_sources || []).map((s) => "[" + s.id + "] " + s.title + "\n" + s.text).join("\n\n") || "(none)";

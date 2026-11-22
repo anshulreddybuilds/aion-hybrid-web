@@ -175,6 +175,26 @@ if (app) {
   }
 }
 
+/* ------------------------------ receipt evidence ------------------------------ */
+/* The privacy ledger's proof: the request bodies the page's own fetch() really
+ * sent to the Gemini endpoint while a receipt's request was running (captured by
+ * the outbound monitor in egress.js). Shown to the user on request; never stored
+ * in the frozen receipt and never sent anywhere. Only receipts whose payload was
+ * cleared for the cloud can have any. */
+function evidenceFor(receipt) {
+  if (!receipt || !receipt.egressAudit || receipt.egressAudit.disclosureTier !== contracts.DISCLOSURE_TIERS.APPROVED_CLOUD) return [];
+  const end = Date.parse(receipt.timestamp);
+  return egress.outboundForDigest(receipt.egressAudit.digest, isFinite(end) ? end : Date.now())
+    .map((o) => ({ at: new Date(o.at).toISOString(), url: o.url, bytes: o.bytes, body: o.body }));
+}
+
+/* A JSON export of the receipts. Receipts hold no message text by design
+ * (route, timings, counts, digests, tool names), so this is safe to share. */
+function exportReceipts() {
+  return JSON.stringify({ exportedAt: new Date().toISOString(), app: "AION Hybrid Web", summary: telemetry.summarizeTelemetry(),
+    receipts: telemetry.getReceipts() }, null, 2);
+}
+
 /* ------------------------------ models per mode ------------------------------ */
 
 const models = {};
@@ -619,7 +639,8 @@ function boot() {
     generate,
     router,
     planner,
-    telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt },
+    telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt,
+      evidenceFor, exportReceipts },
     getMode: () => state.mode,
     setMode,
     setOfflineDemo,

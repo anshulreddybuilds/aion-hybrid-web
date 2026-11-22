@@ -557,6 +557,18 @@
         <div class="scroll-list" id="systemHealthList"></div>
       </section>
 
+      <section class="card" id="receiptsCard">
+        <div class="card-head">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 2.8h12v18.4l-3-1.8-3 1.8-3-1.8-3 1.8z"/><path d="M9 7.5h6M9 11h6M9 14.5h4"/></svg>
+            Privacy Receipts
+          </div>
+          <button class="hud-btn" type="button" id="receiptsExportBtn" title="Download every receipt as JSON (no message text inside)">EXPORT</button>
+        </div>
+        <div class="receipt-summary" id="receiptsSummary">No AI requests yet. Every request will get a receipt here: route, measured time, and exactly how much left this browser.</div>
+        <div class="scroll-list" id="receiptsList"></div>
+      </section>
+
       <section class="card" id="eventsCard">
         <div class="card-head">
           <div class="card-title">

@@ -1347,8 +1347,12 @@
       hint = "On-device Gemini Nano is not ready in this browser (needs desktop Chrome 139+, enough disk space and the model downloaded). Switch the AI route to Prefer On-Device or Prefer Cloud.";
     else if (window.AION_OFFLINE_DEMO && /fetch|network/i.test(raw))
       hint = "Offline Demo Mode blocked a cloud call. Gemini Nano must be ready for this mode.";
+    else if (/throttle/i.test(raw) && /app.?check|appcheck/i.test(raw))
+      hint = "App Check is briefly paused after a failed check (Firebase waits before retrying). Wait a minute and try again; with Gemini Nano ready, Prefer On-Device keeps working meanwhile.";
     else if (/app.?check|appcheck/i.test(raw))
-      hint = "App Check problem. The debug token printed in the console must be registered in Firebase console > App Check > Manage debug tokens (the app must be registered there first).";
+      hint = (window.AionHybridState && window.AionHybridState.isProductionHost)
+        ? "App Check could not verify this browser (reCAPTCHA). Ad blockers, strict privacy settings or a VPN can cause this. Private names were sealed before the request, as always. Try again, allow google.com/recaptcha, or use Gemini Nano (Prefer On-Device) if it is ready."
+        : "App Check problem. The debug token printed in the console must be registered in Firebase console > App Check > Manage debug tokens (the app must be registered there first).";
     else if (/API_NOT_ENABLED|has not been used|PERMISSION_DENIED|403/i.test(raw))
       hint = "The cloud model rejected the request (403). Check that Firebase AI Logic is enabled for this project and the API key is allowed to call it.";
     else if (/model|not found|404/i.test(raw))
@@ -1538,5 +1542,6 @@
       syncPrivateRegistry: function () { return waitForHybrid().then(function (h) { return syncPrivateRegistry(h); }); },
     },
     privacy: privacyCheck,
+    _friendly: function (e) { return friendlyAiError(e); },   /* tests only: the user-facing error wording */
   };
 })();

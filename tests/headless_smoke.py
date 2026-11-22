@@ -450,6 +450,42 @@ with sync_playwright() as p:
     ev1 = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.length)")
     kinds = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.map(e => e.event_type))")
     ok("p3: EVENTS LOGGED grows after chat + plan (chat.reply + plan.created)", ev1 >= ev0 + 2 and "chat.reply" in kinds and "plan.created" in kinds, (ev0, ev1, kinds[-4:]))
+    # Privacy Receipts ledger + honest status rows
+    pg5.wait_for_function("document.querySelectorAll('#receiptsList .receipt-row').length>=2", timeout=10000)
+    rsum = pg5.inner_text("#receiptsSummary")
+    tot = pg5.evaluate("window.AionHybrid.telemetry.summarizeTelemetry()")
+    ok("p4: receipts summary matches telemetry counts exactly", ("%d request" % tot["total"]) in rsum and ("%d sent to the cloud" % tot["cloudRequests"]) in rsum and ("%d stayed on this device" % tot["localOnly"]) in rsum, rsum)
+    rows = pg5.locator("#receiptsList .receipt-row")
+    first_id = rows.nth(0).get_attribute("data-receipt-id")
+    last_rec = pg5.evaluate("window.AionHybrid.telemetry.getReceipts().slice(-1)[0].receiptId")
+    ok("p4: ledger lists newest receipt first", first_id == last_rec, (first_id, last_rec))
+    ledger = pg5.inner_text("#receiptsList")
+    ok("p4: ledger has no placeholder or NaN values", all(x not in ledger for x in ("undefined","NaN","null ms","unreadable")), ledger[:200])
+    ok("p4: planner row shows tool names", "tools: count_memories_by_type" in ledger or "Offline plan" in ledger, ledger[:300])
+    plan_rec = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().filter(x => x.route==='cloud-blindfold' && x.status==='completed').slice(-1)[0]; return r ? window.AionHybrid.telemetry.evidenceFor(r).length : -1; })()")
+    ok("p4: planner receipt is matched to exactly its own 3 network requests", plan_rec == 3, plan_rec)
+    chat_rec = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().filter(x => x.route==='cloud-sealed-chat' && x.status==='completed').slice(-1)[0]; return r ? window.AionHybrid.telemetry.evidenceFor(r).length : -1; })()")
+    ok("p4: chat receipt is matched to exactly 1 network request", chat_rec == 1, chat_rec)
+    cloud_row = pg5.locator("#receiptsList .receipt-row:has(details)").first
+    cloud_row.locator("summary").click(); pg5.wait_for_timeout(300)
+    evid = cloud_row.locator(".receipt-evidence").inner_text()
+    ok("p4: 'What left this browser' shows the real captured request", "characters" in evid and "firebasevertexai" in evid and "Request 1 of" in evid, evid[:200])
+    ok("p4: captured request text contains no real task title or private value", "Write report" not in evid and all(x not in evid for x in PRIVATE), "")
+    try: pg5.locator("#receiptsCard").screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "receipts_shot.png"))
+    except Exception: pass
+    loc_row = pg5.locator("#receiptsList .receipt-row:not(:has(details))").first
+    ok("p4: local receipts say nothing was sent and offer no evidence box", loc_row.count()==1 and ("nothing sent to the cloud" in loc_row.inner_text() or "blocked before sending" in loc_row.inner_text()), loc_row.inner_text()[:160] if loc_row.count() else "")
+    with pg5.expect_download() as dl:
+        pg5.click("#receiptsExportBtn")
+    exp = json.loads(open(dl.value.path()).read())
+    ok("p4: export downloads every receipt as JSON with no message text", len(exp["receipts"])==tot["total"] and "Write report" not in json.dumps(exp) and "Say hi" not in json.dumps(exp), len(exp.get("receipts",[])))
+    pg5.wait_for_timeout(5500)
+    hl = pg5.inner_text("#systemHealthList")
+    ok("p4: status panel shows Nano, App Check, AI request counts", "Gemini Nano" in hl and "App Check" in hl and "AI requests" in hl and "unreadable" not in hl, hl[:300])
+    ach = pg5.evaluate("""(() => { const st = window.AionHybridState; const was = st.isProductionHost; st.isProductionHost = true;
+        const e = new Error('AI: App Check token fetch failed (appCheck/fetch-status-error)');
+        return window.AionStandalone._friendly ? window.AionStandalone._friendly(e) : 'n/a'; })()""")
+    ok("p4: production App Check failure gives a plain reason, not debug-token advice", "debug token" not in ach and "reCAPTCHA" in ach, ach[:160])
     pg5.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]

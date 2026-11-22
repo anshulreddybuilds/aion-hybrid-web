@@ -1225,6 +1225,31 @@ function renderSystemHealth(health) {
   if (disk.available) rows.push(healthRow("Disk", `${disk.free_gb} GB free of ${disk.total_gb} GB`, toneForPct(disk.used_pct)));
   else omitted.push(disk);
 
+  /* AI route status: read from the live hybrid state and the receipts, so
+     every value is something this page actually observed. */
+  const hy = window.AionHybridState;
+  if (hy) {
+    const nanoTxt = { ready: "ready on this device", downloadable: "can be downloaded", downloading: "downloading " + (hy.nanoDetail || ""),
+      unavailable: "not available on this device", unsupported: "not supported in this browser", checking: "checking" }[hy.nano] || hy.nano;
+    rows.push(healthRow("Gemini Nano", nanoTxt, hy.nano === "ready" ? "is-good" : "is-warn"));
+    const ac = hy.appCheck || {};
+    const acTxt = ac.status === "error" ? "failed to start"
+      : hy.appCheckWarm === "ready" ? "verified" + (hy.appCheckWarmMs ? " in " + hy.appCheckWarmMs.toLocaleString() + " ms" : "")
+      : hy.appCheckWarm === "failed" ? "could not verify this browser (cloud may refuse)"
+      : hy.appCheckWarm === "warming" ? "verifying..." : hy.offlineDemo ? "skipped (Offline Demo Mode)" : (ac.status || "off");
+    rows.push(healthRow("App Check", acTxt, hy.appCheckWarm === "ready" ? "is-good" : "is-warn"));
+    const H = window.AionHybrid;
+    const sumT = H && H.telemetry ? H.telemetry.summarizeTelemetry() : null;
+    const last = H && H.telemetry ? H.telemetry.getReceipts().slice(-1)[0] : null;
+    if (last) {
+      const lastCloud = H.telemetry.getReceipts().filter((r) => /^cloud-/.test(r.route)).slice(-1)[0];
+      if (lastCloud) rows.push(healthRow("Last cloud call", (RECEIPT_STATUS[lastCloud.status] || [lastCloud.status])[0] +
+        (lastCloud.latencyMs !== null ? " · " + lastCloud.latencyMs.toLocaleString() + " ms" : ""),
+        lastCloud.status === "completed" ? "is-good" : "is-warn"));
+      rows.push(healthRow("AI requests", sumT.total + " (" + sumT.cloudRequests + " cloud, " + sumT.localOnly + " local, " + sumT.blocked + " blocked)", ""));
+    }
+  }
+
   const net = health.network || {};
   if (net.available) {
     const age = net.age_minutes === null || net.age_minutes === undefined
@@ -2454,6 +2479,112 @@ loadBriefing();
 loadPendingProposals();
 updateClock();
 setInterval(updateClock, 1000);
+/* ---------------------- Privacy Receipts ledger (hybrid-v2) ---------------------- */
+/* One row per AI request, newest first, read from the frozen receipts in
+   telemetry.js. Every number is measured or absent - never estimated. For a
+   request that went to the cloud, "What left this browser" shows the request
+   body this page's own fetch() really sent, captured at the network call. */
+const RECEIPT_ROUTE_LABEL = {
+  "on-device-nano": ["On-device (Gemini Nano)", "local"],
+  "cloud-sealed-chat": ["Cloud chat (sealed)", "cloud"],
+  "cloud-blindfold": ["Cloud planner (blindfold)", "cloud"],
+  "local-fallback": ["Fallback on this device", "local"],
+  "local-deterministic": ["Offline plan (no AI)", "local"],
+};
+const RECEIPT_STATUS = {
+  completed: ["completed", "ok"], fallback: ["fell back", "warn"], timed_out: ["timed out", "bad"],
+  blocked_egress: ["blocked before sending", "warn"], rejected: ["rejected", "bad"], failed: ["failed", "bad"],
+};
+
+function receiptTextParts(body) {
+  /* The text the model actually reads: every text part (and tool reply) in the
+     request JSON, in order. */
+  try {
+    const j = JSON.parse(body);
+    const out = [];
+    (j.contents || []).forEach((c) => (c.parts || []).forEach((p) => {
+      if (typeof p.text === "string") out.push("[" + (c.role || "user") + "] " + p.text);
+      else if (p.functionResponse) out.push("[tool reply " + p.functionResponse.name + "] " + JSON.stringify(p.functionResponse.response));
+      else if (p.functionCall) out.push("[model asked for tool " + p.functionCall.name + "]");
+    }));
+    return out.join("\n\n");
+  } catch (e) { return null; }
+}
+
+function fillReceiptEvidence(det, receipt) {
+  const hy = window.AionHybrid;
+  const ev = hy && hy.telemetry && hy.telemetry.evidenceFor ? hy.telemetry.evidenceFor(receipt) : [];
+  const box = det.querySelector(".receipt-evidence");
+  if (!ev.length) {
+    box.textContent = "No captured network request matched this receipt's time window, so nothing is shown rather than a guess.";
+    return;
+  }
+  box.innerHTML = ev.map((o, i) => {
+    const text = receiptTextParts(o.body);
+    return `<div class="row-sub">Request ${i + 1} of ${ev.length} · full request ${o.bytes.toLocaleString()} characters (content plus model settings and tool list) · ${escapeHtml(o.url.replace(/^https:\/\//, ""))}</div>` +
+      `<pre class="receipt-sent-text">${escapeHtml((text === null ? o.body : text).slice(0, 6000))}</pre>`;
+  }).join("");
+}
+
+function renderReceipts() {
+  const list = $("receiptsList"), sum = $("receiptsSummary");
+  const hy = window.AionHybrid;
+  if (!list || !sum || !hy || !hy.telemetry) return;
+  const all = hy.telemetry.getReceipts();
+  if (!all.length) return;
+  const t = hy.telemetry.summarizeTelemetry();
+  const med = t.latency.medianMs;
+  sum.innerHTML = `<b>${t.total}</b> request${t.total === 1 ? "" : "s"} · <b>${t.cloudRequests}</b> sent to the cloud ` +
+    `(<b>${t.cloudBytesSent.toLocaleString()}</b> characters) · <b>${t.localOnly}</b> stayed on this device · ` +
+    `<b>${t.blocked}</b> blocked before sending` +
+    (med !== null ? ` · median <b>${med.toLocaleString()} ms</b> (measured)` : "") +
+    (t.functionCalls ? ` · <b>${t.functionCalls}</b> local tool answer${t.functionCalls === 1 ? "" : "s"}` : "");
+  /* Rebuild only when a receipt was added, so an open "What left" box stays open. */
+  if (list.dataset.count === String(all.length)) return;
+  list.dataset.count = String(all.length);
+  list.innerHTML = "";
+  all.slice(-12).reverse().forEach((r) => {
+    const [label, kind0] = RECEIPT_ROUTE_LABEL[r.route] || [r.route, "local"];
+    const tier = r.egressAudit.disclosureTier;
+    const kind = tier === "blocked" ? "blocked" : kind0;
+    const [stLabel, stTone] = RECEIPT_STATUS[r.status] || [r.status, ""];
+    const bits = [new Date(r.timestamp).toLocaleTimeString()];
+    bits.push(r.latencyMs === null ? "time not measured" : r.latencyMs.toLocaleString() + " ms");
+    if (tier === "approved_cloud") bits.push(r.egressAudit.bytesSent.toLocaleString() + " characters of content sent · digest " + String(r.egressAudit.digest || "").slice(0, 8));
+    else if (tier === "local_only") bits.push("nothing sent to the cloud");
+    else bits.push("blocked before sending" + (r.egressAudit.blockedCode ? " (" + r.egressAudit.blockedCode + ")" : ""));
+    if (r.functionCalls.length) bits.push("tools: " + r.functionCalls.map((c) => c.name).join(", "));
+    if (r.egressAudit.privateValueHits) bits.push(r.egressAudit.privateValueHits + " private value caught");
+    const row = document.createElement("div");
+    row.className = "receipt-row";
+    row.dataset.receiptId = r.receiptId;
+    row.innerHTML =
+      `<div class="receipt-top"><span class="receipt-route ${kind}">${escapeHtml(label)}</span>` +
+      `<span class="receipt-status ${stTone}">${escapeHtml(stLabel)}</span></div>` +
+      `<div class="receipt-meta">${escapeHtml(bits.join(" · "))}</div>` +
+      (r.fallbackReason ? `<div class="receipt-meta">Why: ${escapeHtml(r.fallbackReason)}</div>` : "") +
+      (r.errorCode && r.status !== "completed" && r.status !== "fallback" ? `<div class="receipt-meta">Error: ${escapeHtml(r.errorCode)}</div>` : "") +
+      (tier === "approved_cloud" ? `<details><summary>What left this browser</summary><div class="receipt-evidence"></div></details>` : "");
+    const det = row.querySelector("details");
+    if (det) det.addEventListener("toggle", () => { if (det.open) fillReceiptEvidence(det, r); });
+    list.appendChild(row);
+  });
+}
+
+function exportReceiptsFile() {
+  const hy = window.AionHybrid;
+  if (!hy || !hy.telemetry || !hy.telemetry.exportReceipts) return;
+  const blob = new Blob([hy.telemetry.exportReceipts()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "aion-receipts-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+window.addEventListener("aion:receipt", () => { renderReceipts(); refresh(); });
+if ($("receiptsExportBtn")) $("receiptsExportBtn").addEventListener("click", exportReceiptsFile);
+
 refresh();
 setInterval(refresh, POLL_MS);
 setInterval(markStaleness, 1000);

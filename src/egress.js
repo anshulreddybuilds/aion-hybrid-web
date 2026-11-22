@@ -113,7 +113,16 @@ export async function verify(d, opts) {
 
 export function isApproved(d) { return !!(d && approvals.get(d.requestId) === d.contentDigest && !sent.has(d.requestId)); }
 
+/* Send marks: which network captures belong to which disclosure. A mark is
+ * placed at the moment a disclosure is cleared to send; every captured request
+ * after it, up to the next mark, was made for that disclosure. Exact, not a
+ * guess by time. In memory only. */
+const sendMarks = [];
+let outboundSeq = 0;
+
 export function markSent(d, meta) {
+  sendMarks.push({ digest: d.contentDigest, seq: outboundSeq, at: Date.now() });
+  if (sendMarks.length > 100) sendMarks.shift();
   sent.add(d.requestId);
   approvals.delete(d.requestId);
   d.approvalState = "sent";
@@ -197,7 +206,7 @@ export function installOutboundMonitor() {
       const url = typeof input === "string" ? input : input && input.url;
       if (url && /firebasevertexai\.googleapis\.com|generativelanguage\.googleapis\.com/.test(url)) {
         const body = init && typeof init.body === "string" ? init.body : "";
-        outbound.push({ at: Date.now(), url: String(url).replace(/\?.*$/, ""), bytes: body.length, body });
+        outbound.push({ seq: ++outboundSeq, at: Date.now(), url: String(url).replace(/\?.*$/, ""), bytes: body.length, body });
         if (outbound.length > 40) outbound.shift();
       }
     } catch (e) { /* monitoring must never break a request */ }
@@ -205,3 +214,18 @@ export function installOutboundMonitor() {
   };
 }
 export function outboundSince(ts) { return outbound.filter((o) => o.at >= (ts || 0)); }
+
+/** The captured requests sent for the disclosure with this digest (a prefix is
+ * enough) that was marked sent at or before `endAt`. Empty if none matched. */
+export function outboundForDigest(digest, endAt) {
+  if (!digest) return [];
+  const limit = (endAt || Date.now()) + 50;
+  let idx = -1;
+  for (let i = sendMarks.length - 1; i >= 0; i--) {
+    if (sendMarks[i].at <= limit && String(sendMarks[i].digest).indexOf(digest) === 0) { idx = i; break; }
+  }
+  if (idx < 0) return [];
+  const from = sendMarks[idx].seq;
+  const to = idx + 1 < sendMarks.length ? sendMarks[idx + 1].seq : Infinity;
+  return outbound.filter((o) => o.seq > from && o.seq <= to && o.at <= limit);
+}

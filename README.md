@@ -6,6 +6,10 @@ It runs 100% in the browser. No server, no sign-in. Open the hosted URL and ever
 
 **Live demo: https://aion-hybrid-ai.web.app**
 
+Built by **Anshul Reddy** ([@anshulreddybuilds](https://github.com/anshulreddybuilds)).
+
+**The idea in one line:** the cloud model is smart but should not see your private life; the on-device model is private but small. AION lets each do what it is good at, and **proves on screen what left the browser**: every AI request gets a receipt, and for cloud requests you can open the exact request body that was sent.
+
 > Status: submission build. Read [Verification](#verification-what-was-and-was-not-tested) before judging - it says plainly what has been tested and what has not.
 
 ## Try it (judges)
@@ -19,7 +23,10 @@ It runs 100% in the browser. No server, no sign-in. Open the hosted URL and ever
 3. If it says *needs download*, click **DOWNLOAD NANO** once (a few GB, one time). If Chrome says the Prompt API is off, enable `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` and restart Chrome.
 4. Type a message, e.g. *"How long should I space my long runs?"* Every reply carries a badge: **On-Device (Gemini Nano)** or **In-Cloud (Gemini Fallback)**, plus the response time in milliseconds.
 5. Try the **Offline Demo Mode**: tick it, switch on airplane mode, and keep chatting. The page forces on-device inference and blocks every external network request from its own code.
-6. On Home, three proposal cards are waiting - **Approve / Edit / Reject**. One has an email address (it is redacted), one is a task, and one contains a password (it is **blocked** until you edit it).
+6. Type **`/plan finish my report this week`**. The **Blindfold Planner** asks the cloud for a plan while the cloud sees only task *labels* such as `[TASK_3]`, never the real titles. The cloud may ask this browser small questions (how many notes of each type, is Nano ready, how big is a task); the browser answers with counts and yes/no only. Steps that would change anything come back as approval cards.
+7. Look at **Privacy Receipts** on the right: one row per AI request with the route, measured time, and how many characters of content left the browser. On a cloud row, open **What left this browser** to read the exact request body this page sent. **EXPORT** downloads all receipts as JSON (they hold no message text).
+8. Open the **Case** tab: a private decision workspace. You tick which passages may be shared, approve the exact text, and send it once. **Run leak test** plants secret canaries and checks every outgoing request for them.
+9. On Home, three proposal cards are waiting - **Approve / Edit / Reject**. One has an email address (it is redacted), one is a task, and one contains a password (it is **blocked** until you edit it).
 
 The demo data is a **fictional person ("Alex")**. Nothing from the author's real data is in this repo. Reset it any time from the browser console: `AionStandalone.resetDemo()`.
 
@@ -36,6 +43,8 @@ The private Python backend (FastAPI, SQLite memory, provider router) is **not** 
 
 ### New for #BuildHybridAI 2026
 
+Everything below was built during the contest window (November 2026). The second table is the `hybrid-v2` work (from 21 Nov).
+
 | New | What it does |
 |---|---|
 | `src/hybrid.js` -> `public/hybrid.bundle.js` | Firebase init (modular v12 SDK, bundled with esbuild, no CDN), App Check, Firebase AI Logic with `InferenceMode` routing, Gemini Nano readiness light, route dropdown, Offline Demo Mode. |
@@ -44,6 +53,19 @@ The private Python backend (FastAPI, SQLite memory, provider router) is **not** 
 | Proposal cards (changes in `app.js`) | Privacy-check chip, **Edit** button next to Approve / Reject, task cards, saved across reloads. |
 | `vendor/`, `fonts/`, `fonts.css` | Chart.js and fonts are now local so the page paints with no network. |
 | `firebase.json`, `.firebaserc`, `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, `tests/` | Hosting config, Apache-2.0 licence, headless smoke test. |
+
+**hybrid-v2 (21-22 Nov 2026):**
+
+| New | What it does |
+|---|---|
+| Sealed cloud prompts (`standalone.js`) | Before any request that can reach the cloud, private names (tasks, projects, people) are replaced by tokens like `[TASK_2]`. The reply is un-sealed in the browser, so you read real names; the cloud never saw them. |
+| `src/contracts.js`, `src/egress.js` | The **disclosure boundary**. A cloud request must be a *disclosure*: a payload checked against a per-purpose allowlist (`validatePayload`), approved, hashed (SHA-256), sent once, and scanned for registered private values right before it leaves. Raw prompts are refused on cloud routes. |
+| Case tab (`public/case.js`) | Private case workspace: choose shared passages, preview and approve the exact outgoing text, one send per approval, and a live leak test with canaries. |
+| `src/router.js` | Router v2. Decides the route *before* the prompt is built: messages that look sensitive (passwords, card or ID numbers, API keys) stay on-device when Nano is ready; Offline Demo forces on-device. If the cloud or App Check fails, it answers with Nano and states why. |
+| `src/telemetry.js` | Receipts: one per AI request, append-only and frozen. Route, status, measured latency (`performance.now()`), characters sent, content digest, tool names. Numbers that cannot be measured are left empty, never estimated. |
+| `src/planner.js` | **Blindfold Planner** (`/plan <goal>`): cloud Gemini with function calling (max 2 tool rounds), then a separate structured-JSON request, validated in the browser. 15 s limit for the whole plan. Falls back to Nano (JSON output), then to a simple offline plan. |
+| Privacy Receipts card (`app.js`, `index.html`) | The ledger described above, plus real status rows (Nano, App Check, last cloud call, request counts). |
+| Safety rails | 15 s cloud timeout (no endless spinner); the App Check debug provider can never turn on on the production domains, even with `?appcheck_debug`. |
 
 Small edits to existing files: `index.html` (hybrid bar, scripts, local assets, "DEMO USER" label), `style.css` (appended hybrid styles), `sw.js` (caches the new files), `mobile.html` / `approve.html` (use browser-local data when there is no backend; mobile chat shows the same badge), `manifest.webmanifest` (paths).
 
@@ -76,6 +98,16 @@ Small edits to existing files: `index.html` (hybrid bar, scripts, local assets, 
 - **Route:** the header dropdown picks the `InferenceMode` (prefer on-device, only on-device, prefer cloud). The SDK decides per request and reports where it ran; the reply badge shows that plus latency.
 - **Protection:** the cloud path is guarded by **Firebase App Check** (reCAPTCHA Enterprise), so only this app can call the model. Localhost uses the debug provider instead.
 - **Data:** all demo data lives in the visitor's own browser. There is no server of ours.
+
+## How the cloud and Gemini Nano split the work
+
+| Job | Who does it | Why not the other one |
+|---|---|---|
+| Private names, notes and figures | Browser code + Gemini Nano | The cloud never needs them; sealing and the allowlist keep them home. |
+| Planning, wide knowledge, long reasoning | Cloud Gemini, on sealed text | Nano is small and, on an 8 GB laptop, slow (the author measured about 19 s to the first word on a CPU-only test VM). |
+| Facts the cloud needs to plan well | Local tools the cloud calls (`count_memories_by_type`, `check_local_capability`, `estimate_task_effort`) | The answer is a count or yes/no; the data itself stays local. Every tool result is validated and scanned before it is sent. |
+| Turning `[TASK_2]` back into the real title, and saving changes | Browser, after you approve | Only the browser knows what the tokens mean. |
+| Answering when the cloud is down, blocked or slow | Gemini Nano, then a plain offline plan | The cloud cannot help when it is unreachable. |
 
 ## How the hybrid routing works
 
@@ -122,7 +154,9 @@ Firebase console, project `aion-hybrid-ai`:
 
 ## Verification: what was and was not tested
 
-Tested (headless Chrome, `python tests/headless_smoke.py`, 54 checks): page and panel loading, seeded memories/tasks/approvals, privacy redaction and blocking, Edit -> re-check -> Approve, persistence after reload, mode switching, per-reply badge, Offline Demo Mode blocking external requests, the approvals and mobile pages, the backup-model retry, the exact-error chat bubble, and the saved App Check token.
+**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **133 / 133** checks. The new ones cover the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`). The live Gemini function-calling path of the planner has **not** yet been checked against the real service.
+
+Earlier (main branch, 54 checks): page and panel loading, seeded memories/tasks/approvals, privacy redaction and blocking, Edit -> re-check -> Approve, persistence after reload, mode switching, per-reply badge, Offline Demo Mode blocking external requests, the approvals and mobile pages, the backup-model retry, the exact-error chat bubble, and the saved App Check token.
 
 **Cloud path:** checked on the deployed site on 21 Nov 2026 - a clean browser session on https://aion-hybrid-ai.web.app, *Prefer Cloud*, "Summarize my tasks for today" returned a real cloud Gemini reply (served by `gemini-4-hydrogen`, the first-choice model at that time) (HTTP 200, no App Check error) with the In-Cloud badge and latency. The author repeated this in a Chrome Incognito window. Before the speed changes, the first reply on a fresh page took roughly 24-120 s in that test . The cause turned out to be the model, not App Check: `gemini-4-hydrogen` needed ~125 s for a trivial prompt, while `gemini-3.5-flash-lite` answers in about 1 s. Flash-lite is now the first choice; streaming, an App Check warm-up and a live "Thinking..." bubble were also added.
 
@@ -132,7 +166,9 @@ Known limits:
 
 - On-device inference supports single-turn text; conversation history is folded into the prompt.
 - Token counts on the Providers panel are rough estimates (characters / 4).
-- Browser pages cannot read CPU load or RAM use, so those rows say "unreadable" instead of showing invented numbers.
+- Browser pages cannot read CPU load or RAM use, so the status panel shows only what the browser reports (core count, rounded device memory) and says load and usage are not readable. No invented numbers.
+- Receipts and their network evidence live in memory for the open tab only; reloading clears them (use EXPORT first).
+- The sensitive-message check in the router is a pattern check, like the privacy guard; it can miss things.
 - Data lives in this browser's IndexedDB only; clearing site data erases it.
 - Server-side speech transcription and the "run command" box need the original backend and are switched off in the hosted demo (browser speech recognition still works where Chrome supports it).
 

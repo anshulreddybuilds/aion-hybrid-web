@@ -234,11 +234,23 @@
     applyQuote(q, "Sorted into " + q.paragraphs.length + " passage" + (q.paragraphs.length === 1 ? "" : "s") +
       " by plain code in this browser. All passages start private. Check them below.");
   }
-  function readImage(file) {
+  /* On small machines, reading an image with Nano can keep the whole computer
+   * busy for a minute or more (seen on an 8 GB laptop). Warn first and ask for
+   * a second go; the pasted-text path is always the quick option. */
+  var heavyArmed = null;
+  function isSmallMachine() { return typeof navigator.deviceMemory === "number" && navigator.deviceMemory <= 8; }
+  function readImage(file, opts) {
     var H = window.AionHybrid;
     if (!H || !H.intake) { renderIntake("The on-device reader is not loaded yet.", "warn"); return; }
+    if (isSmallMachine() && !(opts && opts.confirmed) && !(heavyArmed && heavyArmed.name === file.name && Date.now() - heavyArmed.at < 30000)) {
+      heavyArmed = { name: file.name, at: Date.now(), file: file };
+      renderIntake("This computer reports " + navigator.deviceMemory + " GB of memory. Reading an image on the device can keep it busy for a minute or two. " +
+        "Choose the same image again (or drop it again) within 30 s to go ahead, or paste the quote's text instead - that is instant.", "warn");
+      return;
+    }
+    heavyArmed = null;
     var before = eg().outboundSince ? eg().outboundSince(0).length : 0;
-    renderIntake("Gemini Nano is reading the image on this device… (the first read can take a minute on an 8 GB laptop)", "");
+    renderIntake("Gemini Nano is reading the image on this device… This can take a minute or two on an 8 GB laptop, and the page may feel slow meanwhile.", "");
     st.busy = "intake";
     H.intake.readQuoteImage(file).then(function (r) {
       var sent = eg().outboundSince ? eg().outboundSince(0).length - before : 0;
@@ -737,7 +749,7 @@
     explain: function () { return explainVerdict(); },
     draft: function () { return draftQuestions(); },
     nanoReview: function () { return nanoReview(); },
-    readImage: function (f) { return readImage(f); },
+    readImage: function (f, o) { return readImage(f, o); },
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },
   };

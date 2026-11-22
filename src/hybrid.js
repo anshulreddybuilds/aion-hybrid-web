@@ -506,7 +506,9 @@ async function imageToJpegBase64(file) {
   }
   if (file.size > 12 * 1024 * 1024) { const e = new Error("That image is larger than 12 MB."); e.code = "image_too_large"; throw e; }
   const bmp = await createImageBitmap(file);
-  const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  /* 1024 px is enough for a quote's text and keeps the on-device work small
+     (a 900 px image kept an 8 GB laptop busy for over 90 s on 22 Nov). */
+  const scale = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
   const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
   const canvas = document.createElement("canvas");
   canvas.width = w; canvas.height = h;

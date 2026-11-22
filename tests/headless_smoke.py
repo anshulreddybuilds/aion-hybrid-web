@@ -597,7 +597,7 @@ with sync_playwright() as p:
     nreq = len(b6)
     pg6.evaluate("""(async () => { const c = document.createElement('canvas'); c.width = 320; c.height = 200; const g = c.getContext('2d');
         g.fillStyle = '#fff'; g.fillRect(0,0,320,200); g.fillStyle = '#000'; g.fillText('Lumen AV quote', 10, 20);
-        const blob = await new Promise(r => c.toBlob(r, 'image/png')); window.AionCase.readImage(new File([blob], 'quote.png', { type: 'image/png' })); })()""")
+        const blob = await new Promise(r => c.toBlob(r, 'image/png')); window.AionCase.readImage(new File([blob], 'quote.png', { type: 'image/png' }), { confirmed: true }); })()""")
     pg6.wait_for_function("/Read by Gemini Nano|not ready|could not/.test(document.getElementById('caseIntakeStatus').textContent)", timeout=20000)
     st6 = pg6.inner_text("#caseIntakeStatus")
     ok("b1: screenshot read by Nano on the device, image never sent (0 cloud requests)", "Read by Gemini Nano on this device" in st6 and "while reading: 0" in st6 and len(b6)==nreq and pg6.evaluate("window.__imgPrompts")>=1, st6)
@@ -606,10 +606,15 @@ with sync_playwright() as p:
     ok("b1: the image read gets a receipt: on-device, nothing sent", rcp==["on-device-nano","completed","local_only",0], rcp)
     pg6.evaluate("window.AionHybridState.nano = 'unavailable'")
     pg6.evaluate("""(async () => { const c = document.createElement('canvas'); c.width = 10; c.height = 10; const blob = await new Promise(r => c.toBlob(r, 'image/png'));
-        window.AionCase.readImage(new File([blob], 'q.png', { type: 'image/png' })); })()""")
+        window.AionCase.readImage(new File([blob], 'q.png', { type: 'image/png' }), { confirmed: true }); })()""")
     pg6.wait_for_timeout(800)
     ok("b1: without Nano the image is NOT sent to the cloud; the user is told to paste text", "Paste the quote's text instead" in pg6.inner_text("#caseIntakeStatus") and len(b6)==nreq, pg6.inner_text("#caseIntakeStatus"))
     pg6.evaluate("window.AionHybridState.nano = 'ready'")
+    pg6.evaluate("Object.defineProperty(navigator, 'deviceMemory', { value: 8, configurable: true })")
+    pg6.evaluate("""(async () => { const c = document.createElement('canvas'); c.width = 10; c.height = 10; const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+        window.__ip0 = window.__imgPrompts; window.AionCase.readImage(new File([blob], 'big.png', { type: 'image/png' })); })()""")
+    pg6.wait_for_timeout(500)
+    ok("b5: on an 8 GB machine the image read warns first and does not start", "keep it busy" in pg6.inner_text("#caseIntakeStatus") and pg6.evaluate("window.__imgPrompts")==pg6.evaluate("window.__ip0"), pg6.inner_text("#caseIntakeStatus")[:120])
     binv = pg6.evaluate("""window.AionHybrid.contracts.validatePayload('case_research', { instructions: 'x', question: 'see data:image/png;base64,iVBORw0KGgo=' })""")
     ok("b1: the disclosure contract refuses image data in any field", (not binv["ok"]) and any("image or binary" in e for e in binv["errors"]), binv["errors"])
     # Indian identifiers

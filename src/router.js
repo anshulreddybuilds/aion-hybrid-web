@@ -69,6 +69,14 @@ function classifyRaw(err) {
   return "other";
 }
 
+/* A readable error name. DOMExceptions from the Prompt API carry numeric legacy
+ * codes (11 = InvalidStateError), which mean nothing on a receipt. */
+function errName(e) {
+  if (!e) return "fallback_failed";
+  if (typeof e.code === "string" && e.code) return e.code;
+  return (e.name && e.name !== "Error" ? e.name : "") || (e.code ? "code_" + e.code : "") || "fallback_failed";
+}
+
 const STATUS_FOR = { timeout: "timed_out", blocked: "blocked_egress", private_value_blocked: "blocked_egress" };
 
 export function createRouter(deps) {
@@ -199,7 +207,7 @@ export function createRouter(deps) {
           fallback: { from: "cloud", errorClass: cls, code: (err && err.code) || null, reason }, decision: o.decision || null });
       } catch (err2) {
         const failed = recordReceipt({ route: "local-fallback", status: "failed", requestedMode, latencyMs: now() - t1,
-          fallbackReason: reason, egress: { tier: DISCLOSURE_TIERS.LOCAL_ONLY }, errorCode: (err2 && err2.code) || "fallback_failed" });
+          fallbackReason: reason, egress: { tier: DISCLOSURE_TIERS.LOCAL_ONLY }, errorCode: errName(err2) });
         err.receipts = [first, failed]; err.fallbackError = err2;
         throw err;
       }

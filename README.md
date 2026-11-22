@@ -154,7 +154,19 @@ Firebase console, project `aion-hybrid-ai`:
 
 ## Verification: what was and was not tested
 
-**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **133 / 133** checks. The new ones cover the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`). The live Gemini function-calling path of the planner has **not** yet been checked against the real service.
+**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **133 / 133** checks. The new ones cover the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`).
+
+**Live check, 22 Nov 2026** (preview channel of this build, the author's real Chrome, Windows laptop with 8 GB RAM and no GPU; numbers read from the app's own receipts and the browser's network log):
+
+| What | Result |
+|---|---|
+| App Check (reCAPTCHA Enterprise) | verified in 1.8 s |
+| Cloud chat (`gemini-3.5-flash-lite`, sealed) | first attempt stopped at the 15 s limit; next attempt HTTP 200 in 8.1 s |
+| Blindfold Planner, real Gemini | worked: the model called the local tool `estimate_task_effort` twice, then returned a JSON plan that passed validation; 12.5 s; 4 steps, 3 waiting for approval; the ledger matched the receipt to its own requests |
+| Gemini Nano, real (not mocked) | cold, tiny prompt: 21.5 s to first word. Warm, full chat prompt: 2.9 s to first word, 8.3 s total, nothing sent to the cloud. One cold fallback right after a cloud timeout failed after 40 s (the error message now says so) |
+| Automated test browser | App Check failed there (reCAPTCHA does not trust automated browsers), and the app showed the App Check message instead of hanging |
+
+These are single runs on one machine, not averages. Cloud speed varied a lot on this day.
 
 Earlier (main branch, 54 checks): page and panel loading, seeded memories/tasks/approvals, privacy redaction and blocking, Edit -> re-check -> Approve, persistence after reload, mode switching, per-reply badge, Offline Demo Mode blocking external requests, the approvals and mobile pages, the backup-model retry, the exact-error chat bubble, and the saved App Check token.
 

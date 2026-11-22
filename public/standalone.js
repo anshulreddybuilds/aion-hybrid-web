@@ -1219,7 +1219,7 @@
         return dispatch.then(function (g) {
           var fell = !!g.fallback;
           if (g.disclosure) promptChars = g.disclosure.bytes;
-          var shown = sealed ? unsealText(g.text) : g.text;
+          var shown = (sealed ? unsealText(g.text) : g.text).replace(/\s+$/, "");   /* Nano often ends with blank lines */
           recordTurn(sealed && !fell, message, g.text);   /* the SEALED model text; local-fallback turns stay local */
           var proposals = extractProposals(message);
           return persistProposals(proposals).then(function (saved) {
@@ -1369,6 +1369,13 @@
       hint = "The free quota for the cloud model looks used up. Wait a bit or switch to on-device.";
     else
       hint = "The AI request failed.";
+    if (err && err.fallbackError) {
+      /* The cloud failed AND the on-device retry failed: say both. A first
+         Nano answer on a low-memory laptop can fail while the model loads. */
+      hint += "\n\nGemini Nano was tried on this device as a fallback and also failed (" +
+        String(err.fallbackError.name || err.fallbackError.code || "error") + ": " + String(err.fallbackError.message || "").slice(0, 160) +
+        "). If this was the first on-device answer since opening the page, the model may still have been loading; sending again usually works.";
+    }
     return hint + "\n\nRaw error:\n" + raw;
   }
 

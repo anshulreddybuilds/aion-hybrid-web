@@ -490,6 +490,10 @@ with sync_playwright() as p:
         const e = new Error('AI: Error fetching ... [403 ] Permission denied on the service. (AI/fetch-error)');
         const out = [window.AionStandalone._friendly(e), window.AionHybrid.router.classifyError(e, st), window.AionHybrid.router.classifyError(e, {})];
         st.appCheckWarm = w; return out; })()""")
+    fb2 = pg5.evaluate("""(() => { const e = new Error('Cloud model did not start answering within 15 s (timeout)'); e.code = 'timeout';
+        const d = new DOMException('The model failed to load.', 'InvalidStateError'); e.fallbackError = d;
+        return window.AionStandalone._friendly(e); })()""")
+    ok("p4: when cloud AND the Nano fallback fail, the message names both (InvalidStateError, not code 11)", "InvalidStateError" in fb2 and "fallback" in fb2 and "did not answer in time" in fb2, fb2[:200])
     ok("p4: 403 after a failed App Check warm-up is reported as App Check, not as an API-key problem", "App Check" in ach2[0] and ach2[1]=="app_check" and ach2[2]=="permission", [ach2[0][:120], ach2[1], ach2[2]])
     pg5.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))

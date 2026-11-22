@@ -587,6 +587,48 @@ async function localText(prompt, opts) {
   }
 }
 
+/* Warm-up: one tiny on-device prompt so the model is loaded before a real
+ * request (a cold Nano took ~21 s to its first word on an 8 GB laptop). */
+async function warmNano() {
+  if (state.nano !== "ready" || state.nanoWarming) return null;
+  state.nanoWarming = true; renderBar();
+  try {
+    const r = await localText("Reply with the single word: ready.", { label: "Gemini Nano (warm-up)" });
+    state.nanoWarmMs = r.latencyMs;
+    return r;
+  } catch (e) { return null; }
+  finally { state.nanoWarming = false; renderBar(); }
+}
+
+/* On-device JSON job (structured output). ONLY_ON_DEVICE, with a receipt. */
+async function localJSON(prompt, schema, opts) {
+  const t0 = performance.now();
+  const label = (opts && opts.label) || "Gemini Nano";
+  const limitMs = (opts && opts.timeoutMs) || 60000;
+  try {
+    if (state.nano !== "ready") { const e = new Error("Gemini Nano is not ready in this browser."); e.code = "nano_unavailable"; throw e; }
+    if (!ai) throw new Error("Firebase AI Logic is not initialised.");
+    const model = getGenerativeModel(ai, { mode: MODES.only_on_device, onDeviceParams: { promptOptions: { responseConstraint: schema } },
+      inCloudParams: { model: CLOUD_MODELS[0] } });
+    const stop = new Promise((_, reject) => setTimeout(() => { const e = new Error("Gemini Nano did not finish within " + Math.round(limitMs / 1000) + " s (timeout)."); e.code = "timeout"; reject(e); }, limitMs));
+    const result = await Promise.race([model.generateContent(String(prompt).slice(0, 6000)), stop]);
+    let data = null;
+    try { data = JSON.parse(result.response.text()); } catch (e) { data = null; }
+    state.nanoWarm = true;
+    const latencyMs = Math.round(performance.now() - t0);
+    telemetry.recordReceipt({ route: "on-device-nano", status: "completed", model: label, requestedMode: "only_on_device", latencyMs,
+      egress: { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY }, contributors: { local_deterministic: true, local_ai: true } });
+    return { data, latencyMs };
+  } catch (err) {
+    if (!err || err.code !== "nano_unavailable") {
+      try { telemetry.recordReceipt({ route: "on-device-nano", status: err && err.code === "timeout" ? "timed_out" : "failed", model: label,
+        requestedMode: "only_on_device", latencyMs: Math.round(performance.now() - t0), egress: { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY },
+        errorCode: (err && err.code) || "local_failed" }); } catch (e) { /* best effort */ }
+    }
+    throw err;
+  }
+}
+
 /* Gemini Nano with a JSON response constraint (on-device plan fallback). */
 async function plannerLocalCall(prompt, jsonSchema, opts) {
   const limitMs = (opts && opts.timeoutMs) || LOCAL_TIMEOUT_MS;
@@ -629,6 +671,13 @@ function renderBar() {
   $("nanoLabel").textContent = label;
   const btn = $("nanoDownloadBtn");
   btn.hidden = state.nano !== "downloadable";
+  if (state.nano === "ready" && state.nanoWarm && state.nanoWarmMs) $("nanoLabel").textContent = label + " · warm";
+  const warm = $("nanoWarmBtn");
+  if (warm) {
+    warm.hidden = state.nano !== "ready" || !!state.nanoWarm;
+    warm.disabled = !!state.nanoWarming;
+    warm.textContent = state.nanoWarming ? "WARMING… (can take ~20 s)" : "WARM UP NANO";
+  }
   const hint = $("nanoHint");
   if (hint) hint.textContent = state.nano === "ready" || state.nano === "checking" || state.nano === "downloading" ? "" : state.nanoDetail;
   const off = $("offlineDemo");
@@ -695,6 +744,8 @@ function wireBar() {
   sel.addEventListener("change", () => setMode(sel.value));
   $("offlineDemo").addEventListener("change", (e) => setOfflineDemo(e.target.checked));
   $("nanoDownloadBtn").addEventListener("click", downloadNano);
+  const warmBtn = $("nanoWarmBtn");
+  if (warmBtn) warmBtn.addEventListener("click", warmNano);
   const copyBtn = $("appCheckCopyBtn");
   if (copyBtn) copyBtn.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(state.debugToken); copyBtn.textContent = "COPIED"; }
@@ -747,7 +798,7 @@ function boot() {
     telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt,
       evidenceFor, exportReceipts },
     intake: { readQuoteImage, QUOTE_FIELDS },
-    local: { text: localText },
+    local: { text: localText, json: localJSON, warm: warmNano },
     getMode: () => state.mode,
     setMode,
     setOfflineDemo,

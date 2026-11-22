@@ -366,7 +366,9 @@
         '<div class="case-actions">' +
           '<button type="button" class="pill hy-btn" id="caseApproveBtn" disabled>APPROVE THIS EXACT TEXT</button>' +
           '<button type="button" class="pill hy-btn" id="caseSendBtn" disabled>SEND TO CLOUD</button>' +
+          '<button type="button" class="pill hy-btn" id="caseNanoReviewBtn">ASK NANO TO REVIEW THIS TEXT</button>' +
         '</div>' +
+        '<div id="caseNanoReview" class="case-out"></div>' +
         '<div id="caseResult"></div>' +
       '</section>' +
       '<section class="card wide case-card" id="caseReviewCard">' +
@@ -469,6 +471,41 @@
         { label: "Gemini Nano (draft)" }).then(function (g) {
         finish(g.text, "Questions from plain code, wording polished by Gemini Nano on this device in " + (g.latencyMs / 1000).toFixed(1) + " s. Not sent anywhere; copy it if you want to use it.");
       }, function () { finish(plain, "Questions written by plain code (Gemini Nano failed)."); });
+    });
+  }
+
+  /* Nano reads the exact outgoing text ON THIS DEVICE and points at phrases
+   * that look private. Advice only: the pattern rules and the private-value
+   * check still decide what is blocked; Nano can miss things. */
+  var REVIEW_SCHEMA = { type: "object", properties: { flags: { type: "array", items: { type: "object",
+    properties: { phrase: { type: "string" }, reason: { type: "string" } }, required: ["phrase", "reason"] } } }, required: ["flags"] };
+  function nanoReview() {
+    var box = el("caseNanoReview");
+    var H = window.AionHybrid;
+    if (!st.prep || !box) return Promise.resolve();
+    if (!H || !H.local || !window.AionHybridState || window.AionHybridState.nano !== "ready") {
+      setOut("caseNanoReview", "Gemini Nano is not ready in this browser, so there is no second opinion. The pattern rules and the private-value check above still apply.", "Nano review");
+      return Promise.resolve();
+    }
+    var text = st.prep.text;
+    var shared = (st.c.paragraphs || []).filter(function (p) { return p.shared; });
+    setOut("caseNanoReview", "…", "Gemini Nano is reading the exact outgoing text on your device…");
+    return H.local.json("You check text before it is sent to an outside AI service. List up to 6 short phrases in the TEXT that look private or " +
+      "commercially confidential (a person's name, a money amount, an internal note, a personal detail). Copy each phrase exactly. If nothing looks private, " +
+      "return an empty list.\nTEXT:\n" + text, REVIEW_SCHEMA, { label: "Gemini Nano (review)" }).then(function (g) {
+      var flags = (g.data && Array.isArray(g.data.flags) ? g.data.flags : []).filter(function (f) { return f && f.phrase && text.toLowerCase().indexOf(String(f.phrase).toLowerCase()) >= 0; }).slice(0, 6);
+      if (!flags.length) {
+        setOut("caseNanoReview", "Nothing looked private to Gemini Nano in this text.", "Second opinion by Gemini Nano on this device in " + (g.latencyMs / 1000).toFixed(1) + " s. Nano can miss things; nothing was sent.");
+        return;
+      }
+      var lines = flags.map(function (f) {
+        var where = shared.filter(function (p) { return String(p.text).toLowerCase().indexOf(String(f.phrase).toLowerCase()) >= 0; }).map(function (p) { return p.id; });
+        return "\u2022 \"" + f.phrase + "\" - " + f.reason + (where.length ? " (in " + where.join(", ") + ": untick it to keep it private)" : "");
+      });
+      setOut("caseNanoReview", lines.join("\n"), "Second opinion by Gemini Nano on this device in " + (g.latencyMs / 1000).toFixed(1) +
+        " s. Advice only: you decide what to share. Nothing was sent.");
+    }, function (e) {
+      setOut("caseNanoReview", "Gemini Nano could not review the text (" + String(e && e.message || e).slice(0, 120) + "). The pattern rules above still apply.", "Nano review");
     });
   }
 
@@ -630,6 +667,7 @@
     bind("caseQuestion", function (c, v) { c.question = v; });
 
     el("caseIntakeTextBtn").addEventListener("click", function () { if (!st.busy) readPasted(); });
+    el("caseNanoReviewBtn").addEventListener("click", function () { if (!st.busy) nanoReview(); });
     el("caseIntakeFile").addEventListener("change", function (ev) {
       var f = ev.target.files && ev.target.files[0];
       ev.target.value = "";
@@ -698,6 +736,7 @@
     supplierQuestions: supplierQuestions,
     explain: function () { return explainVerdict(); },
     draft: function () { return draftQuestions(); },
+    nanoReview: function () { return nanoReview(); },
     readImage: function (f) { return readImage(f); },
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },

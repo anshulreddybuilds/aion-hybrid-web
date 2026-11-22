@@ -63,7 +63,7 @@ Everything below was built during the contest window (November 2026). The second
 | Case tab (`public/case.js`) | Private case workspace: choose shared passages, preview and approve the exact outgoing text, one send per approval, and a live leak test with canaries. |
 | `src/router.js` | Router v2. Decides the route *before* the prompt is built: messages that look sensitive (passwords, card or ID numbers, API keys) stay on-device when Nano is ready; Offline Demo forces on-device. If the cloud or App Check fails, it answers with Nano and states why. |
 | `src/telemetry.js` | Receipts: one per AI request, append-only and frozen. Route, status, measured latency (`performance.now()`), characters sent, content digest, tool names. Numbers that cannot be measured are left empty, never estimated. |
-| `src/planner.js` | **Blindfold Planner** (`/plan <goal>`): cloud Gemini with function calling (max 2 tool rounds), then a separate structured-JSON request, validated in the browser. 15 s limit for the whole plan. Falls back to Nano (JSON output), then to a simple offline plan. |
+| `src/planner.js` | **Blindfold Planner** (`/plan <goal>`): cloud Gemini with function calling (one round of local tool answers), then a separate structured-JSON request, validated in the browser. Each request has the same 15 s limit as chat; the whole plan is capped at 25 s. If the cloud fails it uses Nano (JSON output) when Nano has already answered in this session, otherwise an instant offline plan, so nobody waits for a cold model. |
 | Privacy Receipts card (`app.js`, `index.html`) | The ledger described above, plus real status rows (Nano, App Check, last cloud call, request counts). |
 | Safety rails | 15 s cloud timeout (no endless spinner); the App Check debug provider can never turn on on the production domains, even with `?appcheck_debug`. |
 
@@ -166,7 +166,7 @@ Firebase console, project `aion-hybrid-ai`:
 | Gemini Nano, real (not mocked) | cold, tiny prompt: 21.5 s to first word. Warm, full chat prompt: 2.9 s to first word, 8.3 s total, nothing sent to the cloud. One cold fallback right after a cloud timeout failed after 40 s (the error message now says so) |
 | Automated test browser | App Check failed there (reCAPTCHA does not trust automated browsers), and the app showed the App Check message instead of hanging |
 
-These are single runs on one machine, not averages. Cloud speed varied a lot on this day.
+These are single runs on one machine, not averages. Cloud speed varied a lot on this day. A later run on the live site showed the planner's 3 cloud requests going past 15 s and a cold Nano fallback taking about 60 s before the offline plan; the planner was then changed to 2 requests, a 25 s plan cap, and no fallback to a cold Nano.
 
 Earlier (main branch, 54 checks): page and panel loading, seeded memories/tasks/approvals, privacy redaction and blocking, Edit -> re-check -> Approve, persistence after reload, mode switching, per-reply badge, Offline Demo Mode blocking external requests, the approvals and mobile pages, the backup-model retry, the exact-error chat bubble, and the saved App Check token.
 

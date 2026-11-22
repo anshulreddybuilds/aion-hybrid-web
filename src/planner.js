@@ -29,8 +29,16 @@ import { Schema } from "firebase/ai";
 import { DISCLOSURE_TIERS, PLAN_OPS, PLAN_MUTATING_OPS, validatePlan } from "./contracts.js";
 import { classifyError, FALLBACK_TEXT } from "./router.js";
 
-export const PLAN_TIMEOUT_MS = 15000;
-export const MAX_TOOL_ROUNDS = 2;
+/* Each cloud request has the same 15 s limit as chat; the whole cloud plan is
+ * capped at 25 s. Measured live on 22 Nov: three requests needed 12.5-15+ s, so
+ * the plan now makes two (one tool round, then the JSON plan). */
+export const PLAN_TIMEOUT_MS = 25000;
+export const CLOUD_CALL_TIMEOUT_MS = 15000;
+export const MAX_TOOL_ROUNDS = 1;
+/* On an 8 GB laptop a COLD Nano took 40-60 s and then failed (live, 22 Nov), so a
+ * fallback plan tries Nano only once it has answered in this session, and gives
+ * it at most this long before the instant offline plan. */
+export const NANO_FALLBACK_TIMEOUT_MS = 25000;
 const MAX_CALLS_PER_ROUND = 3;
 
 export const PLAN_INSTRUCTIONS =
@@ -235,12 +243,15 @@ export function createPlanner(deps) {
     /* ---- local paths: Nano, then deterministic ---- */
     async function localPath(reason, cls, byDesign) {
       const t1 = now();
-      if (state.nano === "ready" && typeof localCall === "function") {
+      /* By choice (Only On-Device / offline): always try Nano. As a fallback:
+       * only when Nano is already warm, so nobody waits a minute for a cold load. */
+      const tryNano = state.nano === "ready" && typeof localCall === "function" && (byDesign || state.nanoWarm === true);
+      if (tryNano) {
         try {
           const prompt = "You plan tasks for the user. Return JSON only, matching the schema. Use op create_task for a to-do, " +
             "propose_memory for a fact worth keeping, note for advice. Keep titles short.\nGOAL: " + clip(input.localGoal || input.goal, 800) +
             (input.localContext ? "\nCONTEXT:\n" + clip(input.localContext, 1500) : "");
-          const out = await localCall(prompt, PLAN_JSON_SCHEMA);
+          const out = await localCall(prompt, PLAN_JSON_SCHEMA, byDesign ? {} : { timeoutMs: NANO_FALLBACK_TIMEOUT_MS });
           const v = validatePlan(parseJson(out && out.text), { knownRefs: [] });
           if (v.ok) {
             const receipt = recordReceipt({ route: byDesign ? "on-device-nano" : "local-fallback", status: byDesign ? "completed" : "fallback",
@@ -280,7 +291,18 @@ export function createPlanner(deps) {
         reject(e);
       }, budgetMs);
     });
-    const guarded = (p) => Promise.race([p, deadline]);
+    /* Per request: 15 s, like chat. Whole plan: the deadline above. */
+    const guarded = (p) => {
+      let t = null;
+      const perCall = new Promise((_, reject) => {
+        t = setTimeout(() => {
+          try { if (controller) controller.abort(); } catch (e) { /* ignore */ }
+          const e = new Error("A planner request to the cloud did not answer within " + Math.round(CLOUD_CALL_TIMEOUT_MS / 1000) + " s (timeout).");
+          e.code = "timeout"; reject(e);
+        }, CLOUD_CALL_TIMEOUT_MS);
+      });
+      return Promise.race([p, deadline, perCall]).finally(() => clearTimeout(t));
+    };
 
     try {
       /* A. Egress gate */
@@ -304,7 +326,7 @@ export function createPlanner(deps) {
         const r = await guarded(cloudCall({ tools: toolDeclarations(), contents, signal: controller && controller.signal }));
         model = r.model || model;
         const fcs = (r.response && typeof r.response.functionCalls === "function" && r.response.functionCalls()) || [];
-        if (!fcs.length || rounds >= MAX_TOOL_ROUNDS) break;
+        if (!fcs.length) break;
         const modelTurn = (r.response.candidates && r.response.candidates[0] && r.response.candidates[0].content) ||
           { role: "model", parts: fcs.map((fc) => ({ functionCall: fc })) };
         const answers = [];
@@ -322,6 +344,7 @@ export function createPlanner(deps) {
         });
         contents.push(modelTurn, { role: "user", parts: answers });
         rounds += 1;
+        if (rounds >= MAX_TOOL_ROUNDS) break;   /* answers go straight into the JSON request */
       }
 
       /* C. Structured JSON plan (separate request, no tools) */

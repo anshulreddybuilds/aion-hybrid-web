@@ -415,6 +415,7 @@ async function generate(prompt, onChunk, opts) {
           : modeKey === "prefer_on_device" && state.nano === "ready" ? SOURCE.on_device : SOURCE.in_cloud;
       }
       if (source === SOURCE.in_cloud) state.cloudModel = cloudModel;
+      if (source === SOURCE.on_device) state.nanoWarm = true;   /* model loaded: later fallbacks can use it */
       return {
         text: text || "(The model returned an empty reply.)",
         source,
@@ -485,7 +486,8 @@ async function plannerCloudCall(req) {
 }
 
 /* Gemini Nano with a JSON response constraint (on-device plan fallback). */
-async function plannerLocalCall(prompt, jsonSchema) {
+async function plannerLocalCall(prompt, jsonSchema, opts) {
+  const limitMs = (opts && opts.timeoutMs) || LOCAL_TIMEOUT_MS;
   if (!ai) throw new Error("Firebase AI Logic is not initialised.");
   const model = getGenerativeModel(ai, {
     mode: MODES.only_on_device,
@@ -494,10 +496,11 @@ async function plannerLocalCall(prompt, jsonSchema) {
   });
   const run = model.generateContent(prompt);
   const stop = new Promise((_, reject) => setTimeout(() => {
-    const e = new Error("On-device Gemini Nano did not finish the plan within " + Math.round(LOCAL_TIMEOUT_MS / 1000) + " s (timeout).");
+    const e = new Error("On-device Gemini Nano did not finish the plan within " + Math.round(limitMs / 1000) + " s (timeout).");
     e.code = "timeout"; reject(e);
-  }, LOCAL_TIMEOUT_MS));
+  }, limitMs));
   const result = await Promise.race([run, stop]);
+  state.nanoWarm = true;
   return { text: result.response.text(), model: "Gemini Nano" };
 }
 

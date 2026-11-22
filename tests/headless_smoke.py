@@ -434,6 +434,9 @@ with sync_playwright() as p:
     mode5["m"]="403"
     pf = pg5.evaluate("%s.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => ({ok:r.ok, source:r.source, fb:r.fallback}), e => ({err:e.code||e.message}))" % (H, json.dumps(plan_in)))
     ok("p3: planner falls back (on-device or deterministic) and says why", pf.get("ok") and pf.get("source") in ("on-device-nano","deterministic") and pf.get("fb"), pf)
+    cold = pg5.evaluate("""(() => { const st = window.AionHybridState; const w = st.nanoWarm; st.nanoWarm = false; const t = performance.now();
+        return window.AionHybrid.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => { st.nanoWarm = w; return [r.source, Math.round(performance.now() - t)]; }); })()""" % json.dumps(plan_in))
+    ok("p3: with a cold Nano, a failed cloud plan goes straight to the instant offline plan (no long wait)", cold[0]=="deterministic" and cold[1] < 5000, cold)
     mode5["m"]="ok"
     # chat + /plan through the real UI: badge carries the receipt line, events grow
     ev0 = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.length)")
@@ -463,7 +466,7 @@ with sync_playwright() as p:
     ok("p4: ledger has no placeholder or NaN values", all(x not in ledger for x in ("undefined","NaN","null ms","unreadable")), ledger[:200])
     ok("p4: planner row shows tool names", "tools: count_memories_by_type" in ledger or "Offline plan" in ledger, ledger[:300])
     plan_rec = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().filter(x => x.route==='cloud-blindfold' && x.status==='completed').slice(-1)[0]; return r ? window.AionHybrid.telemetry.evidenceFor(r).length : -1; })()")
-    ok("p4: planner receipt is matched to exactly its own 3 network requests", plan_rec == 3, plan_rec)
+    ok("p4: planner receipt is matched to exactly its own 2 network requests (1 tool round + JSON)", plan_rec == 2, plan_rec)
     chat_rec = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().filter(x => x.route==='cloud-sealed-chat' && x.status==='completed').slice(-1)[0]; return r ? window.AionHybrid.telemetry.evidenceFor(r).length : -1; })()")
     ok("p4: chat receipt is matched to exactly 1 network request", chat_rec == 1, chat_rec)
     cloud_row = pg5.locator("#receiptsList .receipt-row:has(details)").first

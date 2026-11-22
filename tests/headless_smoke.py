@@ -347,6 +347,27 @@ with sync_playwright() as p:
     pg4.uncheck("#caseInstall"); pg4.wait_for_timeout(1200)
     ok("p5: what-if: dropping the installation requirement moves the verdict to 'needs answers'", "Needs answers" in pg4.inner_text("#caseVerdictChip"), pg4.inner_text("#caseVerdictChip"))
     ok("p5: what-if changes made zero cloud requests (Playwright count and on-screen count)", len(b4)==nb and pg4.inner_text("#caseNetCount").strip()=="0", (nb, len(b4), pg4.inner_text("#caseNetCount")))
+    # ---- batch 3: explanation + supplier draft, both on the device ----
+    nb3 = len(b4)
+    pg4.click("#caseExplainBtn"); pg4.wait_for_function("/Written by/.test(document.getElementById('caseExplainOut').textContent)", timeout=15000)
+    ex = pg4.inner_text("#caseExplainOut")
+    ok("b3: EXPLAIN runs on Gemini Nano on the device, nothing sent", "Written by Gemini Nano on this device" in ex and len(b4)==nb3, ex[:160])
+    exr = pg4.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().filter(x => x.model === 'Gemini Nano (explain)').slice(-1)[0]; return r ? [r.route, r.status, r.egressAudit.disclosureTier] : null; })()")
+    ok("b3: the explanation gets an on-device receipt", exr==["on-device-nano","completed","local_only"], exr)
+    pg4.click("#caseDraftBtn"); pg4.wait_for_function("/Checked against your private values/.test(document.getElementById('caseDraftOut').textContent)", timeout=15000)
+    dr = pg4.inner_text("#caseDraftOut")
+    ok("b3: supplier draft is checked against private values (none found) and not sent", "none found in this draft" in dr and len(b4)==nb3, dr[:200])
+    qs = pg4.evaluate("window.AionCase.supplierQuestions(window.AionCase.state.c, window.AionCase.reconcile(window.AionCase.state.c))")
+    ok("b3: plain-code questions come from the non-passing checks and contain no private value", len(qs)>=1 and all("5,00,000" not in q and "2026-12-11" not in q for q in qs), qs)
+    pg4.evaluate("""(() => { const H = window.AionHybrid; window.__realLocal = H.local.text;
+        H.local.text = () => Promise.resolve({ text: 'Hello. Our budget is Rs 5,00,000 including GST, can you match it?', latencyMs: 5 }); })()""")
+    pg4.evaluate("document.getElementById('caseDraftOut').innerHTML = ''")
+    pg4.click("#caseDraftBtn"); pg4.wait_for_function("/Checked against your private values/.test(document.getElementById('caseDraftOut').textContent)", timeout=15000)
+    ok("b3: a draft that reveals the private budget is flagged before you copy it", "PROBLEM FOUND" in pg4.inner_text("#caseDraftOut") and "marked private" in pg4.inner_text("#caseDraftOut"), pg4.inner_text("#caseDraftOut")[:220])
+    pg4.evaluate("window.AionHybrid.local.text = window.__realLocal; window.AionHybridState.nano = 'unavailable'; document.getElementById('caseExplainOut').innerHTML = ''")
+    pg4.click("#caseExplainBtn"); pg4.wait_for_function("/Written by/.test(document.getElementById('caseExplainOut').textContent)", timeout=5000)
+    ok("b3: without Nano the explanation is written by plain code and says so", "Written by plain code" in pg4.inner_text("#caseExplainOut") and "Deadline" in pg4.inner_text("#caseExplainOut"), pg4.inner_text("#caseExplainOut")[:200])
+    pg4.evaluate("window.AionHybridState.nano = 'ready'")
     pure = pg4.evaluate("""(() => { const R = window.AionCase.reconcile;
         const c = { paragraphs: [{id:'P1', heading:'Overview', shared:true, text:'Nice kit.'}], privateConstraints: { maxBudget:'Rs 1,00,000 including GST', readyBy:'2026-12-11', installationRequired:true } };
         const r = R(c); return [r.verdict, r.checks.map(k => k.status)]; })()""")

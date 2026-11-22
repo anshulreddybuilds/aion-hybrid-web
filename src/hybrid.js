@@ -563,6 +563,30 @@ async function readQuoteImage(file) {
   }
 }
 
+/* Short on-device text jobs (explanations, wording). ONLY_ON_DEVICE: if Nano
+ * is not ready this throws and the caller uses its plain-code text instead.
+ * Each run gets a receipt that shows nothing was sent. */
+async function localText(prompt, opts) {
+  const t0 = performance.now();
+  const label = (opts && opts.label) || "Gemini Nano";
+  try {
+    if (state.nano !== "ready") { const e = new Error("Gemini Nano is not ready in this browser."); e.code = "nano_unavailable"; throw e; }
+    const g = await generate(String(prompt).slice(0, 6000), null, { mode: "only_on_device" });
+    state.nanoWarm = true;
+    const receipt = telemetry.recordReceipt({ route: "on-device-nano", status: "completed", model: label, requestedMode: "only_on_device",
+      latencyMs: g.latencyMs, firstChunkMs: g.firstChunkMs, egress: { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY },
+      contributors: { local_deterministic: true, local_ai: true } });
+    return { text: String(g.text || "").replace(/\s+$/, ""), latencyMs: g.latencyMs, receipt };
+  } catch (err) {
+    if (!err || err.code !== "nano_unavailable") {
+      try { telemetry.recordReceipt({ route: "on-device-nano", status: err && err.code === "timeout" ? "timed_out" : "failed", model: label,
+        requestedMode: "only_on_device", latencyMs: Math.round(performance.now() - t0), egress: { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY },
+        errorCode: (err && err.code) || "local_failed" }); } catch (e) { /* best effort */ }
+    }
+    throw err;
+  }
+}
+
 /* Gemini Nano with a JSON response constraint (on-device plan fallback). */
 async function plannerLocalCall(prompt, jsonSchema, opts) {
   const limitMs = (opts && opts.timeoutMs) || LOCAL_TIMEOUT_MS;
@@ -723,6 +747,7 @@ function boot() {
     telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt,
       evidenceFor, exportReceipts },
     intake: { readQuoteImage, QUOTE_FIELDS },
+    local: { text: localText },
     getMode: () => state.mode,
     setMode,
     setOfflineDemo,

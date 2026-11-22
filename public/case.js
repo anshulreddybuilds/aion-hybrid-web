@@ -392,6 +392,86 @@
     renderLeak();
   }
 
+  /* ---------------- explanation + supplier questions ---------------- */
+  /* Plain-code text first (always available); Nano may then rewrite it ON THIS
+   * DEVICE. Nano gets the private details only for the explanation, which is
+   * shown here and never sent. The supplier draft is built WITHOUT private
+   * values, and is scanned for them before it is shown. */
+  function plainExplanation(r) {
+    var lead = { fits: "This supplier fits your private requirements.", needs_answers: "This supplier might work, but some answers are missing.",
+      not_suitable: "This supplier does not fit your private requirements." }[r.verdict];
+    return lead + " " + r.checks.filter(function (k) { return k.status !== "pass"; }).map(function (k) { return k.label + ": " + k.detail; }).join(" ");
+  }
+  function supplierQuestions(c, r) {
+    var q = [];
+    r.checks.forEach(function (k) {
+      if (k.status === "pass") return;
+      if (k.id === "budget") q.push(k.status === "unknown" ? "Please confirm the total price, and whether GST is included." : "Please confirm the final total including GST, and whether there is any room on price.");
+      if (k.id === "deadline") q.push("Can the equipment be delivered and fully set up the day before the event, so it is working before the start?");
+      if (k.id === "install") q.push(k.status === "unknown" ? "Is installation and setup by your technicians included?" : "Please quote installation and setup by your own certified technicians.");
+    });
+    return q;
+  }
+  function plainDraft(c, qs) {
+    return "Hello " + (c.supplier || "there").replace(/\s*\(fictional\)/i, "") + ",\n\nThank you for the quotation. Before we decide, could you help with these points:\n" +
+      qs.map(function (x, i) { return (i + 1) + ". " + x; }).join("\n") + "\n\nThank you.";
+  }
+  function scanDraft(text) {
+    var hits = eg() && eg().scanPrivate ? eg().scanPrivate(text) : [];
+    return Array.from(new Set(hits.map(function (h) { return h.kind.replace(/_/g, " "); })));
+  }
+  function setOut(id, text, meta, warn) {
+    var box = el(id);
+    if (!box) return;
+    box.innerHTML = '<div class="case-out-meta"></div><pre class="case-pre case-out-text"></pre>' + (warn ? '<div class="case-warn"></div>' : "");
+    box.querySelector(".case-out-meta").textContent = meta;
+    box.querySelector(".case-out-text").textContent = text;
+    if (warn) box.querySelector(".case-warn").textContent = warn;
+  }
+  function explainVerdict() {
+    var r = reconcile(st.c), plain = plainExplanation(r);
+    var H = window.AionHybrid;
+    if (!H || !H.local || !window.AionHybridState || window.AionHybridState.nano !== "ready") {
+      setOut("caseExplainOut", plain, "Written by plain code in this browser (Gemini Nano is not ready here).");
+      return Promise.resolve();
+    }
+    setOut("caseExplainOut", "…", "Gemini Nano is writing this on your device…");
+    var pc = st.c.privateConstraints || {};
+    var prompt = "You help a buyer decide on a supplier. In at most 4 short sentences, in plain English, explain the decision below. " +
+      "Use only these facts; do not add any.\nDECISION: " + VERDICT_TEXT[r.verdict] + "\nCHECKS:\n" +
+      r.checks.map(function (k) { return "- " + k.label + " (" + k.status + "): " + k.detail; }).join("\n") +
+      (pc.confidentialNote ? "\nBUYER'S PRIVATE NOTE: " + pc.confidentialNote : "");
+    return H.local.text(prompt, { label: "Gemini Nano (explain)" }).then(function (g) {
+      setOut("caseExplainOut", g.text, "Written by Gemini Nano on this device in " + (g.latencyMs / 1000).toFixed(1) + " s, using your private details. Not sent anywhere.");
+    }, function (e) {
+      setOut("caseExplainOut", plain, "Written by plain code (Gemini Nano failed: " + String(e && e.message || e).slice(0, 120) + ").");
+    });
+  }
+  function draftQuestions() {
+    var r = reconcile(st.c), qs = supplierQuestions(st.c, r);
+    if (!qs.length) { setOut("caseDraftOut", "Nothing to ask: every check passed.", "Plain code in this browser."); return Promise.resolve(); }
+    var plain = plainDraft(st.c, qs);
+    var H = window.AionHybrid;
+    var finish = function (text, meta) {
+      var hits = scanDraft(text);
+      setOut("caseDraftOut", text, meta + " Checked against your private values: " + (hits.length ? "PROBLEM FOUND." : "none found in this draft."),
+        hits.length ? "This draft mentions something you marked private (" + hits.join(", ") + "). Remove it before you send it, unless you mean to share it." : "");
+    };
+    var sync = api().syncPrivateRegistry ? api().syncPrivateRegistry() : Promise.resolve();
+    return sync.then(function () {
+      if (!H || !H.local || !window.AionHybridState || window.AionHybridState.nano !== "ready") {
+        finish(plain, "Questions written by plain code from the failed and unknown checks (Gemini Nano is not ready here).");
+        return;
+      }
+      setOut("caseDraftOut", "…", "Gemini Nano is polishing the wording on your device…");
+      /* Nano sees ONLY the code-written draft: it has no private value to leak. */
+      return H.local.text("Rewrite this short message to a supplier so it is polite and clear. Keep every question and do not add any numbers, dates or facts:\n\n" + plain,
+        { label: "Gemini Nano (draft)" }).then(function (g) {
+        finish(g.text, "Questions from plain code, wording polished by Gemini Nano on this device in " + (g.latencyMs / 1000).toFixed(1) + " s. Not sent anywhere; copy it if you want to use it.");
+      }, function () { finish(plain, "Questions written by plain code (Gemini Nano failed)."); });
+    });
+  }
+
   var VERDICT_TEXT = { fits: "Fits your private requirements", needs_answers: "Needs answers before signing", not_suitable: "Not suitable on your private requirements" };
   var CLOUD_TEXT = { reasonable: "Reasonable", caution: "Caution", "not suitable": "Not suitable" };
   var STATUS_TEXT = { pass: "OK", fail: "FAILS", unknown: "UNKNOWN", risk: "AT RISK" };
@@ -428,9 +508,15 @@
       var n = eg().outboundSince(st.cloudAt).length;
       net = '<div class="case-kv"><span>Requests to the cloud since it answered</span><b id="caseNetCount">' + n + '</b></div>';
     }
-    box.innerHTML = compare + rows +
+    var actions = '<div class="case-actions">' +
+      '<button type="button" class="pill hy-btn" id="caseExplainBtn">EXPLAIN ON THIS DEVICE</button>' +
+      (r.verdict !== "fits" ? '<button type="button" class="pill hy-btn" id="caseDraftBtn">DRAFT QUESTIONS FOR THE SUPPLIER</button>' : '') +
+      '</div><div id="caseExplainOut" class="case-out"></div><div id="caseDraftOut" class="case-out"></div>';
+    box.innerHTML = compare + rows + actions +
       (r.privatePassagesUsed.length ? '<div class="case-kv"><span>Read locally, never sent</span><b>' + esc(r.privatePassagesUsed.join(", ")) + ' and your private requirements</b></div>' : '') +
       net;
+    el("caseExplainBtn").addEventListener("click", function () { if (!st.busy) explainVerdict(); });
+    if (el("caseDraftBtn")) el("caseDraftBtn").addEventListener("click", function () { if (!st.busy) draftQuestions(); });
   }
 
   function renderRevision() {
@@ -609,6 +695,9 @@
     cloudVerdict: cloudVerdict,
     compareVerdicts: compareVerdicts,
     quoteFromText: quoteFromText,    /* pure: pasted text -> passages */
+    supplierQuestions: supplierQuestions,
+    explain: function () { return explainVerdict(); },
+    draft: function () { return draftQuestions(); },
     readImage: function (f) { return readImage(f); },
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },

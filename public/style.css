@@ -1137,3 +1137,7 @@ body.offline-demo .hy-bar { outline:1px dashed rgba(232,181,58,.35); outline-off
 .receipt-earlier { margin-top:8px; font-size:11px }
 .receipt-earlier summary { cursor:pointer; color:var(--steel) }
 .receipt-earlier .hud-btn { margin-top:6px }
+
+.case-out { margin-top:8px }
+.case-out-meta { font-size:11px; color:var(--steel); margin:4px 0 }
+.case-out-text { white-space:pre-wrap }

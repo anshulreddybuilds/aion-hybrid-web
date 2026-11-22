@@ -1436,7 +1436,7 @@ section.active{display:block}
       if(d.meta){ /* hybrid build: where it ran + how long (same facts as the desktop badge) */
         var tag=document.createElement("div");
         tag.className="meta";
-        tag.textContent=(d.meta.source==="on_device"?"On-Device (Gemini Nano)":"In-Cloud (Gemini Fallback)")+" · "+Number(d.meta.latency_ms||0).toLocaleString()+" ms";
+        tag.textContent=(d.meta.source==="on_device"?"On-Device (Gemini Nano)":"In-Cloud (Gemini)")+" · "+Number(d.meta.latency_ms||0).toLocaleString()+" ms";
         pending.appendChild(tag);
       }
       renderProposed(d.proposed_memories||[]);

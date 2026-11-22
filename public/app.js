@@ -2243,7 +2243,7 @@ function attachAiBadge(bubble, meta) {
     ? "Offline plan (no AI, made in this browser) \u00B7 " + ms
     : onDevice
     ? "On-Device (Gemini Nano) \u00B7 " + ms
-    : "In-Cloud (Gemini Fallback) \u00B7 " + (meta.model || "cloud model") + " \u00B7 " + ms;
+    : (meta.requested_mode === "prefer_on_device" ? "In-Cloud (Gemini, Nano not used) \u00B7 " : "In-Cloud (Gemini) \u00B7 ") + (meta.model || "cloud model") + " \u00B7 " + ms;
   if (meta.fallback) badge.classList.add("fell-back");
   /* Telemetry split (hybrid-v2): requested route vs what actually ran, whether
      the SDK reported the source itself, and who contributed to this reply. */

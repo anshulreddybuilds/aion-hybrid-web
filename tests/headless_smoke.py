@@ -160,7 +160,7 @@ with sync_playwright() as p:
     pg2.fill("#chatInput","Say hello"); pg2.click("#sendBtn")
     pg2.wait_for_function("document.querySelectorAll('.ai-badge').length>=1", timeout=15000)
     cb = pg2.locator(".ai-badge").last
-    ok("cloud badge after model fallback", "in-cloud (gemini fallback)" in cb.inner_text().lower(), cb.inner_text())
+    ok("cloud badge after model fallback (says In-Cloud and names the backup model)", "in-cloud (gemini" in cb.inner_text().lower() and "hydrogen" in cb.inner_text().lower(), cb.inner_text())
     ok("backup model used", "gemini-4-hydrogen" in (cb.get_attribute("title") or ""), cb.get_attribute("title"))
     ok("cloud badge text shows model + ms", "gemini-4-hydrogen" in cb.inner_text().lower() and "ms" in cb.inner_text().lower(), cb.inner_text())
     ok("cloud reply shown", "CLOUD-FAKE" in pg2.inner_text("#chatLog"))
@@ -285,7 +285,7 @@ with sync_playwright() as p:
         req=route.request
         if req.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
         b4.append(req.post_data or "")
-        c={"candidates":[{"content":{"role":"model","parts":[{"text":"Provisional: the supplier looks reasonable on the shared passages [P1][S1]. Clarify warranty conditions."}]},"finishReason":"STOP"}]}
+        c={"candidates":[{"content":{"role":"model","parts":[{"text":"VERDICT: reasonable\nProvisional: the supplier looks reasonable on the shared passages [P1][S1]. Clarify warranty conditions."}]},"finishReason":"STOP"}]}
         return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body="data: "+json.dumps(c)+"\r\n\r\n")
     pg4.route("**/firebasevertexai.googleapis.com/**", vertex4)
     pg4.goto(f"http://127.0.0.1:{PORT}/index.html#case")
@@ -331,6 +331,25 @@ with sync_playwright() as p:
     ok("p2: approval is one-shot (used up after send)", "used up" in pg4.inner_text("#caseApprovalChip") and pg4.is_disabled("#caseSendBtn"))
     resend = pg4.evaluate("window.AionStandalone.caseApi.send(window.AionCase.state.prep.disclosure).then(() => 'SENT', e => e.code)")
     ok("p2: same disclosure cannot be sent twice", resend=="disclosure_used", resend)
+    # ---- private review / verdict flip ----
+    pg4.wait_for_function("document.getElementById('caseVerdictChip') && document.getElementById('caseVerdictChip').textContent.length > 5", timeout=5000)
+    rv = pg4.inner_text("#caseReview")
+    ok("p5: cloud said reasonable, local review says not suitable (verdict flip shown)", "Reasonable" in rv and "Not suitable on your private requirements" in rv and "changed by" in rv, rv[:240])
+    ok("p5: three local checks fail on the sample case (budget, deadline, installation)", pg4.locator("#caseReview .case-check-row.is-fail").count()==3 and "Rs 4,54,300" in rv and "Rs 54,300" in rv, rv[:400])
+    ok("p5: review names the unshared passages it read locally (P5, P6)", "P6" in rv and "P5" in rv and "never sent" in rv)
+    ok("p5: the private budget and the unshared price never reached the cloud", all(x not in sent_body for x in ("4,00,000","3,85,000","installation of the LED wall")), "")
+    nb = len(b4)
+    pg4.fill("#caseBudget", "Rs 5,00,000 including GST"); pg4.wait_for_timeout(1200)
+    rv2 = pg4.inner_text("#caseReview")
+    ok("p5: what-if: raising the private budget passes the budget check, other fails remain", pg4.locator("#caseReview .case-check-row.is-fail").count()==2 and "within your private limit of Rs 5,00,000" in rv2, rv2[:300])
+    pg4.uncheck("#caseInstall"); pg4.wait_for_timeout(1200)
+    ok("p5: what-if: dropping the installation requirement moves the verdict to 'needs answers'", "Needs answers" in pg4.inner_text("#caseVerdictChip"), pg4.inner_text("#caseVerdictChip"))
+    ok("p5: what-if changes made zero cloud requests (Playwright count and on-screen count)", len(b4)==nb and pg4.inner_text("#caseNetCount").strip()=="0", (nb, len(b4), pg4.inner_text("#caseNetCount")))
+    pure = pg4.evaluate("""(() => { const R = window.AionCase.reconcile;
+        const c = { paragraphs: [{id:'P1', heading:'Overview', shared:true, text:'Nice kit.'}], privateConstraints: { maxBudget:'Rs 1,00,000 including GST', readyBy:'2026-12-11', installationRequired:true } };
+        const r = R(c); return [r.verdict, r.checks.map(k => k.status)]; })()""")
+    ok("p5: missing price, date and installation terms are reported as unknown, never guessed", pure==["needs_answers",["unknown","unknown","unknown"]], pure)
+    pg4.evaluate("window.AionStandalone.caseApi.reset().then(() => window.AionCase.reload())"); pg4.wait_for_timeout(800)
     n1 = len(b4)
     pg4.click("#caseLeakBtn"); pg4.wait_for_selector("#caseLeakSummary, #caseLeakError", timeout=60000)
     leak = pg4.evaluate("window.AionCase.state.leak")
@@ -450,6 +469,18 @@ with sync_playwright() as p:
     except Exception as e: print("   /plan wait timed out; chat tail:", pg5.inner_text("#chatLog")[-400:].replace("\n"," | "))
     log = pg5.inner_text("#chatLog")
     ok("p3: /plan command answers with numbered steps and approval status", "1. " in log and ("waiting for your approval" in log or "note only" in log), log[-260:])
+    # regression (found live 22 Nov): a goal repeating a PENDING task title was blocked instead of sealed
+    pend = pg5.evaluate("""window.AionStandalone.store.all('proposals').then(ps => { const p = ps.find(x => x.status==='pending' && x.kind==='task'); return p ? p.content : null; })""")
+    if pend:
+        n_req = len(b5)
+        nrc = pg5.evaluate("window.AionHybrid.telemetry.getReceipts().length")
+        pg5.fill("#chatInput", "/plan " + pend); pg5.click("#sendBtn")
+        pg5.wait_for_function("window.AionHybrid.telemetry.getReceipts().length > %d" % nrc, timeout=25000); pg5.wait_for_timeout(500)
+        lastr = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().slice(-1)[0]; return [r.route, r.status]; })()")
+        sentp = "".join(b5[n_req:])
+        ok("p4: /plan whose goal repeats a pending task title is sealed and sent, not blocked", lastr==["cloud-blindfold","completed"] and pend not in sentp and "[TASK_" in sentp, (lastr, pend))
+    else:
+        ok("p4: /plan whose goal repeats a pending task title is sealed and sent, not blocked", False, "no pending task proposal in seed data")
     ev1 = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.length)")
     kinds = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.map(e => e.event_type))")
     ok("p3: EVENTS LOGGED grows after chat + plan (chat.reply + plan.created)", ev1 >= ev0 + 2 and "chat.reply" in kinds and "plan.created" in kinds, (ev0, ev1, kinds[-4:]))

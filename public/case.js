@@ -38,6 +38,133 @@
     });
   }
 
+  /* ---------------- private review (verdict flip) ---------------- */
+  /* Runs ONLY in this browser, on the FULL proposal (shared and unshared
+   * passages) and the private requirements. Plain code, no model, no network.
+   * Every check names the passage it read and says plainly when it could not
+   * read something, instead of guessing. */
+  var MONTHS = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
+  function rupees(n) { return "Rs " + Math.round(n).toLocaleString("en-IN"); }
+  function readAmount(text) {
+    var m = String(text || "").match(/(?:rs\.?|inr|\u20b9)\s*([\d][\d,]*(?:\.\d+)?)/i);
+    if (!m) return null;
+    var n = parseFloat(m[1].replace(/,/g, ""));
+    return isFinite(n) && n > 0 ? n : null;
+  }
+  function gstIncluded(text) {
+    var t = String(text || "").toLowerCase();
+    if (/(incl\.?|including|inclusive of)\s*(of\s*)?gst/.test(t)) return true;
+    if (/(plus|\+|excluding|excl\.?|exclusive of)\s*gst/.test(t)) return false;
+    return null;
+  }
+  function readDate(text) {
+    var t = String(text || "");
+    var iso = t.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?/);
+    if (iso) return { day: Date.UTC(+iso[1], +iso[2] - 1, +iso[3]), time: iso[4] ? (+iso[4]) * 60 + (+iso[5]) : null, label: iso[0] };
+    var dm = t.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})/i);
+    if (dm) {
+      var tm = t.match(/\b(\d{1,2}):(\d{2})\b/);
+      return { day: Date.UTC(+dm[3], MONTHS[dm[2].toLowerCase()], +dm[1]), time: tm ? (+tm[1]) * 60 + (+tm[2]) : null, label: dm[0],
+        vague: !tm && /morning|afternoon|evening|during the day/i.test(t) };
+    }
+    return null;
+  }
+  function findPara(c, headRe, textRe) {
+    var ps = c.paragraphs || [];
+    for (var i = 0; i < ps.length; i++) if (headRe.test(ps[i].heading || "")) return ps[i];
+    for (var j = 0; j < ps.length; j++) if (textRe && textRe.test(ps[j].text || "")) return ps[j];
+    return null;
+  }
+  function installStatus(c) {
+    var ps = c.paragraphs || [];
+    for (var i = 0; i < ps.length; i++) {
+      var t = ps[i].text || "";
+      if (/not included[^.]*install|install[^.]*not included|excluding[^.]*install|install[^.]*(excluded|extra cost|quoted separately)/i.test(t)) return { state: "excluded", from: ps[i].id };
+    }
+    for (var k = 0; k < ps.length; k++) {
+      var u = ps[k].text || "";
+      if (/(installation|setup|set-up)[^.]*(is |are )?included|includes?[^.]*(installation|setup)|installed by/i.test(u)) return { state: "included", from: ps[k].id };
+    }
+    return { state: "unknown", from: null };
+  }
+
+  function reconcile(c) {
+    var pc = c.privateConstraints || {};
+    var checks = [];
+    var rate = parseFloat(String(pc.gstRate == null || pc.gstRate === "" ? "18" : pc.gstRate).replace(/[^\d.]/g, ""));
+    if (!isFinite(rate) || rate < 0 || rate > 50) rate = 18;
+
+    /* 1. Budget */
+    var priceP = findPara(c, /price|cost|fee|commercial/i, /(rs\.?|inr|\u20b9)\s*\d/i);
+    var quote = priceP ? readAmount(priceP.text) : null;
+    var budget = readAmount(pc.maxBudget);
+    if (!budget) {
+      checks.push({ id: "budget", label: "Budget", status: "unknown", detail: "No maximum budget entered.", from: [] });
+    } else if (!quote) {
+      checks.push({ id: "budget", label: "Budget", status: "unknown", detail: "The proposal does not state a price AION can read. Ask the supplier for a total.", from: [] });
+    } else {
+      var qInc = gstIncluded(priceP.text), bInc = gstIncluded(pc.maxBudget);
+      var qTotal = qInc === false ? quote * (1 + rate / 100) : quote;
+      var bTotal = bInc === false ? budget * (1 + rate / 100) : budget;
+      var how = rupees(quote) + (qInc === false ? " + " + rate + "% GST = " + rupees(qTotal) : (qInc ? " including GST" : " (GST not stated)"));
+      if (qTotal > bTotal) {
+        checks.push({ id: "budget", label: "Budget", status: "fail", detail: how + " is over your private limit of " + rupees(bTotal) +
+          " by " + rupees(qTotal - bTotal) + ".", from: [priceP.id], assumption: qInc === false ? rate + "% GST assumed (change it in Private requirements)" : "" });
+      } else {
+        checks.push({ id: "budget", label: "Budget", status: qInc === null ? "unknown" : "pass", detail: how + " is within your private limit of " + rupees(bTotal) +
+          (qInc === null ? ", but the proposal does not say whether GST is included." : "."), from: [priceP.id] });
+      }
+    }
+
+    /* 2. Ready-by deadline */
+    var ready = readDate(pc.readyBy);
+    var delP = findPara(c, /deliver/i, /deliver/i);
+    var del = delP ? readDate(delP.text) : null;
+    var inst = installStatus(c);
+    if (!ready) {
+      checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "No ready-by date entered.", from: [] });
+    } else if (!del) {
+      checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The proposal does not give a delivery date AION can read. Ask for one.", from: delP ? [delP.id] : [] });
+    } else if (del.day > ready.day) {
+      checks.push({ id: "deadline", label: "Deadline", status: "fail", detail: "Delivery (" + del.label + ") is after the date it must already be working (" + ready.label + ").", from: [delP.id] });
+    } else if (del.day === ready.day) {
+      var noSetup = pc.installationRequired && inst.state !== "included";
+      var late = del.time != null && ready.time != null && del.time >= ready.time;
+      checks.push({ id: "deadline", label: "Deadline", status: noSetup || late ? "fail" : "risk",
+        detail: "Delivery is on " + del.label + (del.vague ? " (\"morning\", no time given)" : "") + ", the same day it must be working by " +
+          (ready.time != null ? String(Math.floor(ready.time / 60)).padStart(2, "0") + ":" + String(ready.time % 60).padStart(2, "0") : "the start") +
+          (noSetup ? ", with no installation included, so there is no time to set it up." : late ? ", but after that time." : ". Same-day delivery leaves little margin."),
+        from: [delP.id].concat(noSetup && inst.from ? [inst.from] : []) });
+    } else {
+      checks.push({ id: "deadline", label: "Deadline", status: "pass", detail: "Delivery (" + del.label + ") is before your ready-by date (" + ready.label + ").", from: [delP.id] });
+    }
+
+    /* 3. Installation */
+    if (!pc.installationRequired) {
+      checks.push({ id: "install", label: "Installation", status: "pass", detail: "You did not require installation.", from: [] });
+    } else if (inst.state === "excluded") {
+      checks.push({ id: "install", label: "Installation", status: "fail", detail: "You require installation, but the proposal excludes it.", from: [inst.from] });
+    } else if (inst.state === "included") {
+      checks.push({ id: "install", label: "Installation", status: "pass", detail: "Installation is included.", from: [inst.from] });
+    } else {
+      checks.push({ id: "install", label: "Installation", status: "unknown", detail: "You require installation, and the proposal does not say whether it is included. Ask the supplier.", from: [] });
+    }
+
+    var fails = checks.filter(function (k) { return k.status === "fail"; });
+    var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });
+    var verdict = fails.length ? "not_suitable" : open.length ? "needs_answers" : "fits";
+    var sharedIds = (c.paragraphs || []).filter(function (p) { return p.shared; }).map(function (p) { return p.id; });
+    var hiddenUsed = [];
+    checks.forEach(function (k) { (k.from || []).forEach(function (id) { if (id && sharedIds.indexOf(id) < 0 && hiddenUsed.indexOf(id) < 0) hiddenUsed.push(id); }); });
+    return { verdict: verdict, checks: checks, fails: fails.length, open: open.length, gstRate: rate, privatePassagesUsed: hiddenUsed };
+  }
+
+  /* The cloud is asked to open with "VERDICT: reasonable | caution | not suitable". */
+  function cloudVerdict(text) {
+    var m = String(text || "").match(/VERDICT:\s*(reasonable|caution|not suitable)/i);
+    return m ? m[1].toLowerCase() : null;
+  }
+
   /* ---------------- state ---------------- */
   function approvalStatus() {
     var p = st.prep;
@@ -82,6 +209,7 @@
     return api().update(function (c) { muts.forEach(function (m) { m(c); }); }).then(function (c) {
       st.c = c;
       renderRevision();
+      renderReview();
       return prepare();
     });
   }
@@ -125,6 +253,7 @@
         '<div class="card-sub">Never sent. There is no field for these in any disclosure; they are for the local review.</div>' +
         '<label class="case-field"><span>Maximum budget</span><input type="text" id="caseBudget" value="' + esc(pc.maxBudget) + '"></label>' +
         '<label class="case-field"><span>Must be working by</span><input type="text" id="caseReadyBy" value="' + esc(pc.readyBy) + '"></label>' +
+        '<label class="case-field"><span>GST rate for the comparison (%)</span><input type="text" id="caseGst" value="' + esc(pc.gstRate == null ? "18" : pc.gstRate) + '"></label>' +
         '<label class="case-field case-check"><input type="checkbox" id="caseInstall"' + (pc.installationRequired ? " checked" : "") +
           '><span>Installation and setup must be included</span></label>' +
         '<label class="case-field"><span>Confidential note</span><textarea class="case-ta" rows="3" id="caseNote">' + esc(pc.confidentialNote) + '</textarea></label>' +
@@ -144,6 +273,13 @@
         '</div>' +
         '<div id="caseResult"></div>' +
       '</section>' +
+      '<section class="card wide case-card" id="caseReviewCard">' +
+        '<div class="card-head"><div class="card-title">Private review — checked in this browser</div>' +
+        '<span class="case-chip" id="caseVerdictChip"></span></div>' +
+        '<div class="card-sub">Plain code compares the FULL proposal, including passages you did not share, with your private requirements. ' +
+        'No model and no network request. Change a private requirement above and the verdict updates.</div>' +
+        '<div id="caseReview"></div>' +
+      '</section>' +
       '<section class="card wide case-card">' +
         '<div class="card-head"><div class="card-title">Leak test — 6 canaries</div>' +
         '<button type="button" class="pill hy-btn" id="caseLeakBtn">RUN LEAK TEST</button></div>' +
@@ -156,7 +292,46 @@
     renderRevision();
     renderDisclosure();
     renderResult();
+    renderReview();
     renderLeak();
+  }
+
+  var VERDICT_TEXT = { fits: "Fits your private requirements", needs_answers: "Needs answers before signing", not_suitable: "Not suitable on your private requirements" };
+  var CLOUD_TEXT = { reasonable: "Reasonable", caution: "Caution", "not suitable": "Not suitable" };
+  var STATUS_TEXT = { pass: "OK", fail: "FAILS", unknown: "UNKNOWN", risk: "AT RISK" };
+
+  function renderReview() {
+    var box = el("caseReview"), chip = el("caseVerdictChip");
+    if (!box || !st.c) return;
+    var r = reconcile(st.c);
+    st.review = r;
+    var cv = st.result && st.result.g ? cloudVerdict(st.result.g.text) : null;
+    var shared = (st.c.paragraphs || []).filter(function (p) { return p.shared; }).length;
+    var flipped = cv === "reasonable" && r.verdict !== "fits";
+    chip.className = "case-chip is-" + (r.verdict === "fits" ? "approved" : r.verdict === "not_suitable" ? "stale" : "draft");
+    chip.textContent = VERDICT_TEXT[r.verdict];
+    var compare = st.result && st.result.g
+      ? '<div class="case-verdict-flip' + (flipped ? " is-flipped" : "") + '">' +
+          '<div><span>Cloud, provisional</span><b>' + esc(cv ? CLOUD_TEXT[cv] : "no verdict line in the reply") + '</b><small>saw ' + shared + ' of ' +
+            (st.c.paragraphs || []).length + ' passages, none of your private requirements</small></div>' +
+          '<div class="case-arrow">\u2192</div>' +
+          '<div><span>Final, with your private requirements</span><b>' + esc(VERDICT_TEXT[r.verdict]) + '</b><small>' +
+            (flipped ? "changed by: " + esc(r.checks.filter(function (k) { return k.status !== "pass"; }).map(function (k) { return k.label.toLowerCase(); }).join(", ")) : "checked locally") +
+          '</small></div></div>'
+      : '<div class="case-hint">Send the approved text to the cloud for a provisional view; this local review then shows whether your private requirements change it.</div>';
+    var rows = r.checks.map(function (k) {
+      return '<div class="case-check-row is-' + k.status + '"><span class="case-check-status">' + STATUS_TEXT[k.status] + '</span><div><b>' + esc(k.label) + '</b> ' +
+        esc(k.detail) + (k.from && k.from.length ? ' <span class="case-pid">' + esc(k.from.filter(Boolean).join(", ")) + '</span>' : '') +
+        (k.assumption ? ' <small>' + esc(k.assumption) + '</small>' : '') + '</div></div>';
+    }).join("");
+    var net = "";
+    if (st.result && st.result.g && st.cloudAt && eg() && eg().outboundSince) {
+      var n = eg().outboundSince(st.cloudAt).length;
+      net = '<div class="case-kv"><span>Requests to the cloud since it answered</span><b id="caseNetCount">' + n + '</b></div>';
+    }
+    box.innerHTML = compare + rows +
+      (r.privatePassagesUsed.length ? '<div class="case-kv"><span>Read locally, never sent</span><b>' + esc(r.privatePassagesUsed.join(", ")) + ' and your private requirements</b></div>' : '') +
+      net;
   }
 
   function renderRevision() {
@@ -209,7 +384,7 @@
     el("caseReplyMeta").textContent = "Ran " + (g.actual_source === "in_cloud" ? "in the cloud" : "on device") +
       (g.source_verified ? " (reported by the SDK)" : " (inferred)") + " · " + g.model + " · " + g.latencyMs + " ms" +
       (g.disclosure ? " · disclosure " + short(g.disclosure.digest) + "… · " + g.disclosure.bytes + " characters" : "") +
-      " · provisional: the private review comes in a later step";
+      " · provisional: see the private review below";
     el("caseReplyText").textContent = g.text;
   }
 
@@ -264,6 +439,7 @@
     bind("caseBudget", function (c, v) { c.privateConstraints.maxBudget = v; });
     bind("caseReadyBy", function (c, v) { c.privateConstraints.readyBy = v; });
     bind("caseInstall", function (c, v) { c.privateConstraints.installationRequired = v; });
+    bind("caseGst", function (c, v) { c.privateConstraints.gstRate = v; });
     bind("caseNote", function (c, v) { c.privateConstraints.confidentialNote = v; });
     bind("caseReqs", function (c, v) { c.shareableRequirements = v.split("\n").map(function (x) { return x.trim(); }).filter(Boolean); });
     bind("caseQuestion", function (c, v) { c.question = v; });
@@ -282,8 +458,8 @@
       renderDisclosure();
       flushEdits().then(function () {
         return api().send(st.prep.disclosure);
-      }).then(function (g) { st.result = { g: g }; }, function (e) { st.result = { error: String(e && e.message || e) }; })
-        .then(function () { st.busy = ""; renderDisclosure(); renderResult(); });
+      }).then(function (g) { st.result = { g: g }; st.cloudAt = Date.now(); }, function (e) { st.result = { error: String(e && e.message || e) }; })
+        .then(function () { st.busy = ""; renderDisclosure(); renderResult(); renderReview(); });
     });
     el("caseLeakBtn").addEventListener("click", function () {
       if (st.busy) return;
@@ -296,7 +472,7 @@
       if (st.busy) return;
       clearTimeout(saveTimer); pendingMutations = [];
       if (st.prep && eg().isApproved(st.prep.disclosure)) st.lastApproval = { rev: st.prep.disclosure.inputRevision, digest: st.prep.disclosure.contentDigest };
-      api().reset().then(function (c) { st.c = c; st.result = null; renderAll(); return prepare(); });
+      api().reset().then(function (c) { st.c = c; st.result = null; st.cloudAt = null; renderAll(); return prepare(); });
     });
   }
 
@@ -316,6 +492,8 @@
 
   window.AionCase = {
     state: st,
+    reconcile: reconcile,           /* pure: (case) -> verdict + checks; no network */
+    cloudVerdict: cloudVerdict,
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },
   };

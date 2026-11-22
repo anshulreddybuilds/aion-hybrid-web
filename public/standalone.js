@@ -851,7 +851,8 @@
     "from a supplier proposal, excerpts from public sources, and the requirements the user chose to share. Base your " +
     "answer only on that material. Cite proposal passages as [P#] and sources as [S#]. In under 150 words: say whether " +
     "the supplier looks like a reasonable choice on this information, then list the questions the buyer should " +
-    "clarify before signing. Do not guess anything that was not provided.";
+    "clarify before signing. Do not guess anything that was not provided. Start your answer with exactly one line: " +
+    "VERDICT: reasonable, VERDICT: caution, or VERDICT: not suitable.";
 
   function sampleCase() {
     return {
@@ -890,6 +891,7 @@
         maxBudget: "Rs 4,00,000 including GST",
         readyBy: "2026-12-11 09:00 — fully working before doors open at 10:00",
         installationRequired: true,
+        gstRate: "18",
         confidentialNote: "Internal: last year's AV vendor did not finish setup in time. Leadership will not accept another self-install.",
       },
       question: "Using only the shared proposal passages, the public sources and the stated requirements: is this supplier a reasonable choice, and what should the buyer clarify before signing?",
@@ -1284,12 +1286,19 @@
     return waitForHybrid().then(function (hybrid) {
       var mode = hybrid.getMode();
       var titles = {};
-      return Promise.all([taskContext(), store.all("memories"), syncPrivateRegistry(hybrid)]).then(function (r) {
+      return Promise.all([taskContext(), store.all("memories"), syncPrivateRegistry(hybrid), store.all("tasks"), store.all("proposals")]).then(function (r) {
         var tasks = r[0];
+        /* Mint a token for EVERY title and project on the private list (not only
+           the ones shown as references), so any of them in the goal is sealed. */
+        r[3].forEach(function (t) { if (t.status !== "done") { tokenFor("TASK", t.title); if (t.mission) tokenFor("PROJECT", t.mission); } });
+        r[4].forEach(function (p) { if (p.status === "pending" && p.kind === "task") tokenFor("TASK", p.content); });
         var refs = [];
         tasks.items.forEach(function (it) {
-          if (it.label === "awaiting your approval") return;
-          var tok = tokenFor("TASK", it.title);
+          /* Every task title gets a token, pending ones included: they are on the
+             private list too, so a goal that repeats one must be sealed, not blocked. */
+          var tok0 = tokenFor("TASK", it.title);
+          if (it.label === "awaiting your approval") { titles[tok0] = it.title; return; }
+          var tok = tok0;
           var proj = it.mission ? tokenFor("PROJECT", it.mission) : "";
           refs.push({ ref: tok, line: tok + " | " + it.label + (proj ? " | " + proj : "") });
           titles[tok] = it.title;

@@ -674,6 +674,13 @@ with sync_playwright() as p:
     pg7.click("#tourHide"); pg7.reload(); pg7.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready", timeout=15000); pg7.wait_for_timeout(800)
     ok("b2: HIDE keeps the tour hidden after a reload", not pg7.is_visible("#tour"))
     pg7.evaluate("localStorage.removeItem('aion_tour_hidden')")
+    pg7.evaluate("window.AionStandalone.caseApi.update(c => { c.question = 'changed before reset'; })"); pg7.wait_for_timeout(300)
+    pg7.evaluate("window.AionShowView('settings')")
+    pg7.click("#resetDemoBtn"); ok("b4: reset asks for a second click first", pg7.inner_text("#resetDemoBtn")=="CLICK AGAIN TO RESET")
+    pg7.click("#resetDemoBtn"); pg7.wait_for_timeout(2500)
+    pg7.wait_for_function("window.AionStandalone && window.AionStandalone.caseApi", timeout=15000); pg7.wait_for_timeout(800)
+    rq = pg7.evaluate("window.AionStandalone.caseApi.load().then(c => c.question.slice(0, 14))")
+    ok("b4: RESET DEMO DATA restores the sample case and seed data", rq=="Using only the" and pg7.evaluate("window.AionStandalone.store.all('memories').then(r => r.length)")==14, rq)
     pg7.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]

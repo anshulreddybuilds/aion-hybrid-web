@@ -69,6 +69,7 @@ Everything below was built during the contest window (November 2026). The second
 | Quote intake in the Case tab (`public/case.js`, `src/hybrid.js`) | Paste a supplier quote (plain code sorts it into price, delivery, scope, warranty and cancellation passages) or drop a PNG/JPEG screenshot that **Gemini Nano reads on the device** (multimodal, `ONLY_ON_DEVICE`, JSON output). The image is redrawn on a canvas first (max 1600 px), which also drops hidden metadata such as GPS. There is no cloud path for images: without Nano, AION asks you to paste the text instead. Every imported passage starts private. |
 | Explain and draft, on the device (`public/case.js`) | **EXPLAIN ON THIS DEVICE**: Gemini Nano writes a plain-language explanation of the verdict using your private details, which is fine because it never leaves the browser. **DRAFT QUESTIONS FOR THE SUPPLIER**: plain code writes the questions from the failed or unknown checks without any private value; Nano only polishes the wording; the draft is then scanned for your private values and flagged if one appears. Without Nano, both are written by plain code and say so. Each Nano run gets an on-device receipt. |
 | Nano second opinion (`public/case.js`) | **ASK NANO TO REVIEW THIS TEXT** in the Case tab: Gemini Nano reads the exact outgoing text on the device and points at phrases that look private, naming the passage to untick. Advice only; phrases Nano reports that are not actually in the text are dropped. |
+| Reset demo data (Settings) | Two clicks put the fictional demo data and the sample case back and clear the receipts kept in this browser, for a clean demo. |
 | Warm-up (header) | **WARM UP NANO** loads the on-device model with one tiny prompt before a demo (a cold Nano took about 21 s to its first word on an 8 GB laptop); the pill then says "warm". |
 | Image guard (`src/contracts.js`) | Any cloud disclosure containing a `data:` image URL or a long base64 run is refused, in any field. |
 | Indian identifiers (`standalone.js`) | Aadhaar numbers (any spacing, confirmed by their Verhoeff checksum) and bank account numbers next to their label are blocked; UPI IDs are redacted to `[upi]`; PAN was already blocked. The same filter now also runs on every Case field that can be shared. |
@@ -83,26 +84,34 @@ Small edits to existing files: `index.html` (hybrid bar, scripts, local assets, 
 ## Architecture at a glance
 
 ```
-                       Browser (Chrome 139+)
-  +--------------------------------------------------------------+
-  |  Dashboard UI (app.js)  <->  standalone.js (in-browser backend)|
-  |        |                       IndexedDB: memories, tasks,     |
-  |        |                       proposals + privacy guard       |
-  |        v                                                       |
-  |  hybrid.js  --  Firebase AI Logic  getGenerativeModel(        |
-  |                    mode: InferenceMode.*)                      |
-  |        |                                                       |
-  |        +--> ON-DEVICE: Gemini Nano (Chrome Prompt API)         |
-  |        |        no network, private notes allowed here         |
-  |        |                                                       |
-  |        +--> IN-CLOUD: Gemini (gemini-3.5-flash-lite, backup   |
-  |                 gemini-4-hydrogen) via Firebase AI Logic   |
-  |                 |                                              |
-  +-----------------|----------------------------------------------+
-                    |  every request carries an App Check token
-                    |  (reCAPTCHA Enterprise attestation)
-                    v
-          Firebase AI Logic  ->  Gemini Developer API
+                                Browser (desktop Chrome)
+ +-----------------------------------------------------------------------------------+
+ |  UI: Home / Case / Privacy Receipts (app.js, case.js)                             |
+ |       |                                                                           |
+ |       v                                                                           |
+ |  standalone.js  - in-browser data (IndexedDB), privacy rules, sealing vault        |
+ |       |            private names -> [TASK_n] / [PROJECT_n], secrets cut            |
+ |       v                                                                           |
+ |  router.js  - picks the route BEFORE the prompt is built                           |
+ |       |        sensitive text / offline -> on-device; cloud failure -> Nano + reason |
+ |       |                                                                           |
+ |       +----> ON-DEVICE: Gemini Nano (Firebase AI Logic, ONLY_ON_DEVICE)            |
+ |       |        chat, screenshot reading, explanations, second-opinion review       |
+ |       |        nothing leaves the browser                                         |
+ |       |                                                                           |
+ |       +----> egress.js + contracts.js  (the only door to the cloud)                |
+ |                per-purpose field allowlist, image/binary refused, approval,       |
+ |                SHA-256 digest, one send per approval, final private-value scan    |
+ |                    |                                                              |
+ |  planner.js  ------+  /plan: cloud calls LOCAL tools (counts, yes/no only),        |
+ |                    |  then returns a JSON plan the browser validates               |
+ |  telemetry.js  <---+  a frozen receipt for every request (route, time, bytes)      |
+ |  case.js: private review - plain code checks the full proposal against private     |
+ |           budget / deadline / installation (no model, no network)                  |
+ +--------------------|--------------------------------------------------------------+
+                      |  App Check token (reCAPTCHA Enterprise) on every cloud call
+                      v
+            Firebase AI Logic  ->  Gemini (gemini-3.5-flash-lite)
 ```
 
 - **Speed:** replies stream into the chat bubble as they are generated, a "Thinking..." bubble appears the instant Send is pressed, and the App Check (reCAPTCHA) token is fetched in the background at page load so the first message does not wait for it.
@@ -165,7 +174,7 @@ Firebase console, project `aion-hybrid-ai`:
 
 ## Verification: what was and was not tested
 
-**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **180 / 180** checks. The new ones cover quote intake (pasted text and a screenshot read by a mocked multimodal Nano with 0 cloud requests), the image guard, Aadhaar/UPI/bank-account rules, one-task-per-approval and stale-text refusal, the Case tab's private review (verdict flip, what-if edits with zero network requests, unknowns reported instead of guessed), sealing of pending task titles in `/plan`, the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`).
+**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **182 / 182** checks. The new ones cover quote intake (pasted text and a screenshot read by a mocked multimodal Nano with 0 cloud requests), the image guard, Aadhaar/UPI/bank-account rules, one-task-per-approval and stale-text refusal, the Case tab's private review (verdict flip, what-if edits with zero network requests, unknowns reported instead of guessed), sealing of pending task titles in `/plan`, the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`).
 
 **Live check, 22 Nov 2026** (preview channel of this build, the author's real Chrome, Windows laptop with 8 GB RAM and no GPU; numbers read from the app's own receipts and the browser's network log):
 

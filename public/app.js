@@ -2626,6 +2626,20 @@ function exportReceiptsFile() {
 window.addEventListener("aion:receipt", (ev) => { if (ev && ev.detail) rememberReceipt(ev.detail); renderReceipts(); refresh(); });
 renderEarlier();
 
+/* Settings: reset all demo data (two clicks, no browser dialog). */
+(function wireReset() {
+  const b = $("resetDemoBtn");
+  if (!b) return;
+  let armed = 0;
+  b.addEventListener("click", () => {
+    if (!window.AionStandalone || !window.AionStandalone.resetDemo) { setChatStatus("Reset is only available with the in-browser demo data."); return; }
+    if (Date.now() - armed > 4000) { armed = Date.now(); b.textContent = "CLICK AGAIN TO RESET"; setTimeout(() => { if (Date.now() - armed >= 4000) b.textContent = "RESET"; }, 4100); return; }
+    try { localStorage.removeItem(RECEIPT_HISTORY_KEY); localStorage.removeItem(TOUR_KEY); } catch (e) { /* ignore */ }
+    b.textContent = "RESETTING…"; b.disabled = true;
+    window.AionStandalone.resetDemo();
+  });
+})();
+
 /* ---------------------------- two-minute tour ---------------------------- */
 const TOUR_KEY = "aion_tour_hidden";
 function tourSend(text) {

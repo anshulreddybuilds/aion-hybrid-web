@@ -350,7 +350,7 @@ export function createPlanner(deps) {
     } catch (err) {
       clearTimeout(timer);
       try { if (controller) controller.abort(); } catch (e) { /* ignore */ }
-      let cls = err && err.code === "invalid_plan" ? "other" : err && err.code === "tool_result_invalid" ? "blocked" : classifyError(err);
+      let cls = err && err.code === "invalid_plan" ? "other" : err && err.code === "tool_result_invalid" ? "blocked" : classifyError(err, typeof getState === "function" ? getState() : null);
       const sent = !!(disclosure && disclosure.approvalState === "sent");
       const status = cls === "timeout" ? "timed_out" : (cls === "blocked" || cls === "private_value_blocked") ? "blocked_egress"
         : err && err.code === "invalid_plan" ? "rejected" : "failed";

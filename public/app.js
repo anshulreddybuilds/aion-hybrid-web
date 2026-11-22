@@ -2534,9 +2534,11 @@ function renderReceipts() {
   if (!all.length) return;
   const t = hy.telemetry.summarizeTelemetry();
   const med = t.latency.medianMs;
+  const failedN = (t.byStatus.failed || 0) + (t.byStatus.timed_out || 0) + (t.byStatus.rejected || 0);
   sum.innerHTML = `<b>${t.total}</b> request${t.total === 1 ? "" : "s"} · <b>${t.cloudRequests}</b> sent to the cloud ` +
     `(<b>${t.cloudBytesSent.toLocaleString()}</b> characters) · <b>${t.localOnly}</b> stayed on this device · ` +
     `<b>${t.blocked}</b> blocked before sending` +
+    (failedN ? ` \u00B7 <b>${failedN}</b> failed or timed out` : "") +
     (med !== null ? ` · median <b>${med.toLocaleString()} ms</b> (measured)` : "") +
     (t.functionCalls ? ` · <b>${t.functionCalls}</b> local tool answer${t.functionCalls === 1 ? "" : "s"}` : "");
   /* Rebuild only when a receipt was added, so an open "What left" box stays open. */

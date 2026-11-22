@@ -1338,6 +1338,7 @@
      text is always included: the hint is a guess, the raw text is the fact. */
   function friendlyAiError(err) {
     var raw = String((err && err.message) || err || "unknown error");
+    var HS = window.AionHybridState || {};
     var hint;
     if (err && err.code === "timeout" || /\(timeout\)/.test(raw))
       hint = "The AI did not answer in time, so AION stopped waiting instead of hanging. Try again, or switch route.";
@@ -1349,10 +1350,17 @@
       hint = "Offline Demo Mode blocked a cloud call. Gemini Nano must be ready for this mode.";
     else if (/throttle/i.test(raw) && /app.?check|appcheck/i.test(raw))
       hint = "App Check is briefly paused after a failed check (Firebase waits before retrying). Wait a minute and try again; with Gemini Nano ready, Prefer On-Device keeps working meanwhile.";
-    else if (/app.?check|appcheck/i.test(raw))
-      hint = (window.AionHybridState && window.AionHybridState.isProductionHost)
-        ? "App Check could not verify this browser (reCAPTCHA). Ad blockers, strict privacy settings or a VPN can cause this. Private names were sealed before the request, as always. Try again, allow google.com/recaptcha, or use Gemini Nano (Prefer On-Device) if it is ready."
-        : "App Check problem. The debug token printed in the console must be registered in Firebase console > App Check > Manage debug tokens (the app must be registered there first).";
+    else if (/app.?check|appcheck/i.test(raw) ||
+             (HS.appCheckWarm === "failed" && /403|PERMISSION_DENIED|Permission denied/i.test(raw))) {
+      /* A 403 right after this page failed to get its App Check token is App
+         Check refusing the request, even though the server only says "denied". */
+      var local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+      hint = local
+        ? "App Check problem. The debug token printed in the console must be registered in Firebase console > App Check > Manage debug tokens (the app must be registered there first)."
+        : "App Check could not verify this browser (reCAPTCHA), so the cloud refused the request. Ad blockers, strict privacy settings or a VPN can cause this" +
+          (HS.isProductionHost ? "" : ", and so can opening the app on an address that is not in the reCAPTCHA key's allowed domains (" + location.hostname + ")") +
+          ". Private names were sealed before the request, as always. Try again, allow google.com/recaptcha, or use Gemini Nano (Prefer On-Device) if it is ready.";
+    }
     else if (/API_NOT_ENABLED|has not been used|PERMISSION_DENIED|403/i.test(raw))
       hint = "The cloud model rejected the request (403). Check that Firebase AI Logic is enabled for this project and the API key is allowed to call it.";
     else if (/model|not found|404/i.test(raw))

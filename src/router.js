@@ -46,7 +46,16 @@ export const FALLBACK_TEXT = {
 };
 
 /** @returns {"timeout"|"blocked"|"private_value_blocked"|"app_check"|"quota"|"permission"|"network"|"model"|"other"} */
-export function classifyError(err) {
+/* A 403 from the AI endpoint after this page's App Check token already failed
+ * to arrive is an App Check refusal, even though the server only says
+ * "Permission denied". Pass the hybrid state so the reason shown is the real one. */
+export function classifyError(err, st) {
+  const cls = classifyRaw(err);
+  if (cls === "permission" && st && st.appCheckWarm === "failed") return "app_check";
+  return cls;
+}
+
+function classifyRaw(err) {
   const code = err && err.code;
   const msg = String((err && err.message) || err || "");
   if (code === "timeout" || /\(timeout\)/.test(msg)) return "timeout";
@@ -161,7 +170,7 @@ export function createRouter(deps) {
       });
       return Object.assign({}, g, { receipt, receipts: [receipt], fallback: null, decision: o.decision || null });
     } catch (err) {
-      const cls = classifyError(err);
+      const cls = classifyError(err, state());
       const sent = !!(disclosure && disclosure.approvalState === "sent");
       const first = recordReceipt({
         route: mode === "only_on_device" ? "on-device-nano" : "cloud-sealed-chat",

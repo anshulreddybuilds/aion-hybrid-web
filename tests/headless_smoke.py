@@ -485,7 +485,12 @@ with sync_playwright() as p:
     ach = pg5.evaluate("""(() => { const st = window.AionHybridState; const was = st.isProductionHost; st.isProductionHost = true;
         const e = new Error('AI: App Check token fetch failed (appCheck/fetch-status-error)');
         return window.AionStandalone._friendly ? window.AionStandalone._friendly(e) : 'n/a'; })()""")
-    ok("p4: production App Check failure gives a plain reason, not debug-token advice", "debug token" not in ach and "reCAPTCHA" in ach, ach[:160])
+    ok("p4: on localhost an App Check failure gives debug-token setup advice (the live-site wording is checked on the preview)", "debug token" in ach, ach[:160])
+    ach2 = pg5.evaluate("""(() => { const st = window.AionHybridState; const w = st.appCheckWarm; st.appCheckWarm = 'failed';
+        const e = new Error('AI: Error fetching ... [403 ] Permission denied on the service. (AI/fetch-error)');
+        const out = [window.AionStandalone._friendly(e), window.AionHybrid.router.classifyError(e, st), window.AionHybrid.router.classifyError(e, {})];
+        st.appCheckWarm = w; return out; })()""")
+    ok("p4: 403 after a failed App Check warm-up is reported as App Check, not as an API-key problem", "App Check" in ach2[0] and ach2[1]=="app_check" and ach2[2]=="permission", [ach2[0][:120], ach2[1], ach2[2]])
     pg5.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]

@@ -264,12 +264,29 @@
         <div class="verbs">
           <button class="verb" type="button" data-ask="Research ">Research</button>
           <button class="verb" type="button" data-ask="Build ">Build</button>
-          <button class="verb" type="button" data-ask="Plan ">Plan</button>
+          <button class="verb" type="button" data-ask="/plan ">Plan</button>
           <button class="verb" type="button" data-ask="Analyze ">Analyze</button>
           <button class="verb" type="button" data-ask="Create ">Create</button>
         </div>
 
         <p class="axis"><b>YOU</b> &nbsp;&times;&nbsp; <b>AION</b> &nbsp;&rarr;&nbsp; <b>REAL PROGRESS</b></p>
+
+        <!-- Judge tour: four short steps that show the hybrid split for real.
+             Each step uses the normal app paths; nothing here is staged. -->
+        <section class="tour" id="tour" aria-label="Two-minute tour">
+          <div class="tour-head"><b>Two-minute tour</b><span>The cloud gets the question. Never your life.</span>
+            <button type="button" class="tour-hide" id="tourHide" aria-label="Hide the tour">HIDE</button></div>
+          <ol class="tour-steps">
+            <li><button type="button" class="pill hy-btn" data-tour="chat">1 · SEALED CHAT</button>
+              <span>Asks about your tasks. Their names leave as <code>[TASK_n]</code> and come back restored here.</span></li>
+            <li><button type="button" class="pill hy-btn" data-tour="plan">2 · BLINDFOLD PLAN</button>
+              <span>The cloud plans with labels only and asks this browser for counts; each change waits for your approval.</span></li>
+            <li><button type="button" class="pill hy-btn" data-tour="case">3 · PRIVATE VERDICT</button>
+              <span>The cloud gives a provisional view; your private budget and deadline, checked in the browser, can overturn it.</span></li>
+            <li><button type="button" class="pill hy-btn" data-tour="proof">4 · PROOF</button>
+              <span>Opens the receipt for the last cloud request and shows the exact text that left this browser.</span></li>
+          </ol>
+        </section>
 
         <div class="chat-log" id="chatLog"><div class="empty">Say something, or type above.</div></div>
         <div class="chat-proposals" id="chatProposals"></div>
@@ -567,6 +584,7 @@
         </div>
         <div class="receipt-summary" id="receiptsSummary">No AI requests yet. Every request will get a receipt here: route, measured time, and exactly how much left this browser.</div>
         <div class="scroll-list" id="receiptsList"></div>
+        <div id="receiptsEarlier"></div>
       </section>
 
       <section class="card" id="eventsCard">
@@ -662,6 +680,9 @@
     });
 
     if (location.hash) show(location.hash.slice(1));
+    /* Links and buttons that change the address (the tour, #case links) switch the view too. */
+    window.addEventListener("hashchange", function () { show(location.hash.slice(1) || "home"); });
+    window.AionShowView = show;
   })();
 
   /* The verb pills seed the composer rather than sending anything on

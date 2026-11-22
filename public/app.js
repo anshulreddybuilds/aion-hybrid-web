@@ -2526,9 +2526,46 @@ function fillReceiptEvidence(det, receipt) {
   }).join("");
 }
 
+/* Receipts from earlier visits: kept in this browser (localStorage, max 200),
+   without any request text - receipts never hold message content, and the
+   "What left this browser" bodies stay in memory for the open tab only.
+   The user can clear them at any time. */
+const RECEIPT_HISTORY_KEY = "aion_receipts_history_v1";
+const RECEIPT_SESSION = Math.random().toString(36).slice(2);
+function receiptHistory() {
+  try { const v = JSON.parse(localStorage.getItem(RECEIPT_HISTORY_KEY) || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+}
+function rememberReceipt(r) {
+  try {
+    const h = receiptHistory();
+    h.push(Object.assign({ session: RECEIPT_SESSION }, r));
+    localStorage.setItem(RECEIPT_HISTORY_KEY, JSON.stringify(h.slice(-200)));
+  } catch (e) { /* storage full or blocked: history is a convenience only */ }
+}
+function earlierReceipts() { return receiptHistory().filter((r) => r.session !== RECEIPT_SESSION); }
+function renderEarlier() {
+  const box = $("receiptsEarlier");
+  if (!box) return;
+  const old = earlierReceipts();
+  if (!old.length) { box.innerHTML = ""; return; }
+  const rows = old.slice(-8).reverse().map((r) => {
+    const [label] = RECEIPT_ROUTE_LABEL[r.route] || [r.route];
+    const [st] = RECEIPT_STATUS[r.status] || [r.status];
+    const sent = r.egressAudit && r.egressAudit.disclosureTier === "approved_cloud" ? (r.egressAudit.bytesSent || 0).toLocaleString() + " characters of content sent" : "nothing sent to the cloud";
+    return `<div class="receipt-meta">${escapeHtml(new Date(r.timestamp).toLocaleString())} · ${escapeHtml(label)} · ${escapeHtml(st)} · ${escapeHtml(sent)}</div>`;
+  }).join("");
+  box.innerHTML = `<details class="receipt-earlier"><summary>${old.length} receipt${old.length === 1 ? "" : "s"} from earlier visits (kept in this browser, no request text)</summary>${rows}` +
+    `<button type="button" class="hud-btn" id="receiptsClearBtn">CLEAR HISTORY</button></details>`;
+  $("receiptsClearBtn").addEventListener("click", () => {
+    try { localStorage.setItem(RECEIPT_HISTORY_KEY, JSON.stringify(receiptHistory().filter((r) => r.session === RECEIPT_SESSION))); } catch (e) { /* ignore */ }
+    renderEarlier();
+  });
+}
+
 function renderReceipts() {
   const list = $("receiptsList"), sum = $("receiptsSummary");
   const hy = window.AionHybrid;
+  renderEarlier();
   if (!list || !sum || !hy || !hy.telemetry) return;
   const all = hy.telemetry.getReceipts();
   if (!all.length) return;
@@ -2576,7 +2613,9 @@ function renderReceipts() {
 function exportReceiptsFile() {
   const hy = window.AionHybrid;
   if (!hy || !hy.telemetry || !hy.telemetry.exportReceipts) return;
-  const blob = new Blob([hy.telemetry.exportReceipts()], { type: "application/json" });
+  const live = JSON.parse(hy.telemetry.exportReceipts());
+  live.earlierVisits = earlierReceipts().map((r) => { const c = Object.assign({}, r); delete c.session; return c; });
+  const blob = new Blob([JSON.stringify(live, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "aion-receipts-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
@@ -2584,7 +2623,37 @@ function exportReceiptsFile() {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
-window.addEventListener("aion:receipt", () => { renderReceipts(); refresh(); });
+window.addEventListener("aion:receipt", (ev) => { if (ev && ev.detail) rememberReceipt(ev.detail); renderReceipts(); refresh(); });
+renderEarlier();
+
+/* ---------------------------- two-minute tour ---------------------------- */
+const TOUR_KEY = "aion_tour_hidden";
+function tourSend(text) {
+  location.hash = "#home";
+  const input = $("chatInput");
+  input.value = text;
+  $("chatForm").requestSubmit ? $("chatForm").requestSubmit() : $("sendBtn").click();
+}
+(function wireTour() {
+  const tour = $("tour");
+  if (!tour) return;
+  try { if (localStorage.getItem(TOUR_KEY) === "1") tour.hidden = true; } catch (e) { /* ignore */ }
+  $("tourHide").addEventListener("click", () => { tour.hidden = true; try { localStorage.setItem(TOUR_KEY, "1"); } catch (e) { /* ignore */ } });
+  tour.querySelectorAll("[data-tour]").forEach((b) => b.addEventListener("click", () => {
+    const step = b.dataset.tour;
+    if (step === "chat") tourSend("Summarize my tasks for today");
+    else if (step === "plan") tourSend("/plan prepare my hackathon demo video");
+    else if (step === "case") location.hash = "#case";
+    else if (step === "proof") {
+      location.hash = "#home";
+      const card = $("receiptsCard");
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+      const det = document.querySelector("#receiptsList .receipt-row details");
+      if (det) det.open = true;
+      else setChatStatus("No cloud request yet in this visit: try step 1 first.");
+    }
+  }));
+})();
 if ($("receiptsExportBtn")) $("receiptsExportBtn").addEventListener("click", exportReceiptsFile);
 
 refresh();

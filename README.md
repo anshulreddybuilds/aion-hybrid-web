@@ -14,6 +14,7 @@ Built by **Anshul Reddy** ([@anshulreddybuilds](https://github.com/anshulreddybu
 
 ## Try it (judges)
 
+0. Fastest path: use the **Two-minute tour** box on Home. Its four buttons run the real flows described below.
 1. Use **desktop Chrome 139 or newer**. Other browsers still work, but chat then uses the cloud only and the header light says Gemini Nano is not supported.
 2. Open the hosted URL. The header bar shows:
    - **Gemini Nano: ready / needs download / unavailable** - live status of the on-device model.
@@ -69,6 +70,8 @@ Everything below was built during the contest window (November 2026). The second
 | Image guard (`src/contracts.js`) | Any cloud disclosure containing a `data:` image URL or a long base64 run is refused, in any field. |
 | Indian identifiers (`standalone.js`) | Aadhaar numbers (any spacing, confirmed by their Verhoeff checksum) and bank account numbers next to their label are blocked; UPI IDs are redacted to `[upi]`; PAN was already blocked. The same filter now also runs on every Case field that can be shared. |
 | Safe approvals (`standalone.js`) | One approval per proposal: two approvals arriving together (double click, two tabs, the phone page) create one task, and the second gets "already answered". If the proposal's text changed after it was shown, the approval is refused and must be given again. |
+| Two-minute tour (Home) | Four buttons that run the real flows: sealed chat, Blindfold Plan, private verdict in the Case tab, and the proof (the receipt with the exact text that left). The Plan shortcut now starts `/plan`. |
+| Receipts across visits | Receipts are also kept in this browser (localStorage, up to 200) so the ledger shows earlier visits after a reload; they hold no message text, the request bodies stay in memory only, and CLEAR HISTORY removes them. EXPORT includes them. |
 | Privacy Receipts card (`app.js`, `index.html`) | The ledger described above, plus real status rows (Nano, App Check, last cloud call, request counts). |
 | Safety rails | 15 s cloud timeout (no endless spinner); the App Check debug provider can never turn on on the production domains, even with `?appcheck_debug`. |
 
@@ -159,7 +162,7 @@ Firebase console, project `aion-hybrid-ai`:
 
 ## Verification: what was and was not tested
 
-**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **160 / 160** checks. The new ones cover quote intake (pasted text and a screenshot read by a mocked multimodal Nano with 0 cloud requests), the image guard, Aadhaar/UPI/bank-account rules, one-task-per-approval and stale-text refusal, the Case tab's private review (verdict flip, what-if edits with zero network requests, unknowns reported instead of guessed), sealing of pending task titles in `/plan`, the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`).
+**hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **170 / 170** checks. The new ones cover quote intake (pasted text and a screenshot read by a mocked multimodal Nano with 0 cloud requests), the image guard, Aadhaar/UPI/bank-account rules, one-task-per-approval and stale-text refusal, the Case tab's private review (verdict flip, what-if edits with zero network requests, unknowns reported instead of guessed), sealing of pending task titles in `/plan`, the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`).
 
 **Live check, 22 Nov 2026** (preview channel of this build, the author's real Chrome, Windows laptop with 8 GB RAM and no GPU; numbers read from the app's own receipts and the browser's network log):
 

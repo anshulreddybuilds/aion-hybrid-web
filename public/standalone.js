@@ -1297,8 +1297,7 @@
           /* Every task title gets a token, pending ones included: they are on the
              private list too, so a goal that repeats one must be sealed, not blocked. */
           var tok0 = tokenFor("TASK", it.title);
-          if (it.label === "awaiting your approval") { titles[tok0] = it.title; return; }
-          var tok = tok0;
+          var tok = tok0;   /* pending tasks are listed too: the goal may name one, and the cloud may refer to it */
           var proj = it.mission ? tokenFor("PROJECT", it.mission) : "";
           refs.push({ ref: tok, line: tok + " | " + it.label + (proj ? " | " + proj : "") });
           titles[tok] = it.title;

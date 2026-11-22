@@ -159,6 +159,16 @@
     return { verdict: verdict, checks: checks, fails: fails.length, open: open.length, gstRate: rate, privatePassagesUsed: hiddenUsed };
   }
 
+  /* How the local verdict relates to the cloud's provisional one. Severity:
+   * reasonable/fits 0, caution/needs answers 1, not suitable 2. */
+  var CLOUD_SEV = { reasonable: 0, caution: 1, "not suitable": 2 };
+  var LOCAL_SEV = { fits: 0, needs_answers: 1, not_suitable: 2 };
+  function compareVerdicts(cloud, local) {
+    if (!cloud || !(cloud in CLOUD_SEV)) return { changed: false, direction: "unknown" };
+    var d = LOCAL_SEV[local] - CLOUD_SEV[cloud];
+    return { changed: d !== 0, direction: d > 0 ? "stricter" : d < 0 ? "looser" : "same" };
+  }
+
   /* The cloud is asked to open with "VERDICT: reasonable | caution | not suitable". */
   function cloudVerdict(text) {
     var m = String(text || "").match(/VERDICT:\s*(reasonable|caution|not suitable)/i);
@@ -307,7 +317,8 @@
     st.review = r;
     var cv = st.result && st.result.g ? cloudVerdict(st.result.g.text) : null;
     var shared = (st.c.paragraphs || []).filter(function (p) { return p.shared; }).length;
-    var flipped = cv === "reasonable" && r.verdict !== "fits";
+    var cmp = compareVerdicts(cv, r.verdict);
+    var flipped = cmp.changed;
     chip.className = "case-chip is-" + (r.verdict === "fits" ? "approved" : r.verdict === "not_suitable" ? "stale" : "draft");
     chip.textContent = VERDICT_TEXT[r.verdict];
     var compare = st.result && st.result.g
@@ -316,7 +327,9 @@
             (st.c.paragraphs || []).length + ' passages, none of your private requirements</small></div>' +
           '<div class="case-arrow">\u2192</div>' +
           '<div><span>Final, with your private requirements</span><b>' + esc(VERDICT_TEXT[r.verdict]) + '</b><small>' +
-            (flipped ? "changed by: " + esc(r.checks.filter(function (k) { return k.status !== "pass"; }).map(function (k) { return k.label.toLowerCase(); }).join(", ")) : "checked locally") +
+            (cmp.direction === "stricter" ? "made stricter by: " + esc(r.checks.filter(function (k) { return k.status !== "pass"; }).map(function (k) { return k.label.toLowerCase(); }).join(", "))
+              : cmp.direction === "looser" ? "your private requirements raise no blocker the cloud worried about"
+              : cmp.direction === "same" ? "same as the cloud, now checked against your private requirements" : "checked locally") +
           '</small></div></div>'
       : '<div class="case-hint">Send the approved text to the cloud for a provisional view; this local review then shows whether your private requirements change it.</div>';
     var rows = r.checks.map(function (k) {
@@ -494,6 +507,7 @@
     state: st,
     reconcile: reconcile,           /* pure: (case) -> verdict + checks; no network */
     cloudVerdict: cloudVerdict,
+    compareVerdicts: compareVerdicts,
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },
   };

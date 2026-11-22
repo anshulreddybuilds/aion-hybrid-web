@@ -334,7 +334,9 @@ with sync_playwright() as p:
     # ---- private review / verdict flip ----
     pg4.wait_for_function("document.getElementById('caseVerdictChip') && document.getElementById('caseVerdictChip').textContent.length > 5", timeout=5000)
     rv = pg4.inner_text("#caseReview")
-    ok("p5: cloud said reasonable, local review says not suitable (verdict flip shown)", "Reasonable" in rv and "Not suitable on your private requirements" in rv and "changed by" in rv, rv[:240])
+    ok("p5: cloud said reasonable, local review says not suitable (verdict flip shown)", "Reasonable" in rv and "Not suitable on your private requirements" in rv and "made stricter by" in rv, rv[:240])
+    cmpv = pg4.evaluate("[window.AionCase.compareVerdicts('caution','not_suitable'), window.AionCase.compareVerdicts('not suitable','fits'), window.AionCase.compareVerdicts('caution','needs_answers'), window.AionCase.compareVerdicts(null,'fits')].map(x => x.direction)")
+    ok("p5: caution -> not suitable counts as a change (found live with real Gemini)", cmpv==["stricter","looser","same","unknown"], cmpv)
     ok("p5: three local checks fail on the sample case (budget, deadline, installation)", pg4.locator("#caseReview .case-check-row.is-fail").count()==3 and "Rs 4,54,300" in rv and "Rs 54,300" in rv, rv[:400])
     ok("p5: review names the unshared passages it read locally (P5, P6)", "P6" in rv and "P5" in rv and "never sent" in rv)
     ok("p5: the private budget and the unshared price never reached the cloud", all(x not in sent_body for x in ("4,00,000","3,85,000","installation of the LED wall")), "")
@@ -374,7 +376,7 @@ with sync_playwright() as p:
     ok("p2: resetDemo() wipes the case", rev_before > 1 and after[0]==1 and after[1].startswith("Using only the"), (rev_before, after))
     pg4.close()
     # ================= hybrid-v2 Packet 3: telemetry + router + blindfold planner =================
-    pg5 = ctx.new_page(); b5=[]; mode5 = {"m":"ok"}
+    pg5 = ctx.new_page(); b5=[]; mode5 = {"m":"ok"}; goal_refs=[]
     def sse(parts): return "data: "+json.dumps({"candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP"}]})+"\r\n\r\n"
     def vertex5(route):
         req=route.request
@@ -388,7 +390,10 @@ with sync_playwright() as p:
         if "check_local_capability" in body or "responseSchema" in body or "responseMimeType" in body:
             has_tool_result = "functionResponse" in body
             if "responseSchema" in body or "responseMimeType" in body:
-                plan={"summary":"Two steps.","steps":[{"op":"create_task","title":"Draft outline","taskRef":"[TASK_1]"},{"op":"note","title":"Keep it short"}]}
+                import re as _re
+                gm = _re.search(r'GOAL:\\n(\[TASK_\d+\])', body)   # like real Gemini: refer to the task the goal names
+                if gm: goal_refs.append(gm.group(1))
+                plan={"summary":"Two steps.","steps":[{"op":"create_task","title":"Draft outline","taskRef": gm.group(1) if gm else "[TASK_1]"},{"op":"note","title":"Keep it short"}]}
                 return reply([{"text":json.dumps(plan)}])
             if not has_tool_result:
                 return reply([{"functionCall":{"name":"count_memories_by_type","args":{}}}])
@@ -479,6 +484,7 @@ with sync_playwright() as p:
         lastr = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().slice(-1)[0]; return [r.route, r.status]; })()")
         sentp = "".join(b5[n_req:])
         ok("p4: /plan whose goal repeats a pending task title is sealed and sent, not blocked", lastr==["cloud-blindfold","completed"] and pend not in sentp and "[TASK_" in sentp, (lastr, pend))
+        ok("p4: a cloud plan that refers to the goal's own [TASK_n] label is accepted (found live 22 Nov)", len(goal_refs)>=1 and lastr==["cloud-blindfold","completed"], goal_refs[-1:])
     else:
         ok("p4: /plan whose goal repeats a pending task title is sealed and sent, not blocked", False, "no pending task proposal in seed data")
     ev1 = pg5.evaluate("window.AionStandalone.store.all('events').then(r => r.length)")

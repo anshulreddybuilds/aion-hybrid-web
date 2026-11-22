@@ -233,7 +233,10 @@ export function createPlanner(deps) {
     const mode = opt.mode || state.mode || "prefer_in_cloud";
     const requestedMode = mode;
     const taskRefs = Array.isArray(input.taskRefs) ? input.taskRefs : [];
-    const knownRefs = taskRefs.map((r) => r.ref);
+    /* Valid references = the listed tasks plus any label in the sealed goal itself
+     * (the browser minted those too, so the cloud may legitimately point at them). */
+    const knownRefs = taskRefs.map((r) => r.ref)
+      .concat(String(input.goal || "").match(/\[(?:TASK|PROJECT)_\d+\]/g) || []);
     const facts = { nanoReady: state.nano === "ready", memoryCounts: input.memoryCounts, taskTitles: input.taskTitles };
     const receipts = [];
     const online = typeof navigator === "undefined" || navigator.onLine !== false;

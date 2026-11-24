@@ -39,7 +39,7 @@ with sync_playwright() as p:
     page.on("response", lambda r: errs.append("HTTP %s %s"%(r.status,r.url)) if r.status>=400 else None)
     page.on("requestfailed", lambda r: errs.append("REQFAIL %s"%r.url[:120]))
     page.on("console", lambda m: errs.append("console."+m.type+": "+m.text) if m.type=="error" else None)
-    page.goto(f"http://127.0.0.1:{PORT}/index.html")
+    page.goto(f"http://127.0.0.1:{PORT}/dashboard.html")
     page.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready", timeout=15000)
     page.wait_for_timeout(2500)
     ok("hybrid ready", page.evaluate("window.AionHybridState.ready"))
@@ -153,7 +153,7 @@ with sync_playwright() as p:
         return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body=sse("CLOUD-FAKE ")+sse("reply",True))
     ctx.route("**/firebasevertexai.googleapis.com/**", vertex)
     pg2 = ctx.new_page()
-    pg2.goto(f"http://127.0.0.1:{PORT}/index.html")
+    pg2.goto(f"http://127.0.0.1:{PORT}/dashboard.html")
     pg2.wait_for_function("window.AionHybrid", timeout=15000); pg2.wait_for_timeout(1500)
     pg2.evaluate("window.__nanoAvail='unavailable'")
     pg2.select_option("#inferenceMode","prefer_in_cloud")
@@ -192,7 +192,7 @@ with sync_playwright() as p:
         c={"candidates":[{"content":{"role":"model","parts":[{"text":t}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}
         return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body="data: "+json.dumps(c)+"\r\n\r\n")
     pg3.route("**/firebasevertexai.googleapis.com/**", vertex3)
-    pg3.goto(f"http://127.0.0.1:{PORT}/index.html")
+    pg3.goto(f"http://127.0.0.1:{PORT}/dashboard.html")
     pg3.wait_for_function("window.AionHybrid && window.AionStandalone", timeout=15000); pg3.wait_for_timeout(1500)
     pg3.evaluate("window.__nanoAvail='unavailable'"); pg3.wait_for_timeout(6500)
     pg3.select_option("#inferenceMode","prefer_in_cloud")
@@ -245,7 +245,7 @@ with sync_playwright() as p:
     def serve_local(route):
         u = route.request.url.split("?")[0].split("#")[0]
         path = "/" + u.split("/",3)[3] if u.count("/")>=3 else "/"
-        if path=="/": path="/index.html"
+        if path=="/": path="/dashboard.html"
         fp = os.path.join(ROOT, path.lstrip("/"))
         if os.path.isfile(fp):
             ct = {"html":"text/html","js":"application/javascript","css":"text/css","webmanifest":"application/manifest+json"}.get(fp.rsplit(".",1)[-1],"application/octet-stream")
@@ -253,10 +253,10 @@ with sync_playwright() as p:
         return route.fulfill(status=404, body="")
     for host in ("aion-hybrid-ai.web.app","aion-hybrid-ai.firebaseapp.com","aion-hybrid-ai--v2-test.web.app"):
         ctx2.route(f"https://{host}/**", serve_local)
-    for url, want in (("https://aion-hybrid-ai.web.app/index.html?appcheck_debug","recaptcha"),
-                      ("https://aion-hybrid-ai.firebaseapp.com/index.html?appcheck_debug","recaptcha"),
-                      ("https://aion-hybrid-ai--v2-test.web.app/index.html","recaptcha"),
-                      ("https://aion-hybrid-ai--v2-test.web.app/index.html?appcheck_debug","debug")):
+    for url, want in (("https://aion-hybrid-ai.web.app/dashboard.html?appcheck_debug","recaptcha"),
+                      ("https://aion-hybrid-ai.firebaseapp.com/dashboard.html?appcheck_debug","recaptcha"),
+                      ("https://aion-hybrid-ai--v2-test.web.app/dashboard.html","recaptcha"),
+                      ("https://aion-hybrid-ai--v2-test.web.app/dashboard.html?appcheck_debug","debug")):
         pp = ctx2.new_page(); pp.goto(url)
         pp.wait_for_function("window.AionHybridState && window.AionHybridState.appCheck && window.AionHybridState.appCheck.status!=='off'", timeout=15000)
         st = pp.evaluate("window.AionHybridState.appCheck.status"); dbg = pp.evaluate("typeof self.FIREBASE_APPCHECK_DEBUG_TOKEN")
@@ -288,7 +288,7 @@ with sync_playwright() as p:
         c={"candidates":[{"content":{"role":"model","parts":[{"text":"VERDICT: reasonable\nProvisional: the supplier looks reasonable on the shared passages [P1][S1]. Clarify warranty conditions."}]},"finishReason":"STOP"}]}
         return route.fulfill(status=200, headers={**CORS,"content-type":"text/event-stream"}, body="data: "+json.dumps(c)+"\r\n\r\n")
     pg4.route("**/firebasevertexai.googleapis.com/**", vertex4)
-    pg4.goto(f"http://127.0.0.1:{PORT}/index.html#case")
+    pg4.goto(f"http://127.0.0.1:{PORT}/dashboard.html#case")
     pg4.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready", timeout=15000)
     pg4.wait_for_function("document.getElementById('caseDisclosureText') && document.getElementById('caseDisclosureText').textContent.length>50", timeout=15000)
     PRIVATE = ["installation of the LED wall", "3,85,000", "4,00,000", "Leadership will not accept", "2026-12-11"]
@@ -433,7 +433,7 @@ with sync_playwright() as p:
     pg5.route("**/firebasevertexai.googleapis.com/**", vertex5)
     pg5.add_init_script(FAKE)
     pg5.add_init_script("if (sessionStorage.getItem('nanoOff')) window.__nanoAvail = 'unavailable';")
-    pg5.goto(f"http://127.0.0.1:{PORT}/index.html")
+    pg5.goto(f"http://127.0.0.1:{PORT}/dashboard.html")
     pg5.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionHybrid.router && window.AionHybrid.planner", timeout=15000)
     pg5.wait_for_timeout(1500)
     H = "window.AionHybrid"
@@ -582,7 +582,7 @@ with sync_playwright() as p:
         s.prompt = async (m, opts) => { if (JSON.stringify(m).includes('"image"')) { window.__imgPrompts++; return JSON.stringify({ supplier: 'Lumen AV (fictional)',
           price: 'Total: Rs 4,10,000 plus GST.', delivery: 'Delivered on 12 December 2026.', scope: 'Installation not included; quoted separately.',
           warranty: 'Standard warranty.', cancellation: 'No refunds within 10 days.', other: 'LED wall 5 x 3 m.' }); } return p0(m, opts); }; return s; } }; })();""")
-    pg6.goto(f"http://127.0.0.1:{PORT}/index.html#case")
+    pg6.goto(f"http://127.0.0.1:{PORT}/dashboard.html#case")
     pg6.wait_for_function("document.getElementById('caseDisclosureText') && document.getElementById('caseDisclosureText').textContent.length>50", timeout=20000)
     pg6.wait_for_timeout(1500)
     QUOTE = "Apex Stage Rentals\nQuote for LED wall 6x3 m and sound for 350 guests. Contact ravi.k@example.com, PAN ABCDE1234F.\nTotal price: Rs 3,20,000 including GST. 40% advance.\nDelivery and installation by our technicians on 10 December 2026 by 18:00.\nWarranty covers faults during the event.\nCancellation within 7 days: 50% charged."
@@ -647,7 +647,7 @@ with sync_playwright() as p:
     # ================= Batch 2: two-minute tour, receipts kept across visits =================
     pg7 = ctx.new_page()
     pg7.route("**/firebasevertexai.googleapis.com/**", vertex5)
-    pg7.goto(f"http://127.0.0.1:{PORT}/index.html")
+    pg7.goto(f"http://127.0.0.1:{PORT}/dashboard.html")
     pg7.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionHybrid.router", timeout=15000); pg7.wait_for_timeout(1200)
     pg7.evaluate("localStorage.removeItem('aion_receipts_history_v1'); localStorage.removeItem('aion_tour_hidden')")
     pg7.reload(); pg7.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready", timeout=15000); pg7.wait_for_timeout(1200)

@@ -6,12 +6,16 @@
  * live state must never be served stale - so "offline" means "the shell loads
  * and then shows it cannot reach the server", not "chat works offline".
  *
+ * BORDER INSTRUMENT (v9): "/" is the new light page (index.html + border.css,
+ * slab.js, stage.js); the old dashboard moved to /dashboard. An offline
+ * navigation gets its own cached page first, then "/".
+ *
  * HYBRID BUILD: the shell now also caches standalone.js and hybrid.bundle.js
  * (the Firebase AI Logic code, bundled so it needs no CDN) so the page loads
  * with no network. In standalone mode /api/* is answered inside the page, not
  * by the network, so Offline Demo Mode works with on-device Gemini Nano.
  */
-const CACHE = "aion-hybrid-shell-v8";
+const CACHE = "aion-hybrid-shell-v9";
 
 /* hybrid-v2 privacy rule: this worker only ever caches the PUBLIC app shell.
  * It never stores private data, prompts or AI responses:
@@ -31,6 +35,12 @@ function cacheable(url, resp) {
 }
 const SHELL = [
   "/",
+  "/index.html",
+  "/border.css",
+  "/slab.js",
+  "/stage.js",
+  "/dashboard",
+  "/dashboard.html",
   "/style.css",
   "/app.js",
   "/standalone.js",
@@ -40,6 +50,9 @@ const SHELL = [
   "/fonts/geist-latin-400-normal.woff2",
   "/fonts/dm-mono-latin-400-normal.woff2",
   "/fonts/instrument-serif-latin-400-normal.woff2",
+  "/fonts/instrument-serif-latin-400-italic.woff2",
+  "/fonts/geist-latin-500-normal.woff2",
+  "/fonts/dm-mono-latin-500-normal.woff2",
   "/hybrid.bundle.js",
   "/mobile.html",
   "/approve.html",
@@ -82,7 +95,7 @@ self.addEventListener("fetch", (event) => {
   // connection loads the app instead of a blank screen.
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req).catch(() => caches.match("/").then((hit) => hit || caches.match(req)))
+      fetch(req).catch(() => caches.match(req).then((hit) => hit || caches.match("/")))
     );
     return;
   }

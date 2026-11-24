@@ -2488,6 +2488,7 @@ const RECEIPT_ROUTE_LABEL = {
   "on-device-nano": ["On-device (Gemini Nano)", "local"],
   "cloud-sealed-chat": ["Cloud chat (sealed)", "cloud"],
   "cloud-blindfold": ["Cloud planner (blindfold)", "cloud"],
+  "cloud-case-research": ["Cloud case review (approved passages)", "cloud"],
   "local-fallback": ["Fallback on this device", "local"],
   "local-deterministic": ["Offline plan (no AI)", "local"],
 };

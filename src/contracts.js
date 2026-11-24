@@ -255,6 +255,7 @@ export const DISCLOSURE_TIERS = Object.freeze({
 
 export const RECEIPT_ROUTES = Object.freeze([
   "on-device-nano", "cloud-sealed-chat", "cloud-blindfold", "local-fallback", "local-deterministic",
+  "cloud-case-research",   /* Case tab: approved case_research disclosure sent only_in_cloud */
 ]);
 export const RECEIPT_STATUSES = Object.freeze([
   "completed", "timed_out", "blocked_egress", "rejected", "fallback", "failed",

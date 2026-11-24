@@ -952,11 +952,32 @@
     return JSON.stringify(copy);
   }
 
+  /* Prompt-injection flags (border engine, src/border.js). A passage whose text
+     looks like instructions (or hides invisible characters) gets
+     p.injection = {flagged, rules}; it cannot be shared until the user ticks
+     the override (p.injectionOverride). Clean passages carry no key at all, so
+     an unchanged case stays byte-identical. Needs the bundle; without it no
+     flags are added (and nothing else changes). */
+  function flagPassages(c) {
+    var B = window.AionHybrid && window.AionHybrid.border;
+    if (!B || !Array.isArray(c.paragraphs)) return;
+    c.paragraphs.forEach(function (p) {
+      var f = B.passageInjectionFlag(p);
+      if (f.flagged) p.injection = f;
+      else { delete p.injection; delete p.injectionOverride; }
+    });
+  }
+  /* Shareable = ticked AND (not flagged, or flag explicitly overridden). */
+  function passageShareable(p) {
+    return !!(p && p.shared) && !(p.injection && p.injection.flagged && !p.injectionOverride);
+  }
+
   /* mutate(copy) edits a copy; the revision goes up only if something changed. */
   function updateCase(mutate) {
     return loadCase().then(function (c) {
       var next = JSON.parse(JSON.stringify(c));
       mutate(next);
+      flagPassages(next);
       next.id = CASE_ID; next.kind = "case";
       if (caseBody(next) === caseBody(c)) return c;
       next.inputRevision = c.inputRevision + 1;
@@ -989,7 +1010,7 @@
     return {
       instructions: CASE_INSTRUCTIONS,
       question: filterSecrets(String(question == null ? c.question : question)).slice(0, 1000),
-      shared_passages: c.paragraphs.filter(function (p) { return p.shared; })
+      shared_passages: c.paragraphs.filter(passageShareable)
         .map(function (p) { return { id: p.id, text: filterSecrets(p.text).slice(0, 1500) }; }),
       public_sources: c.publicSources.map(function (s) { return { id: s.id, title: s.title, text: filterSecrets(s.text) }; }),
       shareable_requirements: (c.shareableRequirements || [])
@@ -1004,7 +1025,7 @@
     String(pc.readyBy || "").replace(/\d{4}-\d{2}-\d{2}/g, function (m) { vals.push(m); return m; });
     return {
       constraints: vals,
-      passages: c.paragraphs.filter(function (p) { return !p.shared; }).map(function (p) { return p.text; }),
+      passages: c.paragraphs.filter(function (p) { return !passageShareable(p); }).map(function (p) { return p.text; }),
     };
   }
 
@@ -1051,7 +1072,8 @@
               sources: d.payload.public_sources.map(function (s) { return s.id; }),
               requirements: d.payload.shareable_requirements.length,
             },
-            excluded: c.paragraphs.filter(function (p) { return !p.shared; }).map(function (p) { return p.id + " " + p.heading; })
+            excluded: c.paragraphs.filter(function (p) { return !passageShareable(p); }).map(function (p) {
+                return p.id + " " + p.heading + (p.shared ? " (held: looks like instructions - override to share)" : ""); })
               .concat(["maximum budget", "ready-by deadline", "installation rule (" + (pc.installationRequired ? "required" : "not required") + ")", "confidential note"]),
             privateHits: hybrid.egress.scanPrivate(text),
           };
@@ -1061,18 +1083,60 @@
   }
 
   /* Send an approved case disclosure. Cloud only - never falls back to the
-   * device - and only if the case is still at the approved revision. */
+   * device - and only if the case is still at the approved revision.
+   * Every attempt, success or failure, records a telemetry receipt
+   * (route "cloud-case-research") and, when the text really left, adds to the
+   * session disclosure meter. A failure keeps its original error (and code)
+   * and gains err.errorKind / err.border = {errorKind, message}. */
   function sendCaseDisclosure(d) {
     return waitForHybrid().then(function (hybrid) {
+      var B = hybrid.border || null;
+      var perf = typeof performance !== "undefined" ? performance : Date;
+      var t0 = perf.now();
+      var wasSent = !!(d && d.approvalState === "sent");
+      var caseNow = null;
+      function sentNow() { return !wasSent && !!(d && d.approvalState === "sent"); }
+      function chars() {
+        try {
+          var row = hybrid.egress.log().filter(function (x) { return d && x.requestId === d.requestId; }).pop();
+          return row && typeof row.bytes === "number" ? row.bytes : null;
+        } catch (e) { return null; }
+      }
+      function meter() {
+        if (!B || !sentNow() || !d.payload || !Array.isArray(d.payload.shared_passages)) return;
+        var heads = {};
+        ((caseNow && caseNow.paragraphs) || []).forEach(function (p) { heads[p.id] = p.heading; });
+        try {
+          B.meter.record({ sharedPassages: d.payload.shared_passages.map(function (p) { return { id: p.id, text: p.text, heading: heads[p.id] || "" }; }),
+            totalPassages: ((caseNow && caseNow.paragraphs) || []).length, chars: chars() });
+        } catch (e) { /* the meter is a display aid only */ }
+      }
       return loadCase().then(function (c) {
+        caseNow = c;
         return syncPrivateRegistry(hybrid).then(function () {
           return hybrid.generate(null, null, { mode: "only_in_cloud", disclosure: d, currentInputRevision: c.inputRevision });
         });
       }).then(function (g) {
+        var receipt = null;
+        try { if (B) receipt = B.recordCaseSend({ disclosure: d, ok: true, result: g, sentNow: sentNow(), chars: chars() }); } catch (e) { /* never break a reply */ }
+        meter();
+        g.receipt = receipt;
         return store.put("events", { id: Date.now() + "-r", event_id: uid("evt"), timestamp: nowIso(),
           event_type: "case.research", source_engine: "hybrid-router",
           detail: { disclosure: g.disclosure, actual_source: g.actual_source, source_verified: g.source_verified,
             latency_ms: g.latencyMs, model: g.model } }).then(function () { return g; });
+      }, function (err) {
+        var cls = hybrid.router && hybrid.router.classifyError ? hybrid.router.classifyError(err, hybrid.state) : "other";
+        try {
+          if (B) err.receipt = B.recordCaseSend({ disclosure: d, ok: false, error: err, errorClass: cls, sentNow: sentNow(), chars: chars(),
+            latencyMs: perf.now() - t0 });
+        } catch (e) { /* never hide the real error */ }
+        meter();
+        try {
+          var f = B ? B.sendFailure(err) : { errorKind: "unknown", message: "The cloud request failed." };
+          err.errorClass = cls; err.errorKind = f.errorKind; err.border = f;
+        } catch (e) { /* frozen error object: leave it as it is */ }
+        throw err;
       });
     });
   }
@@ -1631,6 +1695,22 @@
       prepareDisclosure: function (question) { return prepareCaseDisclosure(question); },
       send: function (d) { return sendCaseDisclosure(d); },
       leakTest: function (opts) { return leakTest(opts); },
+      /* Border engine (src/border.js) on the stored case. */
+      setInjectionOverride: function (id, on) {
+        return updateCase(function (c) { c.paragraphs.forEach(function (p) { if (p.id === id && p.injection) p.injectionOverride = !!on; }); });
+      },
+      injectionReport: function () {
+        return waitForHybrid().then(function (h) { return loadCase().then(function (c) { return h.border.injectionReport(c); }); });
+      },
+      hostileDrill: function (replies) {
+        return waitForHybrid().then(function (h) { return loadCase().then(function (c) { return h.border.hostileCloudDrill(c, replies); }); });
+      },
+      provisionalLocal: function () {
+        return waitForHybrid().then(function (h) { return loadCase().then(function (c) {
+          return h.border.provisionalVerdictLocal(c.paragraphs.filter(passageShareable).map(function (p) { return { id: p.id, heading: p.heading, text: filterSecrets(p.text) }; }));
+        }); });
+      },
+      meter: function () { return waitForHybrid().then(function (h) { return h.border.meter.snapshot(); }); },
       syncPrivateRegistry: function () { return waitForHybrid().then(function (h) { return syncPrivateRegistry(h); }); },
     },
     privacy: privacyCheck,

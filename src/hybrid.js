@@ -26,6 +26,8 @@ import * as contracts from "./contracts.js";
 import * as telemetry from "./telemetry.js";
 import { createRouter } from "./router.js";
 import { createPlanner } from "./planner.js";
+import * as borderEngine from "./border.js";
+import { caseRules } from "./caseRules.js";
 
 /* Record every request body sent to the Firebase AI endpoint (memory only),
  * installed before the SDK makes any call. Used by the leak test. */
@@ -772,6 +774,26 @@ function wireBar() {
   else if (window.AionStandalone) window.AionStandalone.detectMode().then(renderBackendPill);
 }
 
+/* ------------------------------ border engine ------------------------------ */
+/* window.AionHybrid.border: the pure functions of src/border.js, plus a few
+ * bound helpers that need this page (telemetry, Nano, the router's error
+ * classes, the rules case.js really uses). */
+function makeBorder(router) {
+  const meter = borderEngine.createDisclosureMeter();
+  /* The exact rules the real reply goes through: case.js when it is loaded. */
+  const rulesNow = () => (window.AionCase && typeof window.AionCase.reconcile === "function" ? window.AionCase : caseRules);
+  return Object.assign({}, borderEngine, {
+    rules: caseRules,
+    meter,
+    recordCaseSend: (o) => telemetry.recordReceipt(borderEngine.caseReceiptInput(o)),
+    hostileCloudDrill: (c, replies) => borderEngine.hostileCloudDrill(c, replies, { rules: rulesNow() }),
+    gauges: (o) => borderEngine.gauges(Object.assign({ rules: rulesNow() }, o)),
+    provisionalVerdictLocal: (shared, o) => borderEngine.provisionalVerdictLocal(shared,
+      Object.assign({ nanoReady: state.nano === "ready", localJson: localJSON }, o)),
+    sendFailure: (err) => borderEngine.sendFailure(router.classifyError(err, state), { online: navigator.onLine !== false }),
+  });
+}
+
 /* --------------------------------- boot --------------------------------- */
 
 function boot() {
@@ -823,6 +845,7 @@ function boot() {
       validatePlan: contracts.validatePlan, DISCLOSURE_TIERS: contracts.DISCLOSURE_TIERS,
       RECEIPT_SCHEMA_VERSION: contracts.RECEIPT_SCHEMA_VERSION, PLAN_STEP_SCHEMA_VERSION: contracts.PLAN_STEP_SCHEMA_VERSION },
     timeouts: { cloudMs: CLOUD_TIMEOUT_MS, localMs: LOCAL_TIMEOUT_MS },
+    border: makeBorder(router),
   };
   if (window.__resolveAionHybrid) window.__resolveAionHybrid(window.AionHybrid);
 }

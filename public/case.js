@@ -325,6 +325,9 @@
         '<div class="case-para-head"><span class="case-pid">' + esc(p.id) + '</span><span class="case-ph">' + esc(p.heading) + '</span>' +
         '<label class="case-share"><input type="checkbox" data-share="' + esc(p.id) + '"' + (p.shared ? " checked" : "") +
         '> share with cloud</label></div>' +
+        (p.injection && p.injection.flagged
+          ? '<div class="case-warn" data-inj="' + esc(p.id) + '"></div><label class="case-share"><input type="checkbox" data-injover="' + esc(p.id) + '"' +
+            (p.injectionOverride ? " checked" : "") + '> I read it: allow sharing anyway</label>' : '') +
         '<textarea class="case-ta" rows="3" data-ptext="' + esc(p.id) + '" aria-label="Paragraph ' + esc(p.id) + '">' + esc(p.text) + '</textarea></div>';
     }).join("");
     var srcs = c.publicSources.map(function (s) {
@@ -397,8 +400,18 @@
         'a reply with a real name restored, a private constraint), runs two chat turns and one case request through the normal paths, ' +
         'then searches what left. Everything planted is removed afterwards.</div>' +
         '<div id="caseLeakResult"></div>' +
+      '</section>' +
+      '<section class="card wide case-card" id="caseBorderCard">' +
+        '<div class="card-head"><div class="card-title">Border instruments</div>' +
+        '<button type="button" class="pill hy-btn" id="caseDrillBtn">RUN HOSTILE-CLOUD DRILL</button></div>' +
+        '<div class="card-sub">Plays canned hostile replies (no network) through the same rules a real reply goes through, and shows what has been shared this session. ' +
+        'Simulated replies, played by this page; plain code decided. These measure only what they test.</div>' +
+        '<div id="caseMeterOut" class="case-out"></div>' +
+        '<div id="caseDrillOut" class="case-out"></div>' +
       '</section>';
     wire();
+    fillInjectionNotes();
+    renderMeter();
     renderRevision();
     renderDisclosure();
     renderResult();
@@ -612,7 +625,14 @@
     if (!box) return;
     var r = st.result;
     if (!r) { box.innerHTML = ""; return; }
-    if (r.error) { box.innerHTML = '<div class="case-warn" id="caseResultError"></div>'; el("caseResultError").textContent = r.error; return; }
+    if (r.error) {
+      box.innerHTML = '<div class="case-warn" id="caseResultError"></div>' +
+        (r.kind && r.kind !== "blocked" ? '<div class="case-actions"><button type="button" class="pill hy-btn" id="caseLocalVerdictBtn">GET A PROVISIONAL VIEW ON THIS DEVICE</button></div>' +
+          '<div class="case-out" id="caseLocalVerdict"></div>' : '');
+      el("caseResultError").textContent = (r.kindText ? r.kindText + " (" + r.kind + ") " : "") + r.error;
+      if (el("caseLocalVerdictBtn")) el("caseLocalVerdictBtn").addEventListener("click", function () { if (!st.busy) provisionalHere(); });
+      return;
+    }
     var g = r.g;
     box.innerHTML = '<div class="case-reply"><div class="case-reply-meta" id="caseReplyMeta"></div><div class="case-reply-text" id="caseReplyText"></div></div>';
     el("caseReplyMeta").textContent = "Ran " + (g.actual_source === "in_cloud" ? "in the cloud" : "on device") +
@@ -620,6 +640,51 @@
       (g.disclosure ? " · disclosure " + short(g.disclosure.digest) + "… · " + g.disclosure.bytes + " characters" : "") +
       " · provisional: see the private review below";
     el("caseReplyText").textContent = g.text;
+  }
+
+  /* ---------------- border engine views (all text via textContent) ---------------- */
+  function border() { return window.AionHybrid && window.AionHybrid.border; }
+  function fillInjectionNotes() {
+    if (!root || !st.c) return;
+    (st.c.paragraphs || []).forEach(function (p) {
+      var box = root.querySelector('[data-inj="' + p.id + '"]');
+      if (!box || !p.injection) return;
+      box.textContent = "This passage looks like it contains instructions or hidden characters (" + (p.injection.rules || []).join(", ") +
+        "). It is held back from the cloud even if ticked" + (p.injectionOverride ? " - you allowed it, so it will be shared if ticked." : " until you allow it below.");
+    });
+  }
+  function renderMeter() {
+    var box = el("caseMeterOut"), B = border();
+    if (!box) return;
+    if (!B || !B.meter) { box.textContent = "Disclosure meter: the border engine is not loaded yet."; return; }
+    var m = B.meter.snapshot();
+    var cls = Object.keys(m.byClass).filter(function (k) { return m.byClass[k]; }).map(function (k) { return k + " " + m.byClass[k]; }).join(", ");
+    box.textContent = "Shared this session: " + m.sends + " send" + (m.sends === 1 ? "" : "s") + ", " + m.passagesShared + " distinct passage" +
+      (m.passagesShared === 1 ? "" : "s") + (m.totalPassages ? " of " + m.totalPassages : "") + ", " + m.charsSent.toLocaleString() + " characters" +
+      (cls ? " (" + cls + ")" : "") + "." + (m.combinationWarning ? " WARNING: " + m.combinationWarning.message : "");
+  }
+  function runDrill() {
+    var box = el("caseDrillOut"), B = border();
+    if (!box || !B || !st.c) return;
+    var d = B.hostileCloudDrill(st.c);
+    var lines = d.results.map(function (r) {
+      return (r.blocked ? "BLOCKED  " : r.finalChangedByCloud ? "CHANGED  " : "no attempt  ") + r.replyId + ": claimed " + (r.cloudClaimed || "no verdict") +
+        ", final " + r.localFinal + (r.ruleViolationsAttempted.length ? " - attempted: " + r.ruleViolationsAttempted.join(", ") : "");
+    });
+    box.innerHTML = '<div class="case-out-meta"></div><pre class="case-pre case-out-text"></pre>';
+    box.querySelector(".case-out-meta").textContent = (d.allBlocked ? "All " : "Not all ") + d.results.length + " hostile replies " +
+      (d.allBlocked ? "were blocked" : "were blocked - see below") + ". Label: " + d.label + ".";
+    box.querySelector(".case-out-text").textContent = lines.join("\n");
+  }
+  function provisionalHere() {
+    var out = el("caseLocalVerdict");
+    if (!out || !api().provisionalLocal) return;
+    out.textContent = "Working on this device…";
+    api().provisionalLocal().then(function (v) {
+      out.textContent = "Provisional view made ON THIS DEVICE by " + v.engine + " - not from the cloud. Read only shared passages " +
+        (v.passages.join(", ") || "(none)") + ". Verdict: " + (v.verdict || "none") + ". " + v.why +
+        (v.nanoError ? " (Gemini Nano failed: " + v.nanoError + ")" : "") + " The private review below still decides.";
+    }, function (e) { out.textContent = "Could not make a local provisional view: " + String(e && e.message || e).slice(0, 160); });
   }
 
   function renderLeak() {
@@ -654,6 +719,12 @@
         var id = cb.getAttribute("data-share"), on = cb.checked;
         cb.closest(".case-para").classList.toggle("is-shared", on);
         queueEdit(function (c) { c.paragraphs.forEach(function (p) { if (p.id === id) p.shared = on; }); });
+      });
+    });
+    root.querySelectorAll("[data-injover]").forEach(function (cb) {
+      cb.addEventListener("change", function () {
+        var id = cb.getAttribute("data-injover"), on = cb.checked;
+        queueEdit(function (c) { c.paragraphs.forEach(function (p) { if (p.id === id && p.injection) p.injectionOverride = on; }); });
       });
     });
     root.querySelectorAll("[data-ptext]").forEach(function (ta) {
@@ -707,9 +778,11 @@
       renderDisclosure();
       flushEdits().then(function () {
         return api().send(st.prep.disclosure);
-      }).then(function (g) { st.result = { g: g }; st.cloudAt = Date.now(); }, function (e) { st.result = { error: String(e && e.message || e) }; })
-        .then(function () { st.busy = ""; renderDisclosure(); renderResult(); renderReview(); });
+      }).then(function (g) { st.result = { g: g }; st.cloudAt = Date.now(); }, function (e) {
+        st.result = { error: String(e && e.message || e), kind: e && e.errorKind, kindText: e && e.border && e.border.message };
+      }).then(function () { st.busy = ""; renderDisclosure(); renderResult(); renderReview(); renderMeter(); });
     });
+    el("caseDrillBtn").addEventListener("click", function () { if (!st.busy) runDrill(); });
     el("caseLeakBtn").addEventListener("click", function () {
       if (st.busy) return;
       st.busy = "leak";

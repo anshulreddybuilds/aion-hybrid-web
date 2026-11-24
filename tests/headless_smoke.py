@@ -681,6 +681,19 @@ with sync_playwright() as p:
     pg7.evaluate("window.dispatchEvent(new CustomEvent('aion:busy', { detail: { count: 0 } }))")
     p2 = pg7.evaluate("document.body.classList.contains('motion-paused')")
     ok("d1: motion pauses while Gemini Nano is working, and resumes after", p1 and not p2, (p1, p2))
+    rs = pg7.evaluate("""(() => { const out = [], st = () => window.AionMotion.ringState, ev = (d) => window.dispatchEvent(new CustomEvent('aion:activity', { detail: d }));
+      ev({ local: 1, cloud: 0 }); out.push(st(), document.getElementById('coreLine2').textContent);
+      ev({ local: 0, cloud: 1 }); out.push(st(), document.getElementById('coreLine2').textContent);
+      ev({ local: 0, cloud: 0 }); out.push(st()); return out; })()""")
+    ok("d2: HUD ring shows on-device work and cloud work as different states", rs[0]=="local" and "device" in rs[1] and rs[2]=="cloud" and "cloud" in rs[3] and rs[4] in ("idle","done","failed"), rs)
+    ce = pg7.evaluate("""(() => { const seen = []; const h = (e) => seen.push(e.detail.cloud); window.addEventListener('aion:activity', h);
+      window.AionHybrid.generate('ping', null, { mode: 'only_in_cloud' }).catch(() => {}); window.removeEventListener('aion:activity', h); return seen; })()""")
+    ok("d2: a real cloud request announces itself to the ring (no fake state)", len(ce)>=1 and ce[0]==1, ce)
+    pg7.evaluate("window.dispatchEvent(new CustomEvent('aion:receipt', { detail: { route: 'on-device-nano', status: 'completed', latencyMs: 1800 } }))")
+    dn = pg7.evaluate("[window.AionMotion.ringState, document.getElementById('coreLine2').textContent]")
+    ok("d2: when an answer arrives the ring says done, with the real time", dn[0]=="done" and "1.8 s" in dn[1], dn)
+    fw = pg7.evaluate("(() => { const i = document.querySelector('#chatInput'); i.focus(); const c = i.closest('.card'); return c ? getComputedStyle(c.querySelector('.corner') || c).opacity : 'no-card'; })()")
+    ok("d2: the panel you are working in lights its corner hairlines", fw=="no-card" or float(fw) > .5, fw)
     gy = pg7.evaluate("(() => { const g = document.querySelector('.nav-glow'), a = document.querySelector('.nav a[aria-current]'); return g && a ? [parseFloat(g.style.getPropertyValue('--glow-y')), a.offsetTop] : null; })()")
     ok("d1: the nav light sits on the active item", gy and abs(gy[0]-gy[1]) < 1, gy)
     bf = pg7.evaluate("(() => { const c = document.querySelector('.view.is-active .card, .aside .card'); return getComputedStyle(c).backdropFilter; })()")

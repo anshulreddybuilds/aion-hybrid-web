@@ -493,13 +493,24 @@ let busyCount = 0;
 function busyMark(delta) {
   busyCount = Math.max(0, busyCount + delta);
   try { window.dispatchEvent(new CustomEvent("aion:busy", { detail: { count: busyCount } })); } catch (e) { /* ignore */ }
+  try { window.dispatchEvent(new CustomEvent("aion:activity", { detail: { local: busyCount, cloud: cloudCount } })); } catch (e) { /* ignore */ }
 }
 function mayUseDevice(opts) {
   const m = (opts && opts.mode) || state.mode;
   return m === "only_on_device" || m === "prefer_on_device" || state.offlineDemo;
 }
+/* Cloud calls in flight are announced too (aion:activity), so the HUD ring
+ * can show which kind of work is happening. They do not pause motion. */
+let cloudCount = 0;
+function cloudMark(delta) {
+  cloudCount = Math.max(0, cloudCount + delta);
+  try { window.dispatchEvent(new CustomEvent("aion:activity", { detail: { local: busyCount, cloud: cloudCount } })); } catch (e) { /* ignore */ }
+}
 async function withBusy(onDevice, fn) {
-  if (!onDevice) return fn();
+  if (!onDevice) {
+    cloudMark(1);
+    try { return await fn(); } finally { cloudMark(-1); }
+  }
   busyMark(1);
   try { return await fn(); } finally { busyMark(-1); }
 }
@@ -814,7 +825,7 @@ function boot() {
     try { window.dispatchEvent(new CustomEvent("aion:receipt", { detail: receipt })); } catch (e) { /* UI only */ }
   });
   const router = createRouter({ generate, egress, recordReceipt: telemetry.recordReceipt, getState: () => state });
-  const planner = createPlanner({ cloudCall: plannerCloudCall, localCall: plannerLocalCall, egress,
+  const planner = createPlanner({ cloudCall: (req) => withBusy(false, () => plannerCloudCall(req)), localCall: plannerLocalCall, egress,
     recordReceipt: telemetry.recordReceipt, getState: () => state });
 
   window.AionHybrid = {

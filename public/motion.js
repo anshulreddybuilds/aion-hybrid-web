@@ -10,7 +10,9 @@
      damped spring, like a camera on a slider;
    - springs: panels rise in and the nav light glides with real spring
      physics (stiffness/damping), sampled into CSS linear() easing;
-   - HUD: one ring of real values (Nano, cloud, App Check, receipts).
+   - HUD: one ring of real values (Nano, cloud, App Check, receipts) that
+     changes state with the real work: idle, working on this device
+     (lavender), asking the cloud (blue), done (mint) or failed (red);
    It all stops when the tab is hidden, while Gemini Nano is working,
    and for "reduce motion".
    ================================================================== */
@@ -174,7 +176,7 @@
     var core = document.createElement("div");
     core.className = "core"; core.id = "coreRing";
     core.setAttribute("role", "status");
-    core.innerHTML = '<svg viewBox="0 0 38 38" aria-hidden="true"><circle class="trk" cx="19" cy="19" r="' + R + '"/>' +
+    core.innerHTML = '<svg viewBox="0 0 38 38" aria-hidden="true"><circle class="ticks" cx="19" cy="19" r="18.6"/><circle class="wave" cx="19" cy="19" r="15"/><circle class="trk" cx="19" cy="19" r="' + R + '"/>' +
       arc("nano", 0.01, 0.31) + arc("cloud", 0.345, 0.31) + arc("ac", 0.68, 0.31) +
       '<circle class="heart" cx="19" cy="19" r="9" fill="rgba(25,208,232,.10)"/><text class="num" x="19" y="19.5" id="coreNum">0</text></svg>' +
       '<div class="legend"><span id="coreLine1">AI requests</span><span id="coreLine2"></span></div>';
@@ -218,11 +220,44 @@
     countTo(rs.length);
     var cloudN = rs.filter(function (r) { return r.egressAudit && r.egressAudit.disclosureTier === "approved_cloud"; }).length;
     $("coreLine1").innerHTML = "<b>" + rs.length + "</b> AI request" + (rs.length === 1 ? "" : "s");
-    $("coreLine2").textContent = cloudN + " cloud · " + (rs.length - cloudN) + " on device";
+    $("coreLine2").dataset.counts = cloudN + " cloud · " + (rs.length - cloudN) + " on device";
+    setState();
     var core = $("coreRing");
     core.title = "Nano: " + S.nano + (S.nanoWarm ? " (warm)" : "") + " · App Check: " + (S.appCheckWarm || "-") +
       " · last cloud call: " + (lastCloud ? lastCloud.status : "none yet");
   }
+  /* ---------------- ring states: idle / on device / cloud / done ----------------
+     Driven only by real events from hybrid.js (aion:activity, aion:receipt). */
+  var act = { local: 0, cloud: 0 }, doneTimer = 0, lastDone = null;
+  function setState() {
+    var core = $("coreRing");
+    if (!core) return;
+    var st = act.local > 0 ? "local" : act.cloud > 0 ? "cloud" : lastDone ? lastDone.st : "idle";
+    ["idle", "local", "cloud", "done", "failed"].forEach(function (k) { core.classList.toggle("st-" + k, k === st); });
+    var l2 = $("coreLine2");
+    if (!l2) return;
+    if (st === "local") l2.textContent = "working on this device…";
+    else if (st === "cloud") l2.textContent = "asking the cloud…";
+    else if (st === "done" || st === "failed") l2.textContent = lastDone.text;
+    else l2.textContent = l2.dataset.counts || "";
+  }
+  window.addEventListener("aion:activity", function (e) {
+    var d = e.detail || {};
+    act.local = Math.max(0, d.local || 0); act.cloud = Math.max(0, d.cloud || 0);
+    if (act.local || act.cloud) { clearTimeout(doneTimer); lastDone = null; }
+    setState();
+  });
+  function markDone(r) {
+    if (!r) return;
+    var ok = r.status === "completed";
+    lastDone = { st: ok ? "done" : "failed", text: (ok ? "done" : String(r.status).replace(/_/g, " ")) + (r.latencyMs != null ? " · " + (r.latencyMs / 1000).toFixed(1) + " s" : "") };
+    clearTimeout(doneTimer);
+    var core = $("coreRing");
+    if (core) { core.classList.remove("st-done", "st-failed"); void core.getBoundingClientRect(); } /* replay the ping */
+    doneTimer = setTimeout(function () { lastDone = null; setState(); }, 4200);
+    setState();
+  }
+
   function tick(r) {
     var t = $("receiptTicker");
     if (!t || !r) return;
@@ -258,12 +293,12 @@
       if (!document.body.classList.contains("booting")) { boot.disconnect(); enter(activeView()); placeGlow(false); }
     });
     boot.observe(document.body, { attributes: true, attributeFilter: ["class"] });
-    window.addEventListener("aion:receipt", function (e) { tick(e.detail); updateCore(); });
+    window.addEventListener("aion:receipt", function (e) { tick(e.detail); markDone(e.detail); updateCore(); });
     setInterval(updateCore, 1500);
     updateCore();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
 
-  window.AionMotion = { spring: spring, paused: paused, get busy() { return busy; } };
+  window.AionMotion = { spring: spring, paused: paused, get busy() { return busy; }, get ringState() { var c = $("coreRing"); return c ? (c.className.match(/st-(\w+)/) || [])[1] : null; } };
 })();

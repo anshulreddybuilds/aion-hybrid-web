@@ -14,6 +14,17 @@ Built by **Anshul Reddy** ([@anshulreddybuilds](https://github.com/anshulreddybu
 
 ## Try it (judges)
 
+**New since 24 Nov: the home page is now the Border Instrument** - a light, five-step page that shows one thing at a time (01 Quote, 02 Share, 03 Send, 04 Verdict, 05 Proof). The earlier all-in-one dashboard is still here at `/dashboard` (steps 0-9 below describe that dashboard; the new page reaches the same Case flow in five screens).
+
+Fastest path on the new page, no Nano and no cloud needed:
+
+1. Open the site, press **use the sample** (a fictional LED-wall supplier quote). The slab in the middle shows how many characters stay on this device (green) and how many are in the disclosure that may cross (amber).
+2. **02 Share:** tick or untick passages. Passages that look like instructions aimed at an AI are held back and flagged; private requirements (budget, deadline, installation rule) have no field to leave in at all.
+3. **03 Send:** read the exact text, **approve** it, **send** it. With the plug pulled (the *Pull the plug* switch) nothing can leave, and the cloud side of the slab turns grey.
+4. **04 Verdict:** plain code in the browser checks the cloud's typed verdict against your private requirements and decides. If there is no cloud or App Check for you, **Get a provisional verdict here** reaches a verdict with Nano, or plain code when Nano is not ready.
+5. **05 Proof:** the seeded-secret leak test, the hostile-cloud drill, the usefulness gauge and the receipts. Each figure says what it measured.
+
+
 0. Fastest path: use the **Two-minute tour** box on Home. Its four buttons run the real flows described below.
 1. Use **desktop Chrome 139 or newer**. Other browsers still work, but chat then uses the cloud only and the header light says Gemini Nano is not supported.
 2. Open the hosted URL. The header bar shows:
@@ -37,7 +48,7 @@ The demo data is a **fictional person ("Alex")**. Nothing from the author's real
 
 The dashboard front end - static files only. Per file timestamps they were last changed 12-16 Oct 2026:
 
-- `index.html`, `style.css`, `app.js` - the desktop "Engineering Control Center" (home, chat, Climb progress, providers, knowledge graph, skills, Guardian, settings).
+- `index.html` (now `dashboard.html`), `style.css`, `app.js` - the desktop "Engineering Control Center" (home, chat, Climb progress, providers, knowledge graph, skills, Guardian, settings).
 - `mobile.html`, `approve.html`, `manifest.webmanifest`, `sw.js`, `scene.jpg`, `icons/` - phone control page, approvals-only page, installable-app files.
 
 The private Python backend (FastAPI, SQLite memory, provider router) is **not** part of this repository and was not modified.
@@ -78,6 +89,17 @@ Everything below was built during the contest window (November 2026). The second
 | Receipts across visits | Receipts are also kept in this browser (localStorage, up to 200) so the ledger shows earlier visits after a reload; they hold no message text, the request bodies stay in memory only, and CLEAR HISTORY removes them. EXPORT includes them. |
 | Privacy Receipts card (`app.js`, `index.html`) | The ledger described above, plus real status rows (Nano, App Check, last cloud call, request counts). |
 | Safety rails | 15 s cloud timeout (no endless spinner); the App Check debug provider can never turn on on the production domains, even with `?appcheck_debug`. |
+
+**Border Instrument (23-24 Nov 2026):**
+
+| New | What it does |
+|---|---|
+| `src/border.js`, `src/caseRules.js` | The measuring engine, plain code with no clock, randomness or network of its own. Case receipts; a **leak audit** that looks for seeded secrets in the exact bodies that were sent (exact and partial matches, plus a control that the secrets exist in the local data); an **injection scan** that holds back passages written to instruct an AI; a **hostile-cloud drill** that plays simulated bad cloud replies and checks plain code still decides; a **usefulness gauge** (how much was shared against how much the verdict relied on, with a 15% heuristic line for "quiet but useless"); a **disclosure meter** (cumulative characters sent this session); honest failure kinds (offline, App Check, timeout, quota, blocked); a provisional local verdict; and a Nano-vs-cloud agreement flag. 89 engine tests. |
+| `public/index.html`, `border.css`, `stage.js`, `slab.js` | The new light page. `stage.js` drives the five steps and builds every node with `createElement` and `textContent`, so quote text, passage text and cloud replies are never parsed as HTML. `slab.js` draws the 3D border slab (CSS 3D, tilts up to 6 degrees with the pointer) and a canvas with one mark per real word (at most 200 marks, at most 30 frames per second; paused when the tab is hidden; static with `prefers-reduced-motion` or when frames are slow). Numerals are our own 5x7 dot-matrix SVG font. |
+| Header lamps | Nano, Cloud and Route lamps read real state. Cloud says "not tried yet" until a real send, then "answered" with the measured time, or "unplugged", "off by route", or the failure kind. Nothing is hard-coded to "healthy". |
+| Show the work | A dialog with the disclosure JSON, the exact outgoing text, receipts, the injection report, the private-requirement check and the meter. |
+| `public/dashboard.html` | The earlier dashboard, moved from `index.html`, with a link back to the new page. |
+| Fixes | The leak test's case request now records a receipt; a passage ticked but held by an injection flag is listed as "read locally, never sent"; the injection warning shows right after an edit; an injection override is dropped when that passage's text changes; a send with the plug pulled is refused before anything is marked sent. |
 
 Small edits to existing files: `index.html` (hybrid bar, scripts, local assets, "DEMO USER" label), `style.css` (appended hybrid styles), `sw.js` (caches the new files), `mobile.html` / `approve.html` (use browser-local data when there is no backend; mobile chat shows the same badge), `manifest.webmanifest` (paths).
 
@@ -174,6 +196,8 @@ Firebase console, project `aion-hybrid-ai`:
 
 ## Verification: what was and was not tested
 
+**Border Instrument, 24 Nov 2026 (automated, mocked):** `node tests/engine.test.mjs` passes **89 / 89**; `python tests/ui_border_smoke.py` passes **85 / 85** (every number on screen is compared with the engine's own value; a planted `<img onerror>` and `<script>` in a quote render as text and do not run; with the plug pulled the cloud side is grey and no request is sent; keyboard-only use; reduced motion; no horizontal scroll and tap targets of at least 44 px at 390 x 844; no console errors beyond two named, expected ones); `python tests/headless_smoke.py` still passes **183 / 183** on the moved dashboard. **In these tests Nano and the cloud are mocked.** The new page has not yet been run against real Nano, real Gemini or real App Check; see the live-check table below for what was run live (earlier build) and the status note at the end of this section.
+
 **hybrid-v2, 22 Nov 2026:** `python tests/headless_smoke.py` passes **183 / 183** checks. The new ones cover quote intake (pasted text and a screenshot read by a mocked multimodal Nano with 0 cloud requests), the image guard, Aadhaar/UPI/bank-account rules, one-task-per-approval and stale-text refusal, the Case tab's private review (verdict flip, what-if edits with zero network requests, unknowns reported instead of guessed), sealing of pending task titles in `/plan`, the router decisions, receipts (measured latency, frozen, counts), the allowlist refusing an extra field before anything is sent, App Check 403 handling with and without Nano, the planner's tool round and JSON phase, approval gating, the `/plan` command in the real chat box, the receipts ledger matching each receipt to exactly its own network requests, the export, and the production App Check error wording. **In these tests the cloud model and Nano are mocked** (fake network replies and a fake `LanguageModel`).
 
 **Live check, 22 Nov 2026** (preview channel of this build, the author's real Chrome, Windows laptop with 8 GB RAM and no GPU; numbers read from the app's own receipts and the browser's network log):
@@ -204,6 +228,19 @@ Known limits:
 - The sensitive-message check in the router is a pattern check, like the privacy guard; it can miss things.
 - Data lives in this browser's IndexedDB only; clearing site data erases it.
 - Server-side speech transcription and the "run command" box need the original backend and are switched off in the hosted demo (browser speech recognition still works where Chrome supports it).
+
+## Related work this builds on
+
+The idea of keeping private data local while a stronger remote model sees only a controlled view is an active research area. AION's version is a small, browser-only demonstration of it, not a new result. Work we read and that shaped the design (cited by name; check the originals for their claims): PrivScope, PlanTwin, CAMP, CaMeL (Google DeepMind), LLM-Redactor, MINIM, Minions (local-cloud collaboration), Simon Willison's "lethal trifecta" (private data + untrusted content + a way to send data out) and Meta's "Agents Rule of Two". The trifecta lamps on the Proof screen show which of the three are present in the current session; the border's answer is the allowlisted disclosure, held passages and one-send approval described above.
+
+## Honest limits of the privacy claims
+
+- The leak test searches the exact outgoing bodies for the secrets it planted. "0 of N seeded secrets found" means exactly that, in those requests. It is not a proof of privacy and it cannot find a secret nobody planted.
+- Pattern checks (identifiers, injection phrases) can miss things.
+- "Characters" in every counter are characters, not bytes. The disclosure count includes the instruction text and the public sources that are sent along with the shared passages.
+- The "untrusted content" lamp is lit whenever there are supplier passages; that is a simple rule, and the lamp says so.
+- The sample case is fictional. Nothing from the author's real data is in this repository.
+- Cloud replies in the hostile-cloud drill are simulated by this page; plain code deciding in that drill shows the rule works for those replies, not for every possible reply.
 
 ## License
 

@@ -958,12 +958,18 @@
      the override (p.injectionOverride). Clean passages carry no key at all, so
      an unchanged case stays byte-identical. Needs the bundle; without it no
      flags are added (and nothing else changes). */
-  function flagPassages(c) {
+  function flagPassages(c, prev) {
     var B = window.AionHybrid && window.AionHybrid.border;
     if (!B || !Array.isArray(c.paragraphs)) return;
+    var before = {};
+    ((prev && prev.paragraphs) || []).forEach(function (p) { before[p.id] = p; });
     c.paragraphs.forEach(function (p) {
       var f = B.passageInjectionFlag(p);
-      if (f.flagged) p.injection = f;
+      if (f.flagged) {
+        p.injection = f;
+        /* An override covers one exact text: an edit of the passage drops it. */
+        if (p.injectionOverride && prev && typeof B.overrideStillValid === "function" && !B.overrideStillValid(before[p.id] || null, p)) delete p.injectionOverride;
+      }
       else { delete p.injection; delete p.injectionOverride; }
     });
   }
@@ -977,7 +983,7 @@
     return loadCase().then(function (c) {
       var next = JSON.parse(JSON.stringify(c));
       mutate(next);
-      flagPassages(next);
+      flagPassages(next, c);
       next.id = CASE_ID; next.kind = "case";
       if (caseBody(next) === caseBody(c)) return c;
       next.inputRevision = c.inputRevision + 1;
@@ -1113,6 +1119,14 @@
       }
       return loadCase().then(function (c) {
         caseNow = c;
+        /* Pull-the-plug (Offline Demo Mode): refuse BEFORE the disclosure is
+           marked sent, so no receipt or meter counts characters that the page's
+           own fetch wrapper would have blocked anyway. */
+        if (window.AION_OFFLINE_DEMO) {
+          var off = new Error("Offline Demo Mode is on (the plug is pulled), so the case was not sent. Nothing left this browser.");
+          off.code = "offline_demo";
+          throw off;
+        }
         return syncPrivateRegistry(hybrid).then(function () {
           return hybrid.generate(null, null, { mode: "only_in_cloud", disclosure: d, currentInputRevision: c.inputRevision });
         });
@@ -1188,12 +1202,31 @@
           sensitivity: "owner_private" }),
       ]);
 
-      function send(d, extra) {
+      var B = hybrid.border || null;
+      var caseReceipts = 0;
+      function send(d, extra, isCase) {
         if (!live) { dryTexts.push(E.serialize(d)); return Promise.resolve(); }
+        var perf = typeof performance !== "undefined" ? performance : Date;
+        var t0 = perf.now();
+        var wasSent = d.approvalState === "sent";
+        var chars = function () {
+          try { var row = E.log().filter(function (x) { return x.requestId === d.requestId; }).pop(); return row && typeof row.bytes === "number" ? row.bytes : null; }
+          catch (e) { return null; }
+        };
+        /* The case request goes through the same receipt as a normal case send
+           (route cloud-case-research), so the leak test's cloud traffic is on
+           the ledger too. Chat turns are plain generate() calls here. */
+        var receipt = function (o) {
+          if (!isCase || !B || typeof B.recordCaseSend !== "function") return;
+          try { B.recordCaseSend(Object.assign({ disclosure: d, sentNow: !wasSent && d.approvalState === "sent", chars: chars() }, o)); caseReceipts += 1; }
+          catch (e) { /* the receipt never breaks the test */ }
+        };
         return hybrid.generate(null, null, Object.assign({ mode: "only_in_cloud", disclosure: d }, extra || {}))
-          .catch(function (e) {
+          .then(function (g) { receipt({ ok: true, result: g }); }, function (e) {
             if (e && e.code === "private_value_blocked") gateBlocked += 1;
             errors.push(String(e && e.message || e).slice(0, 200));
+            var cls = hybrid.router && hybrid.router.classifyError ? hybrid.router.classifyError(e, hybrid.state) : "other";
+            receipt({ ok: false, error: e, errorClass: cls, latencyMs: perf.now() - t0 });
           });
       }
       function chatTurn(message, screenHistory) {
@@ -1231,7 +1264,7 @@
             temp.paragraphs.push({ id: "P99", heading: "Leak test (unshared)", text: "Internal only: " + C.source_document, shared: false });
             temp.privateConstraints.confidentialNote = (temp.privateConstraints.confidentialNote || "") + " Ref " + C.private_constraint;
             return prepareCaseDisclosure(null, temp).then(function (prep) {
-              return E.approve(prep.disclosure, "leak_test").then(function (d) { return send(d, { currentInputRevision: temp.inputRevision }); });
+              return E.approve(prep.disclosure, "leak_test").then(function (d) { return send(d, { currentInputRevision: temp.inputRevision }, true); });
             });
           });
         })
@@ -1262,6 +1295,13 @@
             gateBlocked: gateBlocked,
             errors: errors,
             controlPresent: results.filter(function (r) { return r.presentLocally; }).length,
+            /* The same bodies through the border engine's leak audit (exact +
+               partial hints). Measures only these six seeded secrets. */
+            audit: B && typeof B.leakAudit === "function"
+              ? B.leakAudit(Object.keys(C).map(function (k) { return { id: k, value: C[k] }; }), bodies) : null,
+            planted: Object.keys(C).map(function (k) { return { id: k, value: C[k] }; }),
+            bodies: bodies.slice(),
+            caseReceipts: caseReceipts,
             pass: bodies.length >= 3 && results.every(function (r) { return r.found === 0 && r.presentLocally; }),
             at: nowIso(),
           };

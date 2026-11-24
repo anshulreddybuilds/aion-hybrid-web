@@ -124,7 +124,10 @@ function reconcile(c) {
   var fails = checks.filter(function (k) { return k.status === "fail"; });
   var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });
   var verdict = fails.length ? "not_suitable" : open.length ? "needs_answers" : "fits";
-  var sharedIds = (c.paragraphs || []).filter(function (p) { return p.shared; }).map(function (p) { return p.id; });
+  /* "Shared" means really shareable: ticked AND not held by an injection flag
+   * (unless the user overrode it). A ticked-but-held passage was never sent,
+   * so a check that used it used private material. */
+  var sharedIds = (c.paragraphs || []).filter(function (p) { return p.shared && !(p.injection && p.injection.flagged && !p.injectionOverride); }).map(function (p) { return p.id; });
   var hiddenUsed = [];
   checks.forEach(function (k) { (k.from || []).forEach(function (id) { if (id && sharedIds.indexOf(id) < 0 && hiddenUsed.indexOf(id) < 0) hiddenUsed.push(id); }); });
   return { verdict: verdict, checks: checks, fails: fails.length, open: open.length, gstRate: rate, privatePassagesUsed: hiddenUsed };

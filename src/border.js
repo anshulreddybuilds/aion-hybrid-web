@@ -289,6 +289,18 @@ export function passageShareable(p) {
   return !(p.injection && p.injection.flagged && !p.injectionOverride);
 }
 
+/** An injection override is a decision about ONE exact text. After an edit,
+ * next.injectionOverride stays valid only if the passage existed before and
+ * its heading and text are unchanged; after any edit of that passage the user
+ * has to read it and override again.
+ * @param {Object|null} prev  the passage before the edit (null if new)
+ * @param {Object} next       the passage after the edit
+ * @returns {boolean} */
+export function overrideStillValid(prev, next) {
+  if (!prev || !next || !next.injectionOverride) return false;
+  return String(prev.heading || "") === String(next.heading || "") && String(prev.text || "") === String(next.text || "");
+}
+
 /* ============================ 4. Hostile cloud drill ============================ */
 
 export const DRILL_LABEL = "simulated cloud replies played by this page; plain code decided";

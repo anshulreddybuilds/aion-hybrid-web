@@ -153,7 +153,9 @@
     var fails = checks.filter(function (k) { return k.status === "fail"; });
     var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });
     var verdict = fails.length ? "not_suitable" : open.length ? "needs_answers" : "fits";
-    var sharedIds = (c.paragraphs || []).filter(function (p) { return p.shared; }).map(function (p) { return p.id; });
+    /* "Shared" means really shareable: ticked AND not held by an injection flag
+     * (unless the user overrode it). Same body as src/caseRules.js. */
+    var sharedIds = (c.paragraphs || []).filter(function (p) { return p.shared && !(p.injection && p.injection.flagged && !p.injectionOverride); }).map(function (p) { return p.id; });
     var hiddenUsed = [];
     checks.forEach(function (k) { (k.from || []).forEach(function (id) { if (id && sharedIds.indexOf(id) < 0 && hiddenUsed.indexOf(id) < 0) hiddenUsed.push(id); }); });
     return { verdict: verdict, checks: checks, fails: fails.length, open: open.length, gstRate: rate, privatePassagesUsed: hiddenUsed };
@@ -303,12 +305,30 @@
   function flushEdits() {
     var muts = pendingMutations.splice(0);
     if (!muts.length) return Promise.resolve();
+    var flagsBefore = injectionKey(st.c);
     return api().update(function (c) { muts.forEach(function (m) { m(c); }); }).then(function (c) {
       st.c = c;
+      /* An edit can add (or remove) an injection flag. The passage cards only
+       * show the warning when they are drawn, so redraw them now - keeping the
+       * caret where the user was typing. */
+      if (injectionKey(c) !== flagsBefore) redrawKeepingFocus();
       renderRevision();
       renderReview();
       return prepare();
     });
+  }
+  function injectionKey(c) {
+    return ((c && c.paragraphs) || []).map(function (p) {
+      return p.id + ":" + (p.injection && p.injection.flagged ? "F" + (p.injectionOverride ? "o" : "") + (p.injection.rules || []).join(",") : "-");
+    }).join("|");
+  }
+  function redrawKeepingFocus() {
+    var a = document.activeElement, id = a && a.getAttribute && a.getAttribute("data-ptext");
+    var s0 = id ? a.selectionStart : null, s1 = id ? a.selectionEnd : null;
+    renderAll();
+    if (!id) return;
+    var ta = root.querySelector('[data-ptext="' + id + '"]');
+    if (ta) { ta.focus(); try { ta.setSelectionRange(s0, s1); } catch (e) { /* not a text field */ } }
   }
   function markDirty() {
     var chip = el("caseApprovalChip");

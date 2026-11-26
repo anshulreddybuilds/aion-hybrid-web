@@ -6,16 +6,16 @@
 <meta content="#07080A" name="theme-color"/>
 <meta content="dark" name="color-scheme"/>
 <link href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2216%22%20fill=%22%2307080A%22/%3E%3Crect%20x=%2212%22%20y=%2212%22%20width=%2220%22%20height=%2240%22%20rx=%226%22%20fill=%22%235BE3A8%22/%3E%3Crect%20x=%2232%22%20y=%2212%22%20width=%2220%22%20height=%2240%22%20rx=%226%22%20fill=%22%23FF7A3D%22/%3E%3Crect%20x=%2230%22%20y=%228%22%20width=%224%22%20height=%2248%22%20rx=%222%22%20fill=%22%23FFFFFF%22/%3E%3C/svg%3E" rel="icon" type="image/svg+xml"/>
-<link href="/manifest.webmanifest" rel="manifest"/>
-<link href="/icons/apple-touch-icon.png" rel="apple-touch-icon"/>
+<link href="./manifest.webmanifest" rel="manifest"/>
+<link href="./icons/apple-touch-icon.png" rel="apple-touch-icon"/>
 <script>
   /* Cache the app shell for flaky connections. Best effort only. */
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
   }
 </script>
-<link href="/fonts.css" rel="stylesheet"/>
-<link href="/border.css" rel="stylesheet"/>
+<link href="./fonts.css" rel="stylesheet"/>
+<link href="./border.css" rel="stylesheet"/>
 </head>
 <body class="bi" data-motion="full" data-step="quote">
 <a class="skip" href="#steps">Skip to the steps</a>
@@ -290,9 +290,9 @@
 <details><summary>Disclosure meter</summary><pre id="wMeter"></pre></details>
 </dialog>
 <div aria-atomic="true" aria-live="polite" class="sr" id="live"></div>
-<script src="/standalone.js"></script>
-<script src="/case.js"></script>
-<script src="/stage.js"></script>
-<script src="/seam.js"></script>
-<script src="/hybrid.bundle.js" type="module"></script>
+<script src="./standalone.js"></script>
+<script src="./case.js"></script>
+<script src="./stage.js"></script>
+<script src="./seam.js"></script>
+<script src="./hybrid.bundle.js" type="module"></script>
 </body></html>

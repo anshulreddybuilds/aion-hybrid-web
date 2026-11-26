@@ -503,6 +503,7 @@
       : down ? "blocked"
       : S.sent ? "crossed"
       : a.key === "approved" ? "ready"
+      : S.lastSend && !S.lastSend.ok ? "refused"
       : (a.key === "draft" || a.key === "stale" || a.key === "sent") && S.c ? "waiting"
       : "idle";
     inst.setAttribute("data-live", live);
@@ -513,6 +514,7 @@
       blocked: "Cloud blocked · nothing leaves",
       crossed: "Crossed to the cloud",
       ready: "Approved · ready to cross",
+      refused: "Cloud refused · nothing crossed",
       waiting: "Waiting for your approval",
       idle: "Everything is on this device",
     }[live]);

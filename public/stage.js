@@ -103,51 +103,14 @@
     setTimeout(function () { n.textContent = msg; }, 30);
   }
 
-  /* ------------------------------------------------- dot-matrix numerals */
-  /* 5x7 font, own design. Narrow glyphs for punctuation. */
-  var GLYPH = {
-    "0": ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-    "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-    "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-    "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
-    "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-    "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-    "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
-    "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-    "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-    "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
-    "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
-    "/": ["00001", "00001", "00010", "00100", "01000", "10000", "10000"],
-    "%": ["11001", "11010", "00010", "00100", "01000", "01011", "10011"],
-    ",": ["00", "00", "00", "00", "00", "01", "10"],
-    ".": ["0", "0", "0", "0", "0", "0", "1"],
-    " ": ["00", "00", "00", "00", "00", "00", "00"],
-  };
-  var SVGNS = "http://www.w3.org/2000/svg";
-  /** Draws `text` as dot-matrix numerals into `el`; `label` is what a screen reader hears. */
+  /* ---------------------------------------------------------- numerals */
+  /** Writes `text` as a plain numeral into `el`; `label` is what a screen reader hears. */
   function dm(el, text, label) {
     if (!el) return;
-    var s = String(text == null ? "—" : text).replace(/—/g, "-");
-    el.setAttribute("aria-label", label || (s === "-" ? "not measured" : s));
+    var s = String(text == null ? "—" : text).replace(/-/g, "—");
+    el.setAttribute("aria-label", label || (s === "—" ? "not measured" : s));
     if (el.getAttribute("data-value") === s) return;
-    var svg = document.createElementNS(SVGNS, "svg");
-    var x = 0;
-    for (var i = 0; i < s.length; i++) {
-      var g = GLYPH[s[i]] || GLYPH["-"];
-      var w = g[0].length;
-      for (var r = 0; r < 7; r++) for (var col = 0; col < w; col++) {
-        var on = g[r][col] === "1";
-        if (!on) continue;   /* only lit dots are drawn: no ghost grid */
-        var c = document.createElementNS(SVGNS, "circle");
-        c.setAttribute("cx", String(x + col + 0.5)); c.setAttribute("cy", String(r + 0.5)); c.setAttribute("r", "0.4");
-        c.setAttribute("class", on ? "on" : "off");
-        svg.appendChild(c);
-      }
-      x += w + 1;
-    }
-    svg.setAttribute("viewBox", "0 0 " + Math.max(1, x - 1) + " 7");
-    svg.setAttribute("aria-hidden", "true");
-    el.replaceChildren(svg);
+    el.textContent = s;
     el.setAttribute("data-value", s);
   }
 
@@ -461,7 +424,11 @@
     renderAll();
     if (opts && opts.focus) {
       var hd = $("h-" + step);
-      if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: motion() === "full" ? "smooth" : "auto" });
+      /* Wide screens: the step column starts at the top. Narrow screens: the
+         border comes first, so bring the new step's heading into view. */
+      var top = 0;
+      if (window.innerWidth < 1024) top = Math.max(0, $("steps").getBoundingClientRect().top + window.scrollY - 8);
+      if (Math.abs(window.scrollY - top) > 2) window.scrollTo({ top: top, behavior: motion() === "full" ? "smooth" : "auto" });
       if (hd) hd.focus({ preventScroll: true });
     }
   }

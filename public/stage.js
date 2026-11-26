@@ -497,6 +497,25 @@
     inst.setAttribute("data-cloud", down ? "down" : "up");
     var phase = S.sent ? "sent" : a.key === "approved" ? "approved" : "draft";
     inst.setAttribute("data-phase", phase);
+    /* the live state: one word and one colour for what is happening right now */
+    var live = S.busy === "send" ? "sending"
+      : (S.busy && S.busy !== "leak") ? "thinking"
+      : down ? "blocked"
+      : S.sent ? "crossed"
+      : a.key === "approved" ? "ready"
+      : (a.key === "draft" || a.key === "stale" || a.key === "sent") && S.c ? "waiting"
+      : "idle";
+    inst.setAttribute("data-live", live);
+    document.body.setAttribute("data-live", live);
+    setText("liveText", {
+      sending: "Sending the approved text",
+      thinking: "Working on this device",
+      blocked: "Cloud blocked · nothing leaves",
+      crossed: "Crossed to the cloud",
+      ready: "Approved · ready to cross",
+      waiting: "Waiting for your approval",
+      idle: "Everything is on this device",
+    }[live]);
 
     var pk = currentPack();
     setText("caseTag", (pk ? pk.title + " · " : "") + (c.supplier || "Supplier") + (c.sample || pk ? (/fictional/i.test(c.supplier || "") ? "" : " · fictional") : " · imported " + (c.importedBy || "text")));
@@ -852,6 +871,7 @@
     var R = rules(), c = S.c;
     var local = R.reconcile(c);
     $("finalCard").setAttribute("data-verdict", local.verdict);
+    document.body.setAttribute("data-verdict", local.verdict);
     setText("finalV", verdictText(local.verdict));
     var hid = (local.privatePassagesUsed || []).slice().sort();
     setText("finalSub", "Plain code in this browser read all " + c.paragraphs.length + " passages and your private requirements" +

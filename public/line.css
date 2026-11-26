@@ -701,3 +701,72 @@ body:not([data-motion="full"]) .slip, body:not([data-motion="full"]) .sky img { 
   .routes label span { padding: 10px 9px; font-size: 12px; }
   .stepper .l { font-size: 8.5px; letter-spacing: .06em; }
 }
+
+/* =============================================================== colour that follows the story
+   Two colours change as you go.
+   --tint is the step you are on: it washes the device side of the lake, the dust in the
+   light, the chapter rail and the step number.
+   --live is what is happening right now: it lights the rule, the gate and the state line.
+   Orange stays reserved for one thing: text that really crossed to the cloud. */
+@property --tint { syntax: "<color>"; inherits: true; initial-value: #a9bcff; }
+@property --live { syntax: "<color>"; inherits: true; initial-value: #a9bcff; }
+body { --tint: #a9bcff; --live: #a9bcff; transition: --tint 1.6s var(--ease), --live .7s var(--ease); }
+
+body[data-step="quote"]   { --tint: #a9bcff; }   /* moonlight: everything is still here */
+body[data-step="share"]   { --tint: #8fd6c8; }   /* sea glass: choosing what may leave */
+body[data-step="send"]    { --tint: #e6ebf5; }   /* white: the gate itself */
+body[data-step="verdict"] { --tint: #cfe3c4; }   /* the verdict sets its own colour */
+body[data-step="verdict"][data-verdict="not_suitable"]  { --tint: #ff8f80; }
+body[data-step="verdict"][data-verdict="needs_answers"] { --tint: #f0c27a; }
+body[data-step="proof"]   { --tint: #d4e39a; }   /* lichen: measured */
+
+body[data-live="idle"],
+body[data-live="thinking"] { --live: var(--cold); }
+body[data-live="waiting"]  { --live: var(--caution); }
+body[data-live="ready"]    { --live: var(--bone); }
+body[data-live="sending"]  { --live: #ffffff; }
+body[data-live="blocked"]  { --live: var(--block); }
+body[data-live="crossed"]  { --live: var(--signal); }
+
+/* the lake: the step's colour washes the device side, and a thin halo hugs the light */
+.tint { position: absolute; inset: 0; pointer-events: none; }
+.tint::before, .tint::after { content: ""; position: absolute; inset: 0; }
+.tint::before {
+  background: linear-gradient(90deg, var(--tint) 0, var(--tint) calc(var(--bxp, 50%) - 6%), transparent calc(var(--bxp, 50%) + 2%));
+  mix-blend-mode: color; opacity: .32;
+}
+.tint::after {
+  background: linear-gradient(90deg, transparent calc(var(--bxp, 50%) - 7%), var(--tint) var(--bxp, 50%), transparent calc(var(--bxp, 50%) + 7%));
+  mix-blend-mode: screen; opacity: .13;
+}
+body[data-cloud="down"] .tint::after { opacity: .05; }
+
+/* accents */
+.kicker span { color: var(--tint); }
+.kicker::after { background: color-mix(in srgb, var(--tint) 55%, transparent); }
+.stepper button::before { background: var(--tint); }
+.stepper button[aria-current="step"] .n { color: var(--tint); }
+.next .btn.primary::after { color: var(--tint); }
+
+/* the rule and the gate show the live state */
+.rule::before { box-shadow: 0 0 12px 0 color-mix(in srgb, var(--live) 55%, transparent); }
+.border:not([data-phase="sent"]):not([data-cloud="down"]) .gatemark { border-color: var(--live); }
+.border[data-phase="draft"]:not([data-cloud="down"]) .gatemark { box-shadow: 0 0 0 5px color-mix(in srgb, var(--live) 14%, transparent); }
+
+.live-k {
+  flex: 1 0 100%; margin: 2px 0 0; display: flex; align-items: center; gap: 9px;
+  font: 500 10.5px/1.3 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--live);
+  text-shadow: 0 0 2px var(--ink), 0 0 10px var(--ink);
+}
+.live-k i { flex: none; width: 7px; height: 7px; background: var(--live); }
+body[data-motion="full"][data-live="thinking"] .live-k i,
+body[data-motion="full"][data-live="sending"] .live-k i { animation: beat 1.1s ease-in-out infinite; }
+body[data-motion="full"][data-live="sending"] .live-k i { animation-duration: .5s; }
+body[data-motion="full"][data-live="thinking"] .rule::before,
+body[data-motion="full"][data-live="sending"] .rule::before { animation: glow 1.4s ease-in-out infinite; }
+@keyframes beat { 50% { opacity: .25; } }
+@keyframes glow { 50% { box-shadow: 0 0 26px 2px color-mix(in srgb, var(--live) 70%, transparent); } }
+@media (prefers-reduced-motion: reduce) {
+  body { transition: none; }
+  .live-k i, .rule::before { animation: none !important; }
+}

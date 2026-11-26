@@ -23,7 +23,7 @@
  * activates), old versions are deleted on activate, and every file served from
  * the cache comes from this one version. Shell files are only ever written to
  * the cache at install time, never at runtime, so a cache cannot mix versions. */
-const VERSION = "v14-2026-11-27-the-line";
+const VERSION = "v15-2026-11-27-the-line-colour";
 const CACHE = "aion-hybrid-shell-" + VERSION;
 
 /* hybrid-v2 privacy rule: this worker only ever caches the PUBLIC app shell.

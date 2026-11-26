@@ -129,6 +129,7 @@
   /* idle: twinkle and dust at about 24 frames a second */
   function idle(now) { raf = 0; if (now - last < 41) { raf = requestAnimationFrame(idle); return; } frame(now); }
 
+  var tick = 0, tint = "#ece6da", lift = 1;
   function draw(dt) {
     var iw = img.naturalWidth || 1800, ih = img.naturalHeight || 820;
     var animate = full();
@@ -145,10 +146,18 @@
       ctx.globalAlpha = a;
       ctx.fillRect(x - s.r / 2, y - s.r / 2, s.r, s.r);
     }
-    /* dust drifting up inside the light */
+    /* dust drifting up inside the light, in the colour of the current step;
+       it rises faster while this device is thinking and fastest while sending */
+    if (!(tick++ % 4)) {
+      var cs = getComputedStyle(body);
+      tint = (cs.getPropertyValue("--tint") || "").trim() || "#ece6da";
+      var lv = body.getAttribute("data-live");
+      lift = lv === "sending" ? 4 : lv === "thinking" ? 2.2 : 1;
+    }
+    ctx.fillStyle = tint;
     for (var d = 0; d < dust.length; d++) {
       var m = dust[d];
-      if (animate) { m.y -= m.vy * dt; if (m.y < -.02) { m.y = 1.02; m.o = gauss() * 16; } }
+      if (animate) { m.y -= m.vy * lift * dt; if (m.y < -.02) { m.y = 1.02; m.o = gauss() * 16; } }
       var dy = m.y * H;
       ctx.globalAlpha = m.a * (animate ? (.6 + .4 * Math.sin(clock * 1.7 + m.p)) : .7);
       ctx.beginPath(); ctx.arc(beamX + m.o, dy, m.r, 0, 6.2832); ctx.fill();
@@ -175,7 +184,7 @@
   var crossed = 0;
   function mirror() {
     if (!inst) return;
-    ["data-phase", "data-cloud"].forEach(function (k) {
+    ["data-phase", "data-cloud", "data-live"].forEach(function (k) {
       var v = inst.getAttribute(k);
       if (v) body.setAttribute(k, v); else body.removeAttribute(k);
     });
@@ -185,7 +194,7 @@
     crossed = n;
   }
   if (inst && typeof MutationObserver === "function") {
-    new MutationObserver(mirror).observe(inst, { attributes: true, attributeFilter: ["data-phase", "data-cloud"] });
+    new MutationObserver(mirror).observe(inst, { attributes: true, attributeFilter: ["data-phase", "data-cloud", "data-live"] });
     var cn = document.getElementById("crossNum");
     if (cn) new MutationObserver(mirror).observe(cn, { attributes: true, attributeFilter: ["data-value"] });
   }

@@ -26,7 +26,7 @@
 
     var VS = "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}";
     var FS = [
-      "precision mediump float;",
+      "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif",
       "uniform vec2 uRes;uniform float uT;uniform float uSeam;uniform float uCross;uniform float uDown;",
       "float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}",
       "float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);",
@@ -44,7 +44,8 @@
       " float w=fbm(q+1.6*fbm(q*1.2+vec2(uT*.04,0.)));",
       " float hz=.34;",
       " float sky=smoothstep(hz-.02,hz+.5,uv.y);",
-      " vec3 col=base+tint*pow(w,3.2)*.30*sky;",
+      " float aur=smoothstep(.42,.78,w);vec3 teal=vec3(.20,.62,.75);",
+      " vec3 col=base+(tint*aur*.30+(tint*.5+teal*.5)*w*w*.12)*sky;",
       " col+=vec3(.08,.12,.2)*pow(fbm(q*.6+3.),2.)*.25*sky;",
       /* the seam as a beam of light */
       " float d=abs(p.x);",
@@ -56,13 +57,13 @@
       " if(uv.y<hz){",
       "  float y=hz-uv.y;float z=.11/y;",
       "  vec2 g=vec2(p.x*z*1.15,z+uT*.09);",
-      "  vec2 c=floor(g*5.),f=fract(g*5.)-.5;",
-      "  float ht=fbm(c*.11+vec2(0.,uT*.02));",
-      "  float r=.09+.10*ht;",
-      "  float dotv=smoothstep(r,r*.35,length(f));",
-      "  float fade=smoothstep(7.5,.6,z)*smoothstep(0.,.06,y);",
-      "  float b=(.10+.75*pow(ht,2.2))*fade;",
-      "  col+=tint*dotv*b*.55;",
+      "  vec2 c=floor(g*26.),f=fract(g*26.)-.5;",
+      "  float ht=fbm(c*.045+vec2(0.,uT*.02));",
+      "  float r=.06+.20*smoothstep(.3,.75,ht);",
+      "  float dotv=1.-smoothstep(r*.35,r,length(f));",
+      "  float fade=(1.-smoothstep(.45,3.2,z))*smoothstep(0.,.06,y);",
+      "  float b=(.05+1.5*smoothstep(.38,.72,ht))*fade;",
+      "  col+=tint*dotv*b;",
       "  col+=vec3(.78,.93,1.)*exp(-d*45.)*.12*fade;",
       "  col*=.75+.25*smoothstep(0.,.3,y);",
       " }",
@@ -115,7 +116,7 @@
       var k = still ? 1 : .06;
       seam += (seamT - seam) * k; cross += (crossT - cross) * k;
       gl.uniform2f(U.uRes, W, H);
-      gl.uniform1f(U.uT, still ? 12.0 : (now - t0) / 1000);
+      gl.uniform1f(U.uT, still ? 12.0 : ((now - t0) / 1000) % 600);
       gl.uniform1f(U.uSeam, seam); gl.uniform1f(U.uCross, cross); gl.uniform1f(U.uDown, down);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       lastDraw = now;

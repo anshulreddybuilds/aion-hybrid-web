@@ -261,7 +261,7 @@ main.spread {
 .border::-webkit-scrollbar { display: none; }
 .b-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; }
 .b-head .k { color: var(--bone); }
-.b-case { font-size: 13px; color: var(--bone-2); flex: 1 1 200px; }
+.b-case { font-size: 13px; color: var(--bone-2); flex: 1 1 200px; text-shadow: 0 0 2px var(--ink), 0 0 10px var(--ink), 0 0 18px var(--ink); }
 /* keep the case line on the device side of the light */
 @media (min-width: 1024px) { .b-head { max-width: calc(50% - var(--rule) / 2 - 12px); } }
 #fieldToggle { display: none; }

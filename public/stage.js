@@ -131,7 +131,7 @@
     var p = S.prep;
     if (!p || !S.c) return { key: "none", text: S.prepError ? "Could not prepare" : "Preparing" };
     var d = p.disclosure;
-    if (d.approvalState === "sent") return { key: "sent", text: "Sent · this approval is used up" };
+    if (d.approvalState === "sent") return { key: "sent", text: "Used · approve again to send again" };
     if (H().egress.isApproved(d) && d.inputRevision === S.c.inputRevision) return { key: "approved", text: "Approved · revision " + d.inputRevision };
     if (S.lastApproval && S.lastApproval.rev !== S.c.inputRevision) return { key: "stale", text: "Approval went stale · the case changed" };
     return { key: "draft", text: "Not approved · nothing will be sent" };

@@ -8,7 +8,8 @@
  *      have really crossed, in proportion to the measured counts on screen.
  *   2. A soft spotlight that follows the pointer over panels.
  *   3. A sliding pill behind the current step in the header.
- * Off under prefers-reduced-motion or when the app picks reduced/static motion.
+ * Still (drawn once, no movement) under prefers-reduced-motion or when the
+ * app picks reduced/static motion.
  * Every part is wrapped so a failure here can never break the app.
  */
 (function () {
@@ -74,10 +75,10 @@
         else if (motes[i].k === "ember" && e > t.ember) { motes.splice(i, 1); e--; }
       }
     }
-    function draw(ts) {
+    function draw(ts, still) {
       raf = 0;
-      if (!visible || doc.hidden || !motionOK()) { ctx.clearRect(0, 0, W, H); return; }
-      var dt = Math.min(48, ts - (last || ts)); last = ts;
+      if (!still && (!visible || doc.hidden || !motionOK())) return;
+      var dt = still ? 0 : Math.min(48, ts - (last || ts)); if (!still) last = ts;
       var down = inst.getAttribute("data-cloud") === "down";
       ctx.clearRect(0, 0, W, H);
       ctx.globalCompositeOperation = "lighter";
@@ -97,23 +98,28 @@
         ctx.beginPath(); ctx.arc(m.x, m.y, m.r * 6, 0, 6.2832); ctx.fill();
       }
       ctx.globalCompositeOperation = "source-over";
-      schedule();
+      if (!still) schedule();
     }
-    function schedule() { if (!raf && visible && !doc.hidden && motionOK()) raf = requestAnimationFrame(draw); }
+    /* With full motion the light drifts; otherwise it is drawn once, still. */
+    function schedule() {
+      if (raf) return;
+      if (!motionOK()) { draw(0, true); return; }
+      if (visible && !doc.hidden) raf = requestAnimationFrame(draw);
+    }
     function refresh() { measure(); sync(); schedule(); }
 
     refresh();
     window.addEventListener("resize", function () { refresh(); }, { passive: true });
     doc.addEventListener("visibilitychange", function () { last = 0; if (!doc.hidden) schedule(); });
-    if (reduceQ.addEventListener) reduceQ.addEventListener("change", function () { schedule(); if (!motionOK()) ctx.clearRect(0, 0, W, H); });
+    if (reduceQ.addEventListener) reduceQ.addEventListener("change", function () { schedule(); });
     if (window.IntersectionObserver) {
       new IntersectionObserver(function (es) { visible = es[0].isIntersecting; last = 0; schedule(); }).observe(inst);
     }
-    if (window.ResizeObserver) new ResizeObserver(function () { measure(); }).observe(inst);
+    if (window.ResizeObserver) new ResizeObserver(function () { measure(); if (!motionOK()) schedule(); }).observe(inst);
     if (window.MutationObserver) {
       new MutationObserver(function () { sync(); schedule(); })
         .observe(inst, { subtree: true, attributes: true, attributeFilter: ["data-value", "data-cloud", "data-open"] });
-      new MutationObserver(function () { if (!motionOK()) ctx.clearRect(0, 0, W, H); schedule(); })
+      new MutationObserver(function () { schedule(); })
         .observe(body, { attributes: true, attributeFilter: ["data-motion"] });
     }
   });

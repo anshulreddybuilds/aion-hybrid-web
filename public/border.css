@@ -639,6 +639,7 @@ body[data-motion="reduced"] .kicker::before, body[data-motion="reduced"] .gatema
 body[data-motion="static"] .panel, body[data-motion="static"] .bar { -webkit-backdrop-filter: none; backdrop-filter: none; }
 
 /* ---------- responsive ---------- */
+@media (max-width: 1520px) { .tagline { display: none; } }
 @media (max-width: 1180px) {
   .bar { grid-template-columns: auto 1fr; padding: 4px 8px 6px 16px; }
   .stepper { grid-column: 1 / -1; grid-row: 2; }

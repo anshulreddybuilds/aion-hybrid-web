@@ -162,4 +162,32 @@
     window.addEventListener("resize", place, { passive: true });
     if (window.MutationObserver) new MutationObserver(place).observe(ol, { subtree: true, attributes: true, attributeFilter: ["aria-current"] });
   });
+  /* ---------- 4. headline accent: the second half in serif italic ---------- */
+  safe(function () {
+    var hs = doc.querySelectorAll(".step-head h2");
+    function split(h) {
+      if (h.querySelector("em.ser")) return;
+      var t = h.textContent, i = -1, m;
+      m = /^(.+?[.,])\s+(.+)$/.exec(t);            /* "What stays. What leaves." */
+      if (m) i = m[1].length + 1;
+      else { var w = t.split(" "); if (w.length > 3) i = t.length - w.slice(-2).join(" ").length; }
+      if (i <= 0 || i >= t.length) return;
+      var a = t.slice(0, i), b = t.slice(i);
+      while (h.firstChild) h.removeChild(h.firstChild);
+      h.appendChild(doc.createTextNode(a));
+      var em = doc.createElement("em"); em.className = "ser"; em.textContent = b; h.appendChild(em);
+    }
+    Array.prototype.forEach.call(hs, function (h) {
+      split(h);
+      if (window.MutationObserver) new MutationObserver(function () { split(h); }).observe(h, { childList: true, characterData: true, subtree: true });
+    });
+  });
+
+  /* ---------- 5. HUD corner marks on the border ---------- */
+  safe(function () {
+    var inst = doc.getElementById("instrument");
+    if (!inst || inst.querySelector(".hud")) return;
+    var s = doc.createElement("span"); s.className = "hud"; s.setAttribute("aria-hidden", "true");
+    inst.appendChild(s);
+  });
 })();

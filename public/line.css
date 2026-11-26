@@ -725,7 +725,8 @@ body[data-live="thinking"] { --live: var(--cold); }
 body[data-live="waiting"]  { --live: var(--caution); }
 body[data-live="ready"]    { --live: var(--bone); }
 body[data-live="sending"]  { --live: #ffffff; }
-body[data-live="blocked"]  { --live: var(--block); }
+body[data-live="blocked"],
+body[data-live="refused"]  { --live: var(--block); }
 body[data-live="crossed"]  { --live: var(--signal); }
 
 /* the lake: the step's colour washes the device side, and a thin halo hugs the light */

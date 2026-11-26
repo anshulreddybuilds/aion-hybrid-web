@@ -767,4 +767,6 @@ body[data-motion="static"] .panel, body[data-motion="static"] .bar { -webkit-bac
   .st .k { font-size: 11px; letter-spacing: .04em; }
   #workBtn { padding: 0 8px; font-size: 11px; letter-spacing: .04em; }
   .stepper button { padding: 0 4px; letter-spacing: .03em; }
+  .field[data-mini="true"] .slip { column-gap: 3px; padding: 0 5px 0 8px; letter-spacing: 0; }
+  .field[data-mini="true"] .s-id, .field[data-mini="true"] .s-c { font-size: 12px; letter-spacing: 0; }
 }

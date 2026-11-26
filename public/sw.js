@@ -2,20 +2,29 @@
  *
  * Minimal and deliberately NOT a full offline app: it caches the app shell so
  * the dashboard loads (rather than blank-screening) on a flaky connection, and
- * stays current when the network is fine. It never caches /api/ responses -
+ * updates as a complete versioned shell. It never caches /api/ responses -
  * live state must never be served stale - so "offline" means "the shell loads
  * and then shows it cannot reach the server", not "chat works offline".
  *
- * BORDER INSTRUMENT (v9): "/" is the new light page (index.html + border.css,
- * slab.js, stage.js); the old dashboard moved to /dashboard. An offline
- * navigation gets its own cached page first, then "/".
+ * BORDER INSTRUMENT (v10+): "/" is the main page (index.html + border.css,
+ * stage.js); the old dashboard moved to /dashboard. An offline navigation gets
+ * its own cached page first, then "/".
+ * SEAM DESIGN (v13): border.css is the dark "Seam" design; seam.js draws the
+ * ambient light and the moving stepper marker (no app logic).
  *
- * HYBRID BUILD: the shell now also caches standalone.js and hybrid.bundle.js
+ * HYBRID BUILD: the shell also caches standalone.js and hybrid.bundle.js
  * (the Firebase AI Logic code, bundled so it needs no CDN) so the page loads
  * with no network. In standalone mode /api/* is answered inside the page, not
  * by the network, so Offline Demo Mode works with on-device Gemini Nano.
  */
-const CACHE = "aion-hybrid-shell-v9";
+/* VERSIONED SHELL. Bump VERSION on every deploy that changes a shell file.
+ * One cache per version: the whole shell is precached atomically (install
+ * FAILS if any file cannot be fetched, so a half-filled version never
+ * activates), old versions are deleted on activate, and every file served from
+ * the cache comes from this one version. Shell files are only ever written to
+ * the cache at install time, never at runtime, so a cache cannot mix versions. */
+const VERSION = "v13-2026-11-27-seam";
+const CACHE = "aion-hybrid-shell-" + VERSION;
 
 /* hybrid-v2 privacy rule: this worker only ever caches the PUBLIC app shell.
  * It never stores private data, prompts or AI responses:
@@ -33,29 +42,31 @@ function cacheable(url, resp) {
   const cc = (resp.headers.get("cache-control") || "").toLowerCase();
   return !/no-store|private/.test(cc);
 }
+/* Served paths. "/" is index.html; /dashboard, /mobile, /approve are clean URLs of the .html files. */
 const SHELL = [
   "/",
-  "/index.html",
   "/border.css",
-  "/slab.js",
   "/stage.js",
+  "/seam.js",
   "/dashboard",
-  "/dashboard.html",
+  "/mobile",
+  "/approve",
   "/style.css",
   "/app.js",
   "/standalone.js",
   "/case.js",
   "/fonts.css",
   "/vendor/chart.umd.min.js",
+  "/fonts/geist-latin-300-normal.woff2",
   "/fonts/geist-latin-400-normal.woff2",
+  "/fonts/geist-latin-500-normal.woff2",
+  "/fonts/geist-latin-600-normal.woff2",
   "/fonts/dm-mono-latin-400-normal.woff2",
+  "/fonts/dm-mono-latin-500-normal.woff2",
   "/fonts/instrument-serif-latin-400-normal.woff2",
   "/fonts/instrument-serif-latin-400-italic.woff2",
-  "/fonts/geist-latin-500-normal.woff2",
-  "/fonts/dm-mono-latin-500-normal.woff2",
+  "/fonts/barlow-condensed-latin-600-normal.woff2",
   "/hybrid.bundle.js",
-  "/mobile.html",
-  "/approve.html",
   "/scene.jpg",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
@@ -64,20 +75,24 @@ const SHELL = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) =>
-      // addAll fails the whole install if one URL 404s; add individually and
-      // tolerate a miss so a renamed asset can't brick the worker.
-      Promise.all(SHELL.map((url) => cache.add(url).catch(() => null)))
-    )
+    caches.open(CACHE).then(async (cache) => {
+      // Atomic: fetch every shell file fresh; any miss throws, the install
+      // fails and the previous worker + cache stay in charge.
+      for (const url of SHELL) {
+        const resp = await fetch(url, { cache: "reload" });
+        if (!resp.ok) throw new Error("precache failed: " + url + " " + resp.status);
+        await cache.put(url, resp);
+      }
+    }).catch((err) => caches.delete(CACHE).then(() => { throw err; }))
+      .then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k.indexOf("aion-hybrid-shell-") === 0).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -91,26 +106,20 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Navigations: try the network, fall back to the cached shell so a flaky
-  // connection loads the app instead of a blank screen.
+  // Navigations and shell assets are cache-first. This worker installs only
+  // after its complete shell is cached, so HTML cannot be paired with different
+  // cached JS/CSS if connectivity drops in the middle of a load.
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req).catch(() => caches.match(req).then((hit) => hit || caches.match("/")))
+      caches.open(CACHE).then((c) => c.match(req, { ignoreSearch: true })
+        .then((hit) => hit || fetch(req).catch(() => c.match("/"))))
     );
     return;
   }
 
-  // Static assets: network-first (so a deploy's new CSS/JS wins), cache on
-  // success, fall back to cache when the network is unreachable.
+  if (!cacheable(url, { ok: true, type: "basic", headers: new Headers() })) return;
   event.respondWith(
-    fetch(req)
-      .then((resp) => {
-        if (cacheable(url, resp)) {
-          const copy = resp.clone();
-          caches.open(CACHE).then((cache) => cache.put(req, copy));
-        }
-        return resp;
-      })
-      .catch(() => caches.match(req))
+    caches.open(CACHE).then((c) => c.match(req)
+      .then((hit) => hit || fetch(req).catch(() => Response.error())))
   );
 });

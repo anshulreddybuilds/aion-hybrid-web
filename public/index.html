@@ -1,301 +1,298 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
+<!DOCTYPE html>
+<html lang="en"><head>
 <title>AION — the personal AI with a border</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="description" content="AION reads a supplier quote on your device, lets the cloud see only the passages you approve, and lets plain code on your device make the final call." />
-<meta name="theme-color" content="#F3F0E8" />
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20fill=%22%23F3F0E8%22/%3E%3Crect%20x=%2227%22%20y=%228%22%20width=%2210%22%20height=%2248%22%20fill=%22%231B1F23%22/%3E%3Crect%20x=%2227%22%20y=%2229%22%20width=%2210%22%20height=%226%22%20fill=%22%23C8791A%22/%3E%3Ccircle%20cx=%2214%22%20cy=%2232%22%20r=%224%22%20fill=%22%232F6B4F%22/%3E%3C/svg%3E" />
-<link rel="manifest" href="/manifest.webmanifest" />
-<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="AION reads a supplier quote on your device, lets the cloud see only the passages you approve, and lets plain code on your device make the final call." name="description"/>
+<meta content="#07080A" name="theme-color"/>
+<meta content="dark" name="color-scheme"/>
+<link href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2216%22%20fill=%22%2307080A%22/%3E%3Crect%20x=%2212%22%20y=%2212%22%20width=%2220%22%20height=%2240%22%20rx=%226%22%20fill=%22%235BE3A8%22/%3E%3Crect%20x=%2232%22%20y=%2212%22%20width=%2220%22%20height=%2240%22%20rx=%226%22%20fill=%22%23FF7A3D%22/%3E%3Crect%20x=%2230%22%20y=%228%22%20width=%224%22%20height=%2248%22%20rx=%222%22%20fill=%22%23FFFFFF%22/%3E%3C/svg%3E" rel="icon" type="image/svg+xml"/>
+<link href="/manifest.webmanifest" rel="manifest"/>
+<link href="/icons/apple-touch-icon.png" rel="apple-touch-icon"/>
 <script>
   /* Cache the app shell for flaky connections. Best effort only. */
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
   }
 </script>
-<link rel="stylesheet" href="/fonts.css" />
-<link rel="stylesheet" href="/border.css" />
+<link href="/fonts.css" rel="stylesheet"/>
+<link href="/border.css" rel="stylesheet"/>
 </head>
-<body class="bi" data-step="quote" data-motion="full">
+<body class="bi" data-motion="full" data-step="quote">
 <a class="skip" href="#steps">Skip to the steps</a>
-
 <header class="bar">
-  <div class="mark">
-    <span class="wordmark">AION</span>
-    <span class="tagline">The personal AI with a border</span>
-  </div>
-
-  <nav class="stepper" aria-label="Steps">
-    <ol>
-      <li><button type="button" data-go="quote" aria-current="step"><span class="n">01</span><span class="l">Quote</span></button></li>
-      <li><button type="button" data-go="share"><span class="n">02</span><span class="l">Share</span></button></li>
-      <li><button type="button" data-go="send"><span class="n">03</span><span class="l">Send</span></button></li>
-      <li><button type="button" data-go="verdict"><span class="n">04</span><span class="l">Verdict</span></button></li>
-      <li><button type="button" data-go="proof"><span class="n">05</span><span class="l">Proof</span></button></li>
-    </ol>
-  </nav>
-
-  <div class="status" aria-label="Live status">
-    <span class="st" id="stNano" data-tone="idle"><i class="lamp" aria-hidden="true"></i><span class="k">Nano</span><span class="v" id="stNanoV">—</span></span>
-    <span class="st" id="stCloud" data-tone="idle"><i class="lamp" aria-hidden="true"></i><span class="k">Cloud</span><span class="v" id="stCloudV">—</span></span>
-    <span class="st st-route" id="stRoute" data-tone="idle"><i class="lamp" aria-hidden="true"></i><span class="k">Route</span><span class="v" id="stRouteV">—</span></span>
-    <button type="button" class="btn ghost small" id="workBtn" aria-haspopup="dialog">Show the work</button>
-  </div>
+<p class="mark"><span class="wordmark">AION</span><span class="tagline">the personal AI with a border</span></p>
+<nav aria-label="Steps" class="stepper">
+<ol>
+<li><button aria-current="step" data-done="true" data-go="quote" type="button"><span class="n">01</span><span class="l">Quote</span></button></li>
+<li><button data-done="false" data-go="share" type="button"><span class="n">02</span><span class="l">Share</span></button></li>
+<li><button data-done="false" data-go="send" type="button"><span class="n">03</span><span class="l">Send</span></button></li>
+<li><button data-done="false" data-go="verdict" type="button"><span class="n">04</span><span class="l">Verdict</span></button></li>
+<li><button data-done="false" data-go="proof" type="button"><span class="n">05</span><span class="l">Proof</span></button></li>
+</ol>
+</nav>
+<div aria-label="Live status" class="status">
+<span aria-describedby="tipNano" class="st" data-tone="grey" id="stNano" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Nano</span><span class="v" id="stNanoV">unavailable</span><span class="tip" id="tipNano" role="tooltip">Gemini Nano is not available here; plain code covers the local steps. This device cannot run Gemini Nano (needs enough storage and a supported computer).</span></span>
+<span aria-describedby="tipCloud" class="st" data-tone="idle" id="stCloud" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Cloud</span><span class="v" id="stCloudV">not tried</span><span class="tip" id="tipCloud" role="tooltip">No cloud request yet. It is reachable only after you approve the exact text.</span></span>
+<span aria-describedby="tipRoute" class="st" data-tone="amber" id="stRoute" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Route</span><span class="v" id="stRouteV">prefer cloud</span><span class="tip" id="tipRoute" role="tooltip">PREFER_IN_CLOUD. Prefer cloud: a case is sent to the cloud only after you approve its exact text.</span></span>
+<button aria-haspopup="dialog" class="btn ghost small" id="workBtn" type="button">Show the work</button>
+</div>
 </header>
-
-<main id="main">
-  <!-- The instrument: the border between this device and the cloud. Every
-       number on it is read from real state (stage.js); the moving marks are a
-       picture of those numbers, one mark per word, and say so. -->
-  <section class="instrument" id="instrument" data-cloud="idle" data-phase="draft" aria-labelledby="instTitle">
-    <h2 class="sr" id="instTitle">The border: what stays on this device and what crosses to the cloud</h2>
-    <canvas id="field" aria-hidden="true"></canvas>
-    <div class="cloudside" aria-hidden="true"><span class="cloudword" id="cloudWord"></span></div>
-
-    <div class="readout device">
-      <p class="k"><i class="mk green" aria-hidden="true"></i>On this device</p>
-      <p class="num" id="heldNum" role="img" aria-label="not measured yet"></p>
-      <p class="unit long" id="heldUnit">characters held: passages not shared and your private requirements</p>
-      <p class="unit short" aria-hidden="true">chars held here</p>
-    </div>
-
-    <div class="slab-scene" aria-hidden="true">
-      <div class="slab" id="slab">
-        <div class="face f-front"><span class="gate"></span></div>
-        <div class="face f-back"><span class="gate"></span></div>
-        <div class="face f-left"><span class="gate"></span><span class="ticks"></span></div>
-        <div class="face f-right"><span class="gate"></span><span class="ticks"></span></div>
-        <div class="face f-top"></div>
-        <div class="face f-bottom"></div>
-      </div>
-    </div>
-
-    <div class="readout cloud">
-      <p class="k"><i class="mk amber" aria-hidden="true"></i>To the cloud</p>
-      <p class="num" id="crossNum" role="img" aria-label="not measured yet"></p>
-      <p class="unit long" id="crossUnit">characters in the disclosure</p>
-      <p class="unit short" id="crossShort" aria-hidden="true">chars to cross</p>
-    </div>
-
-    <p class="scale" id="scaleNote">Each mark is one word of the quote.</p>
-  </section>
-
-  <div class="steps" id="steps" tabindex="-1">
-
-    <!-- 01 QUOTE -->
-    <section class="step" id="step-quote" aria-labelledby="h-quote">
-      <header class="step-head">
-        <p class="kicker">01 / Quote</p>
-        <h2 id="h-quote" tabindex="-1">Bring in a supplier quote.</h2>
-        <p class="lede">It is read and split into passages on this device. Nothing leaves until you approve the exact text in step 03.</p>
-      </header>
-      <div class="card now" id="caseNow" aria-live="polite"></div>
-      <div class="card intake">
-        <label class="field-label" for="quoteText">Paste the quote text</label>
-        <textarea id="quoteText" rows="5" spellcheck="false" placeholder="Supplier name on the first line, then the quote: price, delivery, what is included, warranty, cancellation."></textarea>
-        <div class="row">
-          <button type="button" class="btn primary" id="importBtn">Read on this device</button>
-          <button type="button" class="btn" id="sampleBtn">Use the sample case</button>
-          <label class="btn file" id="imageLabel">Read an image on this device<input type="file" id="imageInput" accept="image/png,image/jpeg" /></label>
-        </div>
-        <p class="msg" id="quoteMsg" role="status"></p>
-      </div>
-      <div class="next"><button type="button" class="btn primary" data-go="share">Next: decide what leaves</button></div>
-    </section>
-
-    <!-- 02 SHARE -->
-    <section class="step" id="step-share" aria-labelledby="h-share" hidden>
-      <header class="step-head">
-        <p class="kicker">02 / Share</p>
-        <h2 id="h-share" tabindex="-1">What stays. What leaves.</h2>
-        <p class="lede">Tick a passage to let it cross. Your private requirements have no field in a disclosure, so there is no way for them to leave.</p>
-      </header>
-      <div class="ledger">
-        <div class="col stays">
-          <h3><i class="mk green" aria-hidden="true"></i>Stays on this device <span class="count" id="staysCount"></span></h3>
-          <ul class="plist" id="staysList"></ul>
-          <p class="fixed" id="privateFixed"></p>
-          <details class="exact privedit" id="privEdit">
-            <summary>Edit your private requirements</summary>
-            <div class="pgrid">
-              <label>Maximum budget<input type="text" id="pvBudget" data-pv="maxBudget" autocomplete="off" /></label>
-              <label>Ready by<input type="text" id="pvReady" data-pv="readyBy" autocomplete="off" /></label>
-              <label>GST rate, %<input type="text" id="pvGst" data-pv="gstRate" inputmode="decimal" autocomplete="off" /></label>
-              <label class="inline"><input type="checkbox" id="pvInstall" data-pv="installationRequired" />Installation must be included</label>
-              <label class="wide">Confidential note<input type="text" id="pvNote" data-pv="confidentialNote" autocomplete="off" /></label>
-            </div>
-          </details>
-        </div>
-        <div class="col leaves">
-          <h3><i class="mk amber" aria-hidden="true"></i>Leaves, after your approval <span class="count" id="leavesCount"></span></h3>
-          <ul class="plist" id="leavesList"></ul>
-          <p class="fixed" id="publicFixed"></p>
-        </div>
-      </div>
-      <p class="sizeline" id="sizeLine"></p>
-      <div class="next"><button type="button" class="btn primary" data-go="send">Next: approve and send</button></div>
-    </section>
-
-    <!-- 03 SEND -->
-    <section class="step" id="step-send" aria-labelledby="h-send" hidden>
-      <header class="step-head">
-        <p class="kicker">03 / Send</p>
-        <h2 id="h-send" tabindex="-1">Approve the exact text. Then send it.</h2>
-        <p class="lede">The approval is bound to a fingerprint of this text and this revision of the case, and it works for one send.</p>
-      </header>
-      <div class="card banner" id="modeBanner" data-policy="">
-        <div class="banner-main">
-          <p class="k">Inference mode</p>
-          <p class="mode" id="modeName">—</p>
-          <p class="sub" id="modeSub"></p>
-        </div>
-        <fieldset class="routes" id="routeSet">
-          <legend class="k">Route for this page</legend>
-          <label><input type="radio" name="route" value="prefer_on_device" /><span>Prefer on-device</span></label>
-          <label><input type="radio" name="route" value="only_on_device" /><span>Only on-device</span></label>
-          <label><input type="radio" name="route" value="prefer_in_cloud" /><span>Prefer cloud</span></label>
-        </fieldset>
-      </div>
-      <div class="card plug">
-        <label class="switch" for="plug">
-          <input type="checkbox" role="switch" id="plug" />
-          <span class="track" aria-hidden="true"><span class="knob"></span></span>
-          <span class="switch-text"><b>Pull the plug</b><span id="plugSub">Offline Demo Mode: the page blocks every outside request.</span></span>
-        </label>
-      </div>
-      <div class="card gatecard" id="gateCard">
-        <div class="gate-head">
-          <p class="k">Disclosure</p>
-          <p class="chip" id="gateChip" data-state="draft">—</p>
-        </div>
-        <dl class="facts">
-          <div><dt>Fingerprint</dt><dd id="gateDigest">—</dd></div>
-          <div><dt>Characters</dt><dd id="gateChars">—</dd></div>
-          <div><dt>Case revision</dt><dd id="gateRev">—</dd></div>
-          <div><dt>Passages</dt><dd id="gatePassages">—</dd></div>
-        </dl>
-        <div class="row">
-          <button type="button" class="btn" id="approveBtn">Approve this exact text</button>
-          <button type="button" class="btn primary" id="sendBtn">Send to the cloud</button>
-          <button type="button" class="btn ghost" id="prepBtn" hidden>Prepare a new disclosure</button>
-        </div>
-        <details class="exact">
-          <summary>Read the exact text that would be sent</summary>
-          <pre id="gateText"></pre>
-        </details>
-      </div>
-      <div class="card engine" id="engineCard">
-        <p class="k">Engine</p>
-        <p class="engine-line" id="engineLine">Nothing sent yet.</p>
-      </div>
-      <div class="next"><button type="button" class="btn primary" data-go="verdict">Next: the verdict</button></div>
-    </section>
-
-    <!-- 04 VERDICT -->
-    <section class="step" id="step-verdict" aria-labelledby="h-verdict" hidden>
-      <header class="step-head">
-        <p class="kicker">04 / Verdict</p>
-        <h2 id="h-verdict" tabindex="-1">The cloud advises. Plain code decides.</h2>
-        <p class="lede">The final call is made in this browser, by plain code, on the whole quote and your private requirements. No model can change it.</p>
-      </header>
-      <div class="card final" id="finalCard" data-verdict="">
-        <p class="k">Final decision · local rules</p>
-        <p class="final-v" id="finalV">—</p>
-        <p class="sub" id="finalSub"></p>
-        <ul class="checks" id="checksList"></ul>
-      </div>
-      <div class="card compare" id="compareCard">
-        <p class="k">The cloud's provisional view</p>
-        <p class="cmp-line" id="cloudLine">No cloud reply yet.</p>
-        <details class="exact" id="replyDetails" hidden>
-          <summary>Read the cloud's reply as plain text</summary>
-          <pre id="replyText"></pre>
-        </details>
-      </div>
-      <div class="card second" id="secondCard">
-        <p class="k">Second opinion on this device</p>
-        <p class="cmp-line" id="secondLine">Ask Gemini Nano (or plain code, if Nano is not ready) for a provisional verdict from the shared passages only. Nothing is sent.</p>
-        <div class="row"><button type="button" class="btn" id="provBtn">Get a provisional verdict here</button></div>
-        <p class="agree" id="agreeLine" data-state=""></p>
-      </div>
-      <div class="next"><button type="button" class="btn primary" data-go="proof">Next: the proof</button></div>
-    </section>
-
-    <!-- 05 PROOF -->
-    <section class="step" id="step-proof" aria-labelledby="h-proof" hidden>
-      <header class="step-head">
-        <p class="kicker">05 / Proof</p>
-        <h2 id="h-proof" tabindex="-1">Measured, not promised.</h2>
-        <p class="lede">Each figure below is counted by code on this page, and each says exactly what it measured. None of them is a guarantee.</p>
-      </header>
-      <div class="tiles">
-        <div class="card tile" id="leakTile">
-          <p class="k">Leak test · seeded secrets</p>
-          <p class="num" id="leakNum" role="img" aria-label="not run yet"></p>
-          <p class="unit" id="leakUnit">seeded secrets found in what left. Not run yet.</p>
-          <div class="row"><button type="button" class="btn" id="leakBtn">Run the leak test</button></div>
-        </div>
-        <div class="card tile" id="drillTile">
-          <p class="k">Hostile-cloud drill</p>
-          <p class="num" id="drillNum" role="img" aria-label="not run yet"></p>
-          <p class="unit" id="drillUnit">hostile replies blocked. Not run yet.</p>
-          <div class="row"><button type="button" class="btn" id="drillBtn">Run the drill</button></div>
-        </div>
-        <div class="card tile" id="gaugeTile">
-          <p class="k">Useful, or just quiet?</p>
-          <div class="gauge" aria-hidden="true"><span class="gauge-fill" id="gaugeFill"></span><span class="gauge-mark"></span></div>
-          <p class="unit" id="gaugeUnit">—</p>
-          <p class="unit" id="meterUnit">—</p>
-        </div>
-        <div class="card tile" id="trifectaTile" data-all="false">
-          <p class="k">The risky three</p>
-          <ul class="lamps" id="lamps">
-            <li data-lamp="private" data-lit="false"><i class="lamp" aria-hidden="true"></i><span class="lname">Private data</span><span class="lval" id="lampPrivate">—</span></li>
-            <li data-lamp="untrusted" data-lit="false"><i class="lamp" aria-hidden="true"></i><span class="lname">Untrusted content</span><span class="lval" id="lampUntrusted">—</span></li>
-            <li data-lamp="external" data-lit="false"><i class="lamp" aria-hidden="true"></i><span class="lname">External send</span><span class="lval" id="lampExternal">—</span></li>
-          </ul>
-          <p class="unit" id="trifectaNote"></p>
-        </div>
-      </div>
-      <p class="sizeline" id="receiptLine"></p>
-      <details class="exact proofdetails" id="proofDetails">
-        <summary>Line by line: leak test and drill</summary>
-        <pre id="proofText">Run the leak test or the drill to see each line here.</pre>
-      </details>
-    </section>
-  </div>
+<main class="spread" id="main">
+<!-- THE BORDER: a printed rule between this device and the cloud. Each slip
+       is one real passage of the loaded case (heading + character count). A
+       slip crosses the rule only after a real, approved send (stage.js). -->
+<aside aria-labelledby="instTitle" class="border" data-cloud="idle" data-phase="draft" id="instrument">
+<div class="b-head">
+<h2 class="k" id="instTitle">The border</h2>
+<p class="b-case" id="caseTag">LED wall for a partner summit · Brightline Event Systems (fictional)</p>
+<button aria-controls="field" aria-expanded="false" class="btn ghost small" id="fieldToggle" type="button">Show the slips</button>
+</div>
+<div class="b-body" id="bBody">
+<div aria-hidden="true" class="rule"><span class="gatemark"></span></div>
+<div class="b-side device">
+<p class="k"><i aria-hidden="true" class="mk green"></i>Held on device</p>
+<p aria-label="not measured yet" class="num" data-value="1,390" id="heldNum" role="img"></p>
+<p class="unit" id="heldUnit">characters held · loaded case</p>
+</div>
+<div class="b-side cloud">
+<p class="k"><i aria-hidden="true" class="mk amber"></i>Approved for cloud</p>
+<p aria-label="not measured yet" class="num" data-value="0" id="crossNum" role="img"></p>
+<p class="unit" id="crossUnit">characters crossed · nothing sent yet</p>
+</div>
+<ul aria-label="Passages of the loaded case and where each one is" class="field" data-mini="false" id="field" style="height: 424px;"></ul>
+<p aria-hidden="true" class="cloudword" id="cloudWord"></p>
+</div>
+<p class="b-foot" id="bFoot">5 ticked to leave · 842 chars waiting · 2 kept here. Numbers on slips are characters.</p>
+</aside>
+<div class="steps" id="steps" tabindex="-1">
+<!-- 01 QUOTE -->
+<section aria-labelledby="h-quote" class="step" id="step-quote">
+<header class="step-head">
+<p class="kicker">01 / Quote</p>
+<h2 id="h-quote" tabindex="-1">Bring in a supplier quote.</h2>
+<p class="lede" id="quoteLede">It is read and split into passages on this device. Nothing from this Case flow is sent until you approve the exact text.</p>
+</header>
+<div class="panel">
+<div class="scenarios" id="scenarioBox">
+<p class="k" id="scenarioLabel">Scenario</p>
+<div aria-labelledby="scenarioLabel" class="seg" id="scenarios" role="radiogroup"></div>
+<p class="seg-blurb" id="scenarioBlurb">LED wall for a partner summit. Northwind Events (fictional) checks a fictional AV supplier's quote against a private budget, deadline and installation rule.</p>
+<label class="poison" for="poison"><input id="poison" type="checkbox"/><span>Plant a hidden instruction in this case (to test the injection rule)</span></label>
+</div>
+<div aria-live="polite" class="loaded" id="caseNow"></div>
+<details class="own" id="ownQuote">
+<summary>Use your own quote</summary>
+<label class="field-label" for="quoteText">Paste the quote text</label>
+<textarea id="quoteText" placeholder="Supplier name on the first line, then the quote: price, delivery, what is included, warranty, cancellation." rows="5" spellcheck="false"></textarea>
+<div class="row">
+<button class="btn primary" id="importBtn" type="button">Read on this device</button>
+<label class="btn file" id="imageLabel" title="Needs Gemini Nano in this browser. Paste the text instead.">Read an image<input accept="image/png,image/jpeg" autocomplete="off" id="imageInput" type="file"/></label>
+</div>
+</details>
+<p class="msg" data-tone="" id="quoteMsg" role="status"></p>
+</div>
+<div class="next"><button class="btn primary" data-go="share" type="button">Next: decide what leaves</button></div>
+</section>
+<!-- 02 SHARE -->
+<section aria-labelledby="h-share" class="step" hidden id="step-share">
+<header class="step-head">
+<p class="kicker">02 / Share</p>
+<h2 id="h-share" tabindex="-1">What stays. What leaves.</h2>
+<p class="lede">Tick a passage to let it cross. The Case disclosure has no field for your private requirements.</p>
+</header>
+<div class="panel">
+<p class="k counts"><span id="leavesCount"></span><span id="staysCount"></span></p>
+<ul class="plist" id="plist"></ul>
+<div class="privrow">
+<p class="fixed" id="privateFixed"></p>
+<details class="exact privedit" id="privEdit">
+<summary>Edit your private requirements</summary>
+<div class="pgrid" id="pgrid"></div>
+</details>
+</div>
+<p class="sizeline" id="sizeLine"></p>
+</div>
+<div class="panel cf" id="cfPanel">
+<p class="k">If you had pasted everything into a cloud chat</p>
+<div class="cf-grid">
+<div class="cf-side naive">
+<p class="cf-n" id="cfNaive">—</p>
+<p class="unit" id="cfNaiveUnit">private values inside a naive paste:</p>
+<ul class="cf-list" id="cfPrivate"></ul>
+</div>
+<div class="cf-side through">
+<p class="cf-n" id="cfBorder">—</p>
+<p class="unit" id="cfBorderUnit">of those values inside the text the border would send.</p>
+</div>
+</div>
+</div>
+<div class="next"><button class="btn primary" data-go="send" type="button">Next: approve and send</button></div>
+</section>
+<!-- 03 SEND -->
+<section aria-labelledby="h-send" class="step" hidden id="step-send">
+<header class="step-head">
+<p class="kicker">03 / Send</p>
+<h2 id="h-send" tabindex="-1">Approve the exact text. Then send it.</h2>
+<p class="lede">The approval is bound to a fingerprint of this text and this revision of the case. It works for one send.</p>
+</header>
+<div class="panel gatecard" id="gateCard">
+<div class="gate-head">
+<p class="k">Disclosure</p>
+<p class="chip" data-state="draft" id="gateChip">—</p>
+</div>
+<dl class="facts">
+<div><dt>Characters</dt><dd id="gateChars">—</dd></div>
+<div><dt>Passages</dt><dd id="gatePassages">—</dd></div>
+<div><dt>Revision</dt><dd id="gateRev">—</dd></div>
+<div><dt>Fingerprint</dt><dd id="gateDigest">—</dd></div>
+</dl>
+<div class="row">
+<button class="btn" id="approveBtn" type="button">Approve this exact text</button>
+<button class="btn primary" id="sendBtn" type="button">Send to the cloud</button>
+<button class="btn ghost" id="prepBtn" type="button">Prepare a new disclosure</button>
+</div>
+<p class="sub" id="gateWhy"></p>
+<p class="engine-line" id="engineLine">Nothing sent yet.</p>
+<details class="exact">
+<summary>Read the exact text that would be sent</summary>
+<pre id="gateText"></pre>
+</details>
+</div>
+<div class="panel controls" data-policy="" id="modeBanner">
+<fieldset class="routes" id="routeSet">
+<legend class="k">Route · <span id="modeName">—</span></legend>
+<label><input name="route" type="radio" value="prefer_on_device"/><span>Prefer device</span></label>
+<label><input name="route" type="radio" value="only_on_device"/><span>Only device</span></label>
+<label><input name="route" type="radio" value="prefer_in_cloud"/><span>Prefer cloud</span></label>
+</fieldset>
+<label class="switch" for="plug">
+<input id="plug" role="switch" type="checkbox"/>
+<span aria-hidden="true" class="track"><span class="knob"></span></span>
+<span class="switch-text"><b>Pull the plug (offline demo)</b><span id="plugSub">Blocks fetch() calls made by this page's code. Not a firewall.</span></span>
+</label>
+<p class="sub modesub" id="modeSub"></p>
+</div>
+<div class="next"><button class="btn primary" data-go="verdict" type="button">Next: the verdict</button></div>
+</section>
+<!-- 04 VERDICT -->
+<section aria-labelledby="h-verdict" class="step" hidden id="step-verdict">
+<header class="step-head">
+<p class="kicker">04 / Verdict</p>
+<h2 id="h-verdict" tabindex="-1">The cloud advises. Plain code decides.</h2>
+<p class="lede">The final call is made in this browser, by plain code, on the whole case and your private facts.</p>
+</header>
+<div class="panel final" data-verdict="" id="finalCard">
+<p class="k">Final decision · local rules</p>
+<p class="final-v" id="finalV">—</p>
+<p class="sub" id="finalSub"></p>
+<p class="k issues-h" id="issuesHead">Failed or unknown checks</p>
+<ul class="checks" id="checksList"></ul>
+<p class="sub" id="noIssues">No check failed and none is unknown.</p>
+<details class="exact passed" id="passedChecks">
+<summary id="passedSummary">Checks that passed</summary>
+<ul class="checks" id="passList"></ul>
+</details>
+</div>
+<div class="panel cmp">
+<div class="cmp-row" id="compareCard">
+<p class="k">The cloud's view · advisory</p>
+<div class="cmp-body">
+<p class="cmp-line" id="cloudLine">No cloud reply yet.</p>
+<details class="exact" id="replyDetails">
+<summary>Read the reply as plain text</summary>
+<pre id="replyText"></pre>
+</details>
+</div>
+</div>
+<div class="cmp-row" id="secondCard">
+<p class="k">Second opinion · this device</p>
+<div class="cmp-body">
+<p class="cmp-line" id="secondLine">Ask Gemini Nano (or plain code, if Nano is not ready) for a provisional verdict from the shared passages only.</p>
+<div class="row"><button class="btn" id="provBtn" type="button">Get a provisional verdict</button></div>
+<p class="agree" data-state="" id="agreeLine"></p>
+</div>
+</div>
+</div>
+<div class="next"><button class="btn primary" data-go="proof" type="button">Next: the proof</button></div>
+</section>
+<!-- 05 PROOF -->
+<section aria-labelledby="h-proof" class="step" hidden id="step-proof">
+<header class="step-head">
+<p class="kicker">05 / Proof</p>
+<h2 id="h-proof" tabindex="-1">Measured, not promised.</h2>
+<p class="lede">Each figure is counted by code on this page and says what it measured. None of them is a guarantee.</p>
+</header>
+<div class="panel tile leak" id="leakTile">
+<p class="k">Leak audit · seeded secrets</p>
+<p aria-label="not measured yet" class="num" data-value="-" id="leakNum" role="img"></p>
+<p class="unit" id="leakUnit">seeded secrets found in the Firebase AI request bodies observed during this run. Not run yet.</p>
+<div class="row"><button class="btn" id="leakBtn" type="button">Run the leak audit</button></div>
+<div class="drillrow" id="drillTile">
+<p class="k">Hostile-cloud drill</p>
+<p aria-label="not measured yet" class="num sm" data-value="-" id="drillNum" role="img"></p>
+<p class="unit" id="drillUnit">hostile replies blocked. Not run yet.</p>
+<div class="row"><button class="btn" id="drillBtn" type="button">Run the drill</button></div>
+</div>
+</div>
+<details class="panel more" id="moreEvidence">
+<summary><span>More evidence</span><span class="sumnote" id="moreNote">usefulness · timings · risky three · line by line</span></summary>
+<div class="lrow" id="gaugeTile">
+<p class="k">Useful, or just quiet?</p>
+<div aria-hidden="true" class="gauge"><span class="gauge-fill" id="gaugeFill"></span><span class="gauge-mark"></span></div>
+<p class="unit" id="gaugeUnit">—</p>
+<p class="unit" id="meterUnit">—</p>
+</div>
+<div class="lrow">
+<p class="k">Timings · measured this session</p>
+<ul class="badges" id="timings"></ul>
+</div>
+<div class="lrow" data-all="false" id="trifectaTile">
+<p class="k">The risky three (simple rules, not a detector)</p>
+<ul class="lamps" id="lamps">
+<li data-lamp="private" data-lit="false"><i aria-hidden="true" class="lamp"></i><span class="lname">Private data registered</span><span class="lval" id="lampPrivate">—</span></li>
+<li data-lamp="untrusted" data-lit="false"><i aria-hidden="true" class="lamp"></i><span class="lname">Rule flag: supplier text present</span><span class="lval" id="lampUntrusted">—</span></li>
+<li data-lamp="external" data-lit="false"><i aria-hidden="true" class="lamp"></i><span class="lname">External send</span><span class="lval" id="lampExternal">—</span></li>
+</ul>
+<p class="unit" id="trifectaNote"></p>
+</div>
+<div class="lrow proofdetails" id="proofDetails">
+<p class="k">Line by line: leak audit and drill</p>
+<pre id="proofText">Run the leak audit or the drill to see each line here.</pre>
+</div>
+</details>
+<div class="panel receipt">
+<p class="sizeline" id="receiptLine"></p>
+<div class="row">
+<button class="btn" id="receiptBtn" type="button">Download session receipt (JSON)</button>
+<button class="btn ghost" id="challengeBtn" type="button">Receipt integrity challenge</button>
+</div>
+<p class="sub" id="receiptMsg"></p>
+<p class="sub" id="challengeMsg" role="status"></p>
+</div>
+</section>
+</div>
 </main>
-
 <footer class="foot">
-  <p><span class="wordmark small">AION</span> — built by <b>Anshul Reddy</b> for #BuildHybridAI 2026 · Apache 2.0</p>
-  <p class="links">
-    <a href="https://github.com/anshulreddybuilds/aion-hybrid-web" rel="noopener">Source on GitHub</a>
-    <a href="/dashboard">Classic dashboard</a>
-  </p>
+<p><span class="wordmark small">AION</span> — built by <b>Anshul Reddy</b> for #BuildHybridAI 2026 · Apache 2.0</p>
+<p class="links"><a href="https://github.com/anshulreddybuilds/aion-hybrid-web" rel="noopener">Source on GitHub</a></p>
 </footer>
-
-<dialog class="work" id="work" aria-labelledby="workTitle">
-  <div class="work-head">
-    <h2 id="workTitle">Show the work</h2>
-    <button type="button" class="btn ghost small" id="workClose">Close</button>
-  </div>
-  <p class="lede small">Raw data behind the screen, as plain text. Receipts hold no message text by design.</p>
-  <details open><summary>Disclosure (allowlisted fields only)</summary><pre id="wDisclosure"></pre></details>
-  <details><summary>Exact outgoing text</summary><pre id="wText"></pre></details>
-  <details><summary>Receipts this session</summary><pre id="wReceipts"></pre></details>
-  <details><summary>Injection report</summary><pre id="wInjection"></pre></details>
-  <details><summary>Local rules: the final decision</summary><pre id="wRules"></pre></details>
-  <details><summary>Disclosure meter</summary><pre id="wMeter"></pre></details>
+<dialog aria-labelledby="workTitle" class="work" id="work">
+<div class="work-head">
+<h2 id="workTitle">Show the work</h2>
+<button class="btn ghost small" id="workClose" type="button">Close</button>
+</div>
+<p class="lede small">Raw data behind the screen, as plain text. Receipts hold no message text by design. The older full view is still at <a href="/dashboard">the classic dashboard</a>.</p>
+<details open=""><summary>Disclosure (allowlisted fields only)</summary><pre id="wDisclosure"></pre></details>
+<details><summary>Exact outgoing text</summary><pre id="wText"></pre></details>
+<details><summary>Receipts this session</summary><pre id="wReceipts"></pre></details>
+<details><summary>Injection report (simple rules)</summary><pre id="wInjection"></pre></details>
+<details><summary>Local rules: the final decision</summary><pre id="wRules"></pre></details>
+<details><summary>Disclosure meter</summary><pre id="wMeter"></pre></details>
 </dialog>
-
-<div class="sr" id="live" aria-live="polite" aria-atomic="true"></div>
-
+<div aria-atomic="true" aria-live="polite" class="sr" id="live"></div>
 <script src="/standalone.js"></script>
 <script src="/case.js"></script>
-<script src="/slab.js"></script>
 <script src="/stage.js"></script>
-<script type="module" src="/hybrid.bundle.js"></script>
-</body>
-</html>
+<script src="/seam.js"></script>
+<script src="/hybrid.bundle.js" type="module"></script>
+</body></html>

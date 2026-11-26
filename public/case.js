@@ -7,7 +7,7 @@
  *     fields, with its SHA-256 fingerprint;
  *   - Approve binds to that fingerprint and case revision; any edit, even one
  *     character, makes the approval stale; each approval is good for ONE send;
- *   - the 6-canary leak test plants fake secrets and searches what left.
+ *   - the 6-canary leak test plants fake secrets and searches the Firebase AI request bodies observed during the run.
  * Data and rules live in standalone.js (caseApi) and src/egress.js; this file
  * only draws the view. All user text is written with textContent / escaping.
  */
@@ -57,14 +57,33 @@
     if (/(plus|\+|excluding|excl\.?|exclusive of)\s*gst/.test(t)) return false;
     return null;
   }
+  /* A real calendar day: build it and read it back. Feb 31 would roll into March
+   * and must not be accepted as a date. */
+  function realDay(y, m, d) {
+    var ms = Date.UTC(y, m - 1, d);
+    var chk = new Date(ms);
+    return chk.getUTCFullYear() === y && chk.getUTCMonth() === m - 1 && chk.getUTCDate() === d ? ms : null;
+  }
+  function realTime(h, mi) { return h >= 0 && h <= 23 && mi >= 0 && mi <= 59 ? h * 60 + mi : null; }
+  /* null = no date written. { invalid: true, label } = something that looks like a
+   * date or time was written but is not a real one (reported as unknown, never
+   * silently moved to another day). */
   function readDate(text) {
     var t = String(text || "");
     var iso = t.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?/);
-    if (iso) return { day: Date.UTC(+iso[1], +iso[2] - 1, +iso[3]), time: iso[4] ? (+iso[4]) * 60 + (+iso[5]) : null, label: iso[0] };
+    if (iso) {
+      var day = realDay(+iso[1], +iso[2], +iso[3]);
+      var time = iso[4] ? realTime(+iso[4], +iso[5]) : null;
+      if (day === null || (iso[4] && time === null)) return { invalid: true, label: iso[0] };
+      return { day: day, time: time, label: iso[0] };
+    }
     var dm = t.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})/i);
     if (dm) {
       var tm = t.match(/\b(\d{1,2}):(\d{2})\b/);
-      return { day: Date.UTC(+dm[3], MONTHS[dm[2].toLowerCase()], +dm[1]), time: tm ? (+tm[1]) * 60 + (+tm[2]) : null, label: dm[0],
+      var day2 = realDay(+dm[3], MONTHS[dm[2].toLowerCase()] + 1, +dm[1]);
+      var time2 = tm ? realTime(+tm[1], +tm[2]) : null;
+      if (day2 === null || (tm && time2 === null)) return { invalid: true, label: dm[0] + (tm ? " " + tm[0] : "") };
+      return { day: day2, time: time2, label: dm[0],
         vague: !tm && /morning|afternoon|evening|during the day/i.test(t) };
     }
     return null;
@@ -88,7 +107,187 @@
     return { state: "unknown", from: null };
   }
 
+  /* ---- Scenario packs: extra quote checks (only when the private field exists) ---- */
+  function readPercent(text) {
+    var m = String(text == null ? "" : text).match(/(\d{1,3}(?:\.\d+)?)\s*%/) || String(text == null ? "" : text).match(/^\s*(\d{1,3}(?:\.\d+)?)\s*$/);
+    if (!m) return null;
+    var n = parseFloat(m[1]);
+    return isFinite(n) && n >= 0 && n <= 100 ? n : null;
+  }
+  function readAdvance(text) {
+    var t = String(text || "");
+    if (/\bno advance\b/i.test(t)) return 0;
+    var m = t.match(/(\d{1,3}(?:\.\d+)?)\s*%\s*(?:advance|in advance|upfront|up front)/i) ||
+      t.match(/(?:advance|upfront|up front)[^.%]{0,30}?(\d{1,3}(?:\.\d+)?)\s*%/i);
+    if (!m) return null;
+    var n = parseFloat(m[1]);
+    return isFinite(n) && n >= 0 && n <= 100 ? n : null;
+  }
+  function gstFlag(text) {
+    var g = gstIncluded(text);
+    if (g !== null) return g;
+    return /(before|without|pre-?)\s*gst/i.test(String(text || "")) ? false : null;
+  }
+  function readUnitCap(text) {
+    var t = String(text || "");
+    var amount = readAmount(t);
+    var u = t.match(/\bper\s+([a-z]+?)s?\b(?:\s+of\s+([a-z]+))?/i);
+    return { amount: amount, unit: u ? u[1].toLowerCase() : null, item: u && u[2] ? u[2].toLowerCase() : null };
+  }
+  function findUnitPrice(c, priceP, unit, item) {
+    var ps = (c.paragraphs || []).slice();
+    if (priceP) ps = [priceP].concat(ps.filter(function (p) { return p !== priceP; }));
+    var re = new RegExp("(?:\\brs\\b\\.?|\\binr\\b|\\u20b9)\\s*([\\d][\\d,]*(?:\\.\\d+)?)\\s*(?:\\/|per)\\s*" + unit + "s?\\b", "i");
+    for (var i = 0; i < ps.length; i++) {
+      var clauses = String(ps[i].text || "").split(/;|,(?!\d)|\.(?=\s|$)/);
+      for (var j = 0; j < clauses.length; j++) {
+        var cl = clauses[j];
+        if (item && cl.toLowerCase().indexOf(item) < 0) continue;
+        var m = cl.match(re);
+        if (m) { var n = parseFloat(m[1].replace(/,/g, "")); if (isFinite(n) && n > 0) return { price: n, para: ps[i] }; }
+      }
+    }
+    return null;
+  }
+  function extraQuoteChecks(c, pc, rate, priceP, checks) {
+    var has = function (k) { return Object.prototype.hasOwnProperty.call(pc, k); };
+    /* Advance payment: the % asked before delivery vs the private maximum. */
+    if (has("maxAdvancePct")) {
+      var maxAdv = readPercent(pc.maxAdvancePct);
+      var payP = findPara(c, /payment|advance/i, /advance|upfront/i);
+      var adv = payP ? readAdvance(payP.text) : null;
+      if (maxAdv === null) {
+        checks.push({ id: "advance", label: "Advance payment", status: "unknown", detail: "No maximum advance entered.", from: [] });
+      } else if (adv === null) {
+        checks.push({ id: "advance", label: "Advance payment", status: "unknown", detail: "The quote does not state an advance AION can read. Ask how much must be paid before delivery.", from: payP ? [payP.id] : [] });
+      } else if (adv > maxAdv) {
+        checks.push({ id: "advance", label: "Advance payment", status: "fail", detail: "The quote asks for " + adv + "% in advance; your private maximum is " + maxAdv + "%.", from: [payP.id] });
+      } else {
+        checks.push({ id: "advance", label: "Advance payment", status: "pass", detail: "The quote asks for " + adv + "% in advance, within your private maximum of " + maxAdv + "%.", from: [payP.id] });
+      }
+    }
+    /* Margin: a per-unit rate in the quote vs the private highest buying price. */
+    if (has("maxUnitCost")) {
+      var cap = readUnitCap(pc.maxUnitCost);
+      if (!cap.amount || !cap.unit) {
+        checks.push({ id: "margin", label: "Margin", status: "unknown", detail: "No highest price per unit entered (for example \"Rs 1,900 per carton of oil, before GST\").", from: [] });
+      } else {
+        var what = (cap.item ? cap.item + " " : "") + cap.unit;
+        var hit = findUnitPrice(c, priceP, cap.unit, cap.item);
+        if (!hit) {
+          checks.push({ id: "margin", label: "Margin", status: "unknown", detail: "The quote gives no price per " + what + " that AION can read. Ask for the per-" + cap.unit + " rate.", from: [] });
+        } else {
+          var qInc = gstIncluded(hit.para.text), cInc = gstFlag(pc.maxUnitCost), f = 1 + rate / 100;
+          var q = hit.price, lim = cap.amount, status, basis;
+          if (qInc !== null && cInc !== null) {
+            if (qInc === false && cInc === true) q = q * f;
+            if (qInc === true && cInc === false) lim = lim * f;
+            status = q > lim ? "fail" : "pass";
+            basis = qInc === cInc ? (qInc ? " (both including GST)" : " (both before GST)") : " (" + rate + "% GST added to compare like with like)";
+          } else {
+            var qOptions = qInc === null ? [q, q * f] : [qInc ? q : q * f];
+            var capOptions = cInc === null ? [lim, lim * f] : [cInc ? lim : lim * f];
+            var qMin = Math.min.apply(Math, qOptions), qMax = Math.max.apply(Math, qOptions);
+            var capMin = Math.min.apply(Math, capOptions), capMax = Math.max.apply(Math, capOptions);
+            status = qMax <= capMin ? "pass" : qMin > capMax ? "fail" : "unknown";
+            basis = " (GST basis unclear; confirm whether both prices include GST before deciding)";
+          }
+          var head = cap.item ? cap.item.charAt(0).toUpperCase() + cap.item.slice(1) + " at " : "The rate of ";
+          checks.push({ id: "margin", label: "Margin", status: status, detail: head + rupees(hit.price) + " per " + cap.unit + " is " +
+            (status === "fail" ? "above" : status === "pass" ? "within" : "unclear against") + " your private ceiling of " + rupees(cap.amount) + " per " + cap.unit + basis + ".",
+            from: [hit.para.id] });
+        }
+      }
+    }
+  }
+
+  /* ---- Scenario packs: scam-call checks (c.caseKind === "scam") ---- */
+  var SCAM = {
+    otp: /\b(otp|one[- ]time (?:password|code)|upi pin|mpin|m-pin|atm pin|pin|cvv|password|verification code)\b/i,
+    money: /\b(transfer|send|pay|deposit|move)\b[^.]{0,60}(\brs\b|\binr\b|₹|\d|\bupi\b|\baccount\b|\bmoney\b|\bamount\b|\bfine\b|\bfee\b)|\b(upi|gpay|google pay|phonepe|paytm|gift cards?|google play cards?|bitcoin|crypto|safe account)\b/i,
+    urgent: /\b(within \d+ (?:minutes?|mins?|hours?)|immediately|right now|urgent(?:ly)?|today itself|last chance|jaldi|turant)\b/i,
+    secret: /\b(keep (?:it|this) (?:a )?secret|keep (?:it|this) confidential|do not tell|don't tell|not a word to|do not inform|don't inform|stay on (?:this|the) (?:video )?(?:call|line)|do not (?:cut|disconnect|hang up)|don't (?:cut|disconnect|hang up))\b/i,
+    authority: /\b(police|inspector|cbi|cyber (?:cell|crime)|crime branch|narcotics|ncb|customs|enforcement directorate|income tax|rbi|reserve bank|court|judge|magistrate|trai|bank manager|bank officer)\b/i,
+    phone: /(?:\+?91[\s-]*)?[6-9]\d(?:[\s-]?\d){8}/g,
+    relation: /\byour (son|daughter|grandson|granddaughter|husband|wife|brother|sister|nephew|niece)\b(?:\s*,?\s*([A-Z][a-z]{2,}))?|\b(bete|beta|beti)\b/i,
+    trouble: /\b(arrest(?:ed)?|custody|jail|accident|hospital|police station|kidnapp?ed|detained|lock-?up)\b/i,
+  };
+  function phoneDigits(text) {
+    var out = [];
+    String(text || "").replace(SCAM.phone, function (m) { out.push(m.replace(/\D/g, "").slice(-10)); return m; });
+    return out;
+  }
+  function scamReconcile(c) {
+    var pc = c.privateConstraints || {};
+    var ps = c.paragraphs || [];
+    var checks = [];
+    var ids = function (re) { return ps.filter(function (p) { return re.test(String(p.text || "")); }).map(function (p) { return p.id; }); };
+    var none = !ps.length;
+    var unknownAll = "There are no conversation lines to check.";
+    /* 1. OTP / PIN / password */
+    var otp = ids(SCAM.otp);
+    checks.push(none ? { id: "otp", label: "Asks for a code", status: "unknown", detail: unknownAll, from: [] }
+      : otp.length ? { id: "otp", label: "Asks for a code", status: "fail", detail: "The caller asks for an OTP, PIN or password. Never share one: it lets someone take money from your account.", from: otp }
+      : { id: "otp", label: "Asks for a code", status: "pass", detail: "No request for an OTP, PIN or password in these lines.", from: [] });
+    /* 2. Money */
+    var money = ids(SCAM.money);
+    checks.push(none ? { id: "money", label: "Asks for money", status: "unknown", detail: unknownAll, from: [] }
+      : money.length ? { id: "money", label: "Asks for money", status: "fail", detail: "The caller asks you to send money (a transfer, UPI, a \"safe account\" or gift cards) to an account you do not know.", from: money }
+      : { id: "money", label: "Asks for money", status: "pass", detail: "No request to send money in these lines.", from: [] });
+    /* 3. Urgency and secrecy */
+    var urg = ids(SCAM.urgent), sec = ids(SCAM.secret);
+    var both = urg.concat(sec.filter(function (x) { return urg.indexOf(x) < 0; }));
+    checks.push(none ? { id: "pressure", label: "Urgency or secrecy", status: "unknown", detail: unknownAll, from: [] }
+      : urg.length && sec.length ? { id: "pressure", label: "Urgency or secrecy", status: "fail", detail: "The caller rushes you AND tells you to keep it secret. Genuine officials give you time and let you talk to your family.", from: both }
+      : both.length ? { id: "pressure", label: "Urgency or secrecy", status: "risk", detail: urg.length ? "The caller is rushing you. Take your time." : "The caller asks you to keep this secret or stay on the call.", from: both }
+      : { id: "pressure", label: "Urgency or secrecy", status: "pass", detail: "No rushing or secrecy in these lines.", from: [] });
+    /* 4. Claims of authority */
+    var auth = ids(SCAM.authority);
+    var authWords = [];
+    ps.forEach(function (p) { var m = String(p.text || "").match(SCAM.authority); var w = m ? (/^(cbi|rbi|ncb|trai)$/i.test(m[1]) ? m[1].toUpperCase() : m[1].toLowerCase()) : null; if (w && authWords.indexOf(w) < 0) authWords.push(w); });
+    checks.push(none ? { id: "authority", label: "Claims authority", status: "unknown", detail: unknownAll, from: [] }
+      : auth.length ? { id: "authority", label: "Claims authority", status: "risk", detail: "The caller claims to be official (" + authWords.join(", ") + "). Anyone can say this on a call; police and banks do not demand payment or codes by phone.", from: auth }
+      : { id: "authority", label: "Claims authority", status: "pass", detail: "No claim to be police, a bank or a court in these lines.", from: [] });
+    /* 5. Caller's number vs the numbers she saved (private) */
+    var idP = null;
+    for (var i = 0; i < ps.length && !idP; i++) if (/caller id|number|from/i.test(ps[i].heading || "") && phoneDigits(ps[i].text).length) idP = ps[i];
+    for (var j = 0; j < ps.length && !idP; j++) if (phoneDigits(ps[j].text).length) idP = ps[j];
+    var callerNum = idP ? phoneDigits(idP.text)[0] : null;
+    var known = phoneDigits(pc.knownNumbers);
+    if (!known.length) checks.push({ id: "caller", label: "Caller's number", status: "unknown", detail: "No family numbers saved, so AION cannot compare. Call your family on a number you already have.", from: [] });
+    else if (!callerNum) checks.push({ id: "caller", label: "Caller's number", status: "unknown", detail: "AION cannot read the caller's number in these lines. Do not trust a number the caller gives you.", from: [] });
+    else if (known.indexOf(callerNum) >= 0) checks.push({ id: "caller", label: "Caller's number", status: "pass", detail: "The caller's number matches one you saved privately.", from: [idP.id] });
+    else checks.push({ id: "caller", label: "Caller's number", status: "fail", detail: "The caller's number is not any of the family numbers you saved privately.", from: [idP.id] });
+    /* 6. A claim about the family vs her private facts */
+    var claims = [];
+    ps.forEach(function (p) {
+      var t = String(p.text || ""), m = t.match(SCAM.relation);
+      if (m && SCAM.trouble.test(t)) claims.push({ id: p.id, rel: (m[1] || m[3] || "").toLowerCase(), name: m[2] || "" });
+    });
+    var names = String(pc.familyNames || "").split(/[,;\n]|\band\b/).map(function (x) { var w = x.trim().match(/[A-Za-z]{2,}/); return w ? w[0].toLowerCase() : ""; }).filter(Boolean);
+    if (!claims.length) {
+      checks.push({ id: "family", label: "Family claim", status: "pass", detail: "The caller makes no claim that someone in your family is in trouble.", from: [] });
+    } else {
+      var rel = { bete: "son", beta: "son", beti: "daughter" }[claims[0].rel] || claims[0].rel || "family member";
+      var why = [];
+      var wrongName = claims.filter(function (k) { return k.name && names.length && names.indexOf(k.name.toLowerCase()) < 0; })[0];
+      if (wrongName) why.push("the caller calls your " + rel + " \"" + wrongName.name + "\", a name that is not in your private family list");
+      if (pc.relativeSafe === true) why.push("you noted privately that your " + rel + " is safe right now");
+      var cIds = claims.map(function (k) { return k.id; });
+      if (why.length) checks.push({ id: "family", label: "Family claim", status: "fail", detail: "The caller says your " + rel + " is in trouble, but " + why.join(", and ") + ".", from: cIds });
+      else checks.push({ id: "family", label: "Family claim", status: "unknown", detail: "The caller says your " + rel + " is in trouble. Call your " + rel + " on a number you already have before doing anything.", from: cIds });
+    }
+    var fails = checks.filter(function (k) { return k.status === "fail"; });
+    var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });
+    var verdict = fails.length ? "not_suitable" : open.length ? "needs_answers" : "fits";
+    var sharedIds = ps.filter(function (p) { return p.shared && !(p.injection && p.injection.flagged && !p.injectionOverride); }).map(function (p) { return p.id; });
+    var hiddenUsed = [];
+    checks.forEach(function (k) { (k.from || []).forEach(function (id) { if (id && sharedIds.indexOf(id) < 0 && hiddenUsed.indexOf(id) < 0) hiddenUsed.push(id); }); });
+    return { verdict: verdict, checks: checks, fails: fails.length, open: open.length, privatePassagesUsed: hiddenUsed };
+  }
+
   function reconcile(c) {
+    if (c && c.caseKind === "scam") return scamReconcile(c);
     var pc = c.privateConstraints || {};
     var checks = [];
     var rate = parseFloat(String(pc.gstRate == null || pc.gstRate === "" ? "18" : pc.gstRate).replace(/[^\d.]/g, ""));
@@ -104,51 +303,79 @@
       checks.push({ id: "budget", label: "Budget", status: "unknown", detail: "The proposal does not state a price AION can read. Ask the supplier for a total.", from: [] });
     } else {
       var qInc = gstIncluded(priceP.text), bInc = gstIncluded(pc.maxBudget);
-      var qTotal = qInc === false ? quote * (1 + rate / 100) : quote;
-      var bTotal = bInc === false ? budget * (1 + rate / 100) : budget;
+      var f = 1 + rate / 100;
+      /* When a GST basis is not written down, both readings are kept as a range
+       * instead of guessing one: quote low/high and limit low/high. */
+      var qLow = qInc === false ? quote * f : quote, qHigh = qInc === null ? quote * f : qLow;
+      var bLow = bInc === false ? budget * f : budget, bHigh = bInc === null ? budget * f : bLow;
+      var qTotal = qLow, bTotal = bLow;
       var how = rupees(quote) + (qInc === false ? " + " + rate + "% GST = " + rupees(qTotal) : (qInc ? " including GST" : " (GST not stated)"));
-      if (qTotal > bTotal) {
-        checks.push({ id: "budget", label: "Budget", status: "fail", detail: how + " is over your private limit of " + rupees(bTotal) +
-          " by " + rupees(qTotal - bTotal) + ".", from: [priceP.id], assumption: qInc === false ? rate + "% GST assumed (change it in Private requirements)" : "" });
+      if (qLow > bHigh) {
+        checks.push({ id: "budget", label: "Budget", status: "fail", detail: how + " is over your private limit of " + rupees(bHigh) +
+          (bInc === null ? " (even if that limit also had GST added)" : "") + " by " + rupees(qLow - bHigh) + ".", from: [priceP.id],
+          assumption: qInc === false ? rate + "% GST assumed (change it in Private requirements)" : "" });
+      } else if (qHigh > bLow) {
+        /* The answer depends on a GST basis nobody wrote down: do not guess. */
+        var which = (qInc === null ? "the proposal does not say whether its price includes GST" : "") +
+          (qInc === null && bInc === null ? ", and " : "") + (bInc === null ? "your private limit does not say whether it includes GST" : "");
+        checks.push({ id: "budget", label: "Budget", status: "unknown",
+          detail: "Not decided: " + which + ". With GST at " + rate + "%, the quote is " + (qLow === qHigh ? rupees(qLow) : "between " + rupees(qLow) + " and " + rupees(qHigh)) +
+            " against a limit of " + (bLow === bHigh ? rupees(bLow) : "between " + rupees(bLow) + " and " + rupees(bHigh)) +
+            ", so the result could go either way. Ask the supplier, or state the limit's GST basis in Private requirements.",
+          from: [priceP.id], assumption: "GST basis not stated (" + [qInc === null ? "quote" : "", bInc === null ? "limit" : ""].filter(Boolean).join(" and ") + "); not guessed" });
       } else {
         checks.push({ id: "budget", label: "Budget", status: qInc === null ? "unknown" : "pass", detail: how + " is within your private limit of " + rupees(bTotal) +
-          (qInc === null ? ", but the proposal does not say whether GST is included." : "."), from: [priceP.id] });
+          (qInc === null ? ", but the proposal does not say whether GST is included." : bInc === null ? " (within it with or without GST on the limit)." : "."), from: [priceP.id] });
       }
     }
 
     /* 2. Ready-by deadline */
     var ready = readDate(pc.readyBy);
+    var dl = c.deadlineLabel ? String(c.deadlineLabel) : null;
     var delP = findPara(c, /deliver/i, /deliver/i);
     var del = delP ? readDate(delP.text) : null;
     var inst = installStatus(c);
     if (!ready) {
-      checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "No ready-by date entered.", from: [] });
+      checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: dl ? "No " + dl + " entered." : "No ready-by date entered.", from: [] });
+    } else if (ready.invalid) {
+      checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The ready-by date \"" + ready.label + "\" is not a real calendar date or time, so it is not used. Correct it in Private requirements.", from: [] });
+    } else if (del && del.invalid) {
+      checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The delivery date in the proposal (\"" + del.label + "\") is not a real calendar date or time. Ask the supplier to confirm it.", from: delP ? [delP.id] : [] });
     } else if (!del) {
       checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The proposal does not give a delivery date AION can read. Ask for one.", from: delP ? [delP.id] : [] });
     } else if (del.day > ready.day) {
-      checks.push({ id: "deadline", label: "Deadline", status: "fail", detail: "Delivery (" + del.label + ") is after the date it must already be working (" + ready.label + ").", from: [delP.id] });
+      checks.push({ id: "deadline", label: "Deadline", status: "fail", detail: "Delivery (" + del.label + ") is after " + (dl ? "your " + dl : "the date it must already be working") + " (" + ready.label + ").", from: [delP.id] });
     } else if (del.day === ready.day) {
-      var noSetup = pc.installationRequired && inst.state !== "included";
+      /* Excluded installation is a fact in the proposal. An installation the proposal
+       * simply does not mention is "not confirmed": it must never be reported as excluded. */
+      var noSetup = !!pc.installationRequired && inst.state === "excluded";
+      var unconfirmed = !!pc.installationRequired && inst.state === "unknown";
       var late = del.time != null && ready.time != null && del.time >= ready.time;
-      checks.push({ id: "deadline", label: "Deadline", status: noSetup || late ? "fail" : "risk",
+      checks.push({ id: "deadline", label: "Deadline", status: noSetup || late ? "fail" : unconfirmed ? "unknown" : "risk",
         detail: "Delivery is on " + del.label + (del.vague ? " (\"morning\", no time given)" : "") + ", the same day it must be working by " +
           (ready.time != null ? String(Math.floor(ready.time / 60)).padStart(2, "0") + ":" + String(ready.time % 60).padStart(2, "0") : "the start") +
-          (noSetup ? ", with no installation included, so there is no time to set it up." : late ? ", but after that time." : ". Same-day delivery leaves little margin."),
+          (noSetup ? ", with installation excluded, so there is no time to set it up." : late ? ", but after that time." :
+            unconfirmed ? ". Installation is not confirmed in the proposal, so it is not known whether there is time to set it up. Ask the supplier." : ". Same-day delivery leaves little margin."),
         from: [delP.id].concat(noSetup && inst.from ? [inst.from] : []) });
     } else {
-      checks.push({ id: "deadline", label: "Deadline", status: "pass", detail: "Delivery (" + del.label + ") is before your ready-by date (" + ready.label + ").", from: [delP.id] });
+      checks.push({ id: "deadline", label: "Deadline", status: "pass", detail: "Delivery (" + del.label + ") is before your " + (dl || "ready-by date") + " (" + ready.label + ").", from: [delP.id] });
     }
 
-    /* 3. Installation */
-    if (!pc.installationRequired) {
+    /* 3. Installation (null = not applicable: no check, used by scenario packs) */
+    if (pc.installationRequired === null) {
+      /* not applicable */
+    } else if (!pc.installationRequired) {
       checks.push({ id: "install", label: "Installation", status: "pass", detail: "You did not require installation.", from: [] });
     } else if (inst.state === "excluded") {
       checks.push({ id: "install", label: "Installation", status: "fail", detail: "You require installation, but the proposal excludes it.", from: [inst.from] });
     } else if (inst.state === "included") {
       checks.push({ id: "install", label: "Installation", status: "pass", detail: "Installation is included.", from: [inst.from] });
     } else {
-      checks.push({ id: "install", label: "Installation", status: "unknown", detail: "You require installation, and the proposal does not say whether it is included. Ask the supplier.", from: [] });
+      checks.push({ id: "install", label: "Installation", status: "unknown", detail: "Installation is not confirmed: you require it, and the proposal does not say whether it is included. Ask the supplier.", from: [] });
     }
+
+    /* 4-5. Advance payment and margin: only when those private fields exist */
+    extraQuoteChecks(c, pc, rate, priceP, checks);
 
     var fails = checks.filter(function (k) { return k.status === "fail"; });
     var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });
@@ -336,6 +563,31 @@
     ["caseApproveBtn", "caseSendBtn"].forEach(function (id) { var b = el(id); if (b) b.disabled = true; });
   }
 
+  /* ---------------- scenario packs ---------------- */
+  /* Packs store their own private field list (c.privateFields) and verdict
+   * labels (c.labels); the original sample case has neither and is drawn
+   * exactly as before. */
+  function verdictLabel(c, v) { return ((c && c.labels) || VERDICT_TEXT)[v] || VERDICT_TEXT[v] || v; }
+  function packFieldsHtml(c, pc) {
+    return c.privateFields.map(function (f) {
+      var k = esc(f.key), v = pc[f.key];
+      if (f.type === "bool") return '<label class="case-field case-check"><input type="checkbox" data-pfield="' + k + '"' + (v ? " checked" : "") + '><span>' + esc(f.label) + '</span></label>';
+      if (f.type === "text") return '<label class="case-field"><span>' + esc(f.label) + '</span><textarea class="case-ta" rows="2" data-pfield="' + k + '">' + esc(v == null ? "" : v) + '</textarea></label>';
+      return '<label class="case-field"><span>' + esc(f.label) + '</span><input type="text" data-pfield="' + k + '" value="' + esc(v == null ? "" : v) + '"></label>';
+    }).join("");
+  }
+  function loadPackHere(id, opts) {
+    if (!api() || !api().loadPack) return Promise.reject(new Error("Scenario packs need standalone.js."));
+    clearTimeout(saveTimer); pendingMutations = [];
+    return api().loadPack(id, opts).then(function (c) { return adoptPack(c); });
+  }
+  function adoptPack(c) {
+    st.c = c; st.result = null; st.cloudAt = null; st.lastApproval = null; st.prep = null; st.leak = null;
+    if (!root) return Promise.resolve(c);
+    renderAll();
+    return prepare().then(function () { return c; });
+  }
+
   /* ---------------- rendering ---------------- */
   function renderAll() {
     if (!root) return;
@@ -359,7 +611,7 @@
       '<section class="card wide case-head-card">' +
         '<div class="card-head"><div class="card-title">' + esc(c.title) + '</div>' +
         '<span class="case-chip" id="caseRevChip"></span></div>' +
-        '<div class="card-sub">Buyer: ' + esc(c.buyer) + ' · Supplier: ' + esc(c.supplier) +
+        '<div class="card-sub">' + esc((c.roles && c.roles.buyer) || "Buyer") + ': ' + esc(c.buyer) + ' · ' + esc((c.roles && c.roles.supplier) || "Supplier") + ': ' + esc(c.supplier) +
         ' · Sample case — every name and number is fictional. Stored only in this browser.</div>' +
         '<div class="case-actions"><button type="button" class="pill hy-btn" id="caseResetBtn">RESET SAMPLE CASE</button></div>' +
       '</section>' +
@@ -375,19 +627,20 @@
         '<div class="case-intake-status" id="caseIntakeStatus"></div>' +
       '</section>' +
       '<section class="card case-card">' +
-        '<div class="card-title">Supplier proposal</div>' +
+        '<div class="card-title">' + esc((c.roles && c.roles.passages) || "Supplier proposal") + '</div>' +
         '<div class="card-sub">Private by default. Tick "share with cloud" only for passages the cloud may read.</div>' +
         paras +
       '</section>' +
       '<section class="card case-card">' +
         '<div class="card-title">Private requirements</div>' +
         '<div class="card-sub">Never sent. There is no field for these in any disclosure; they are for the local review.</div>' +
+        (Array.isArray(c.privateFields) ? packFieldsHtml(c, pc) :
         '<label class="case-field"><span>Maximum budget</span><input type="text" id="caseBudget" value="' + esc(pc.maxBudget) + '"></label>' +
         '<label class="case-field"><span>Must be working by</span><input type="text" id="caseReadyBy" value="' + esc(pc.readyBy) + '"></label>' +
         '<label class="case-field"><span>GST rate for the comparison (%)</span><input type="text" id="caseGst" value="' + esc(pc.gstRate == null ? "18" : pc.gstRate) + '"></label>' +
         '<label class="case-field case-check"><input type="checkbox" id="caseInstall"' + (pc.installationRequired ? " checked" : "") +
           '><span>Installation and setup must be included</span></label>' +
-        '<label class="case-field"><span>Confidential note</span><textarea class="case-ta" rows="3" id="caseNote">' + esc(pc.confidentialNote) + '</textarea></label>' +
+        '<label class="case-field"><span>Confidential note</span><textarea class="case-ta" rows="3" id="caseNote">' + esc(pc.confidentialNote) + '</textarea></label>') +
         '<div class="card-title case-sub-title">Shareable requirements</div>' +
         '<div class="card-sub">One per line. These ARE sent when you approve.</div>' +
         '<textarea class="case-ta" rows="3" id="caseReqs">' + esc((c.shareableRequirements || []).join("\n")) + '</textarea>' +
@@ -418,7 +671,7 @@
         '<button type="button" class="pill hy-btn" id="caseLeakBtn">RUN LEAK TEST</button></div>' +
         '<div class="card-sub">Plants six unique fake secrets (task title, private note, on-screen chat history, an unshared case passage, ' +
         'a reply with a real name restored, a private constraint), runs two chat turns and one case request through the normal paths, ' +
-        'then searches what left. Everything planted is removed afterwards.</div>' +
+        'then searches the Firebase AI request bodies observed during this run. Everything planted is removed afterwards.</div>' +
         '<div id="caseLeakResult"></div>' +
       '</section>' +
       '<section class="card wide case-card" id="caseBorderCard">' +
@@ -445,7 +698,10 @@
    * shown here and never sent. The supplier draft is built WITHOUT private
    * values, and is scanned for them before it is shown. */
   function plainExplanation(r) {
-    var lead = { fits: "This supplier fits your private requirements.", needs_answers: "This supplier might work, but some answers are missing.",
+    var lead = st.c && st.c.caseKind === "scam"
+      ? { fits: "Nothing in these lines looks like a scam.", needs_answers: "Be careful: verify this on a number you already have before you do anything.",
+          not_suitable: "This looks like a scam. Do not send money or share any code. Hang up and call your family on a number you already have." }[r.verdict]
+      : st.c && st.c.labels ? st.c.labels[r.verdict] + "." : { fits: "This supplier fits your private requirements.", needs_answers: "This supplier might work, but some answers are missing.",
       not_suitable: "This supplier does not fit your private requirements." }[r.verdict];
     return lead + " " + r.checks.filter(function (k) { return k.status !== "pass"; }).map(function (k) { return k.label + ": " + k.detail; }).join(" ");
   }
@@ -454,8 +710,10 @@
     r.checks.forEach(function (k) {
       if (k.status === "pass") return;
       if (k.id === "budget") q.push(k.status === "unknown" ? "Please confirm the total price, and whether GST is included." : "Please confirm the final total including GST, and whether there is any room on price.");
-      if (k.id === "deadline") q.push("Can the equipment be delivered and fully set up the day before the event, so it is working before the start?");
+      if (k.id === "deadline") q.push(c && c.deadlineLabel ? "Can the order be delivered a few days earlier than quoted?" : "Can the equipment be delivered and fully set up the day before the event, so it is working before the start?");
       if (k.id === "install") q.push(k.status === "unknown" ? "Is installation and setup by your technicians included?" : "Please quote installation and setup by your own certified technicians.");
+      if (k.id === "advance") q.push(k.status === "unknown" ? "How much must be paid in advance, and when?" : "Could the advance be lower, with the balance on delivery or on credit?");
+      if (k.id === "margin") q.push(k.status === "unknown" ? "Please give the rate per unit for each item, and say whether it includes GST." : "Is there any room on the per-unit rate for this quantity?");
     });
     return q;
   }
@@ -484,8 +742,9 @@
     }
     setOut("caseExplainOut", "…", "Gemini Nano is writing this on your device…");
     var pc = st.c.privateConstraints || {};
-    var prompt = "You help a buyer decide on a supplier. In at most 4 short sentences, in plain English, explain the decision below. " +
-      "Use only these facts; do not add any.\nDECISION: " + VERDICT_TEXT[r.verdict] + "\nCHECKS:\n" +
+    var prompt = (st.c.caseKind === "scam" ? "You help an older person decide whether a call is a scam. In at most 4 short sentences, in plain English, explain the decision below. "
+      : "You help a buyer decide on a supplier. In at most 4 short sentences, in plain English, explain the decision below. ") +
+      "Use only these facts; do not add any.\nDECISION: " + verdictLabel(st.c, r.verdict) + "\nCHECKS:\n" +
       r.checks.map(function (k) { return "- " + k.label + " (" + k.status + "): " + k.detail; }).join("\n") +
       (pc.confidentialNote ? "\nBUYER'S PRIVATE NOTE: " + pc.confidentialNote : "");
     return H.local.text(prompt, { label: "Gemini Nano (explain)" }).then(function (g) {
@@ -568,13 +827,13 @@
     var cmp = compareVerdicts(cv, r.verdict);
     var flipped = cmp.changed;
     chip.className = "case-chip is-" + (r.verdict === "fits" ? "approved" : r.verdict === "not_suitable" ? "stale" : "draft");
-    chip.textContent = VERDICT_TEXT[r.verdict];
+    chip.textContent = verdictLabel(st.c, r.verdict);
     var compare = st.result && st.result.g
       ? '<div class="case-verdict-flip' + (flipped ? " is-flipped" : "") + '">' +
           '<div><span>Cloud, provisional</span><b>' + esc(cv ? CLOUD_TEXT[cv] : "no verdict line in the reply") + '</b><small>saw ' + shared + ' of ' +
             (st.c.paragraphs || []).length + ' passages, none of your private requirements</small></div>' +
           '<div class="case-arrow">\u2192</div>' +
-          '<div><span>Final, with your private requirements</span><b>' + esc(VERDICT_TEXT[r.verdict]) + '</b><small>' +
+          '<div><span>Final, with your private requirements</span><b>' + esc(verdictLabel(st.c, r.verdict)) + '</b><small>' +
             (cmp.direction === "stricter" ? "made stricter by: " + esc(r.checks.filter(function (k) { return k.status !== "pass"; }).map(function (k) { return k.label.toLowerCase(); }).join(", "))
               : cmp.direction === "looser" ? "your private requirements raise no blocker the cloud worried about"
               : cmp.direction === "same" ? "same as the cloud, now checked against your private requirements" : "checked locally") +
@@ -592,7 +851,7 @@
     }
     var actions = '<div class="case-actions">' +
       '<button type="button" class="pill hy-btn" id="caseExplainBtn">EXPLAIN ON THIS DEVICE</button>' +
-      (r.verdict !== "fits" ? '<button type="button" class="pill hy-btn" id="caseDraftBtn">DRAFT QUESTIONS FOR THE SUPPLIER</button>' : '') +
+      (r.verdict !== "fits" && st.c.caseKind !== "scam" ? '<button type="button" class="pill hy-btn" id="caseDraftBtn">DRAFT QUESTIONS FOR THE SUPPLIER</button>' : '') +
       '</div><div id="caseExplainOut" class="case-out"></div><div id="caseDraftOut" class="case-out"></div>';
     box.innerHTML = compare + rows + actions +
       (r.privatePassagesUsed.length ? '<div class="case-kv"><span>Read locally, never sent</span><b>' + esc(r.privatePassagesUsed.join(", ")) + ' and your private requirements</b></div>' : '') +
@@ -721,12 +980,14 @@
         esc(x.found + " of " + r.inspected) + '</td><td class="' + (x.found ? "is-bad" : "is-good") + '">' + (x.found ? "LEAKED" : "not found") + '</td></tr>';
     }).join("");
     box.innerHTML =
-      '<div class="case-leak-summary ' + (r.pass ? "is-good" : "is-bad") + '" id="caseLeakSummary"></div>' +
+      '<div class="case-leak-summary ' + (r.status === "pass" || (!r.status && r.pass) ? "is-good" : "is-bad") + '" id="caseLeakSummary"></div>' +
       '<table class="case-leak-table"><thead><tr><th>Planted in</th><th>Fake secret</th><th>In local data</th><th>Found in outbound</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '<div class="case-hint" id="caseLeakNote"></div>';
-    el("caseLeakSummary").textContent = (r.pass ? "PASS — " : "FAIL — ") + r.leaked + " of 6 fake secrets found in " + r.inspected +
-      (r.mode === "live" ? " real outbound requests (" + r.bytes + " characters, read from what fetch actually sent)."
-        : " prepared request texts (dry run: the cloud was not reachable, so nothing was sent).");
+    el("caseLeakSummary").textContent = ((r.status || (r.pass ? "pass" : "fail")) === "pass" ? "PASS — " : r.status === "inconclusive" ? "INCONCLUSIVE — " : "FAIL — ") +
+      r.leaked + " of 6 fake secrets found in " + r.inspected +
+      (r.mode === "live" ? " Firebase AI request bodies observed during this run (" + r.bytes + " characters, read from fetch calls made by this page's code)."
+        : " prepared request texts (dry run: the cloud was not reachable, so nothing was sent).") +
+      (r.status === "inconclusive" && r.statusReasons && r.statusReasons.length ? " Not a pass: " + r.statusReasons.join("; ") + "." : "");
     el("caseLeakNote").textContent = "Control: " + r.controlPresent + " of 6 fake secrets were present in the local data these requests were built from. " +
       "A finite test: these six secrets did not appear in these inspected requests. It does not prove nothing can ever leak." +
       (r.errors && r.errors.length ? " Cloud replies with errors: " + r.errors.length + " (the request bodies were still inspected)." : "");
@@ -768,6 +1029,13 @@
     bind("caseNote", function (c, v) { c.privateConstraints.confidentialNote = v; });
     bind("caseReqs", function (c, v) { c.shareableRequirements = v.split("\n").map(function (x) { return x.trim(); }).filter(Boolean); });
     bind("caseQuestion", function (c, v) { c.question = v; });
+    root.querySelectorAll("[data-pfield]").forEach(function (n) {
+      var key = n.getAttribute("data-pfield");
+      n.addEventListener(n.type === "checkbox" ? "change" : "input", function () {
+        var v = n.type === "checkbox" ? n.checked : n.value;
+        queueEdit(function (c) { c.privateConstraints[key] = v; });
+      });
+    });
 
     el("caseIntakeTextBtn").addEventListener("click", function () { if (!st.busy) readPasted(); });
     el("caseNanoReviewBtn").addEventListener("click", function () { if (!st.busy) nanoReview(); });
@@ -784,30 +1052,30 @@
       var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (f && !st.busy) readImage(f);
     });
-    el("caseApproveBtn").addEventListener("click", function () {
+    el("caseApproveBtn").addEventListener("click", function (event) {
       if (!st.prep) return;
       st.busy = "approve";
-      eg().approve(st.prep.disclosure, "user_click").then(function (d) {
+      api().approveFromClick(st.prep.disclosure, event).then(function (d) {
         st.lastApproval = { rev: d.inputRevision, digest: d.contentDigest };
       }, function (e) { st.result = { error: String(e && e.message || e) }; })
         .then(function () { st.busy = ""; renderDisclosure(); renderResult(); });
     });
-    el("caseSendBtn").addEventListener("click", function () {
+    el("caseSendBtn").addEventListener("click", function (event) {
       if (!st.prep || st.busy) return;
       st.busy = "send";
       renderDisclosure();
       flushEdits().then(function () {
-        return api().send(st.prep.disclosure);
+        return api().sendFromClick(st.prep.disclosure, event);
       }).then(function (g) { st.result = { g: g }; st.cloudAt = Date.now(); }, function (e) {
         st.result = { error: String(e && e.message || e), kind: e && e.errorKind, kindText: e && e.border && e.border.message };
       }).then(function () { st.busy = ""; renderDisclosure(); renderResult(); renderReview(); renderMeter(); });
     });
     el("caseDrillBtn").addEventListener("click", function () { if (!st.busy) runDrill(); });
-    el("caseLeakBtn").addEventListener("click", function () {
+    el("caseLeakBtn").addEventListener("click", function (event) {
       if (st.busy) return;
       st.busy = "leak";
       renderLeak();
-      api().leakTest().then(function (r) { st.leak = r; }, function (e) { st.leak = { error: String(e && e.message || e) }; })
+      api().runLeakAuditFromClick({}, event).then(function (r) { st.leak = r; }, function (e) { st.leak = { error: String(e && e.message || e) }; })
         .then(function () { st.busy = ""; renderLeak(); return prepare(); });
     });
     el("caseResetBtn").addEventListener("click", function () {
@@ -817,6 +1085,11 @@
       api().reset().then(function (c) { st.c = c; st.result = null; st.cloudAt = null; renderAll(); return prepare(); });
     });
   }
+  /* A pack loaded from another view (or the console) redraws this one. */
+  if (typeof window.addEventListener === "function") window.addEventListener("aion:case-pack", function () {
+    if (!root || !api()) return;
+    api().load().then(function (c) { if (!st.c || c.inputRevision !== st.c.inputRevision || c.pack !== st.c.pack) adoptPack(c); });
+  });
 
   /* ---------------- boot ---------------- */
   function boot() {
@@ -845,6 +1118,8 @@
     readImage: function (f, o) { return readImage(f, o); },
     flush: function () { return flushEdits(); },
     reload: function () { return api().load().then(function (c) { st.c = c; renderAll(); return prepare(); }); },
+    verdictLabel: verdictLabel,      /* (case, verdict) -> the case's own wording */
+    loadPack: function (id, opts) { return loadPackHere(id, opts); },
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();

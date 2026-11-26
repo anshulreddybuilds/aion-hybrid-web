@@ -733,11 +733,11 @@ body[data-live="crossed"]  { --live: var(--signal); }
 .tint::before, .tint::after { content: ""; position: absolute; inset: 0; }
 .tint::before {
   background: linear-gradient(90deg, var(--tint) 0, var(--tint) calc(var(--bxp, 50%) - 6%), transparent calc(var(--bxp, 50%) + 2%));
-  mix-blend-mode: color; opacity: .32;
+  mix-blend-mode: color; opacity: .42;
 }
 .tint::after {
   background: linear-gradient(90deg, transparent calc(var(--bxp, 50%) - 7%), var(--tint) var(--bxp, 50%), transparent calc(var(--bxp, 50%) + 7%));
-  mix-blend-mode: screen; opacity: .13;
+  mix-blend-mode: screen; opacity: .17;
 }
 body[data-cloud="down"] .tint::after { opacity: .05; }
 

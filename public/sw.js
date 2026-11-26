@@ -6,11 +6,11 @@
  * live state must never be served stale - so "offline" means "the shell loads
  * and then shows it cannot reach the server", not "chat works offline".
  *
- * BORDER INSTRUMENT (v10+): "/" is the main page (index.html + border.css,
+ * BORDER INSTRUMENT (v10+): "/" is the main page (index.html + line.css,
  * stage.js); the old dashboard moved to /dashboard. An offline navigation gets
  * its own cached page first, then "/".
- * SEAM DESIGN (v13): border.css is the dark "Seam" design; seam.js draws the
- * ambient light and the moving stepper marker (no app logic).
+ * THE LINE (v14): line.css is the page design; scene.js places the night
+ * picture (line-hero.*) behind the border and draws its light (no app logic).
  *
  * HYBRID BUILD: the shell also caches standalone.js and hybrid.bundle.js
  * (the Firebase AI Logic code, bundled so it needs no CDN) so the page loads
@@ -23,7 +23,7 @@
  * activates), old versions are deleted on activate, and every file served from
  * the cache comes from this one version. Shell files are only ever written to
  * the cache at install time, never at runtime, so a cache cannot mix versions. */
-const VERSION = "v13-2026-11-27-seam-field";
+const VERSION = "v14-2026-11-27-the-line";
 const CACHE = "aion-hybrid-shell-" + VERSION;
 
 /* hybrid-v2 privacy rule: this worker only ever caches the PUBLIC app shell.
@@ -34,7 +34,7 @@ const CACHE = "aion-hybrid-shell-" + VERSION;
  *   - only GET requests whose path matches CACHEABLE below are written to the
  *     cache, and never when the URL has a query string or the response says
  *     no-store / private. Everything else passes straight to the network. */
-const CACHEABLE = [/^\/$/, /^\/index\.html$/, /^\/[a-z.-]+\.(?:css|js|html|webmanifest|jpg)$/, /^\/(?:fonts|icons|vendor)\//];
+const CACHEABLE = [/^\/$/, /^\/index\.html$/, /^\/[a-z.-]+\.(?:css|js|html|webmanifest|jpg|webp)$/, /^\/(?:fonts|icons|vendor)\//];
 function cacheable(url, resp) {
   if (url.search) return false;
   if (!CACHEABLE.some((re) => re.test(url.pathname))) return false;
@@ -45,9 +45,10 @@ function cacheable(url, resp) {
 /* Served paths. "/" is index.html; /dashboard, /mobile, /approve are clean URLs of the .html files. */
 const SHELL = [
   "/",
-  "/border.css",
+  "/line.css",
   "/stage.js",
-  "/seam.js", "/field.js",
+  "/scene.js",
+  "/line-hero.webp", "/line-hero-s.webp", "/line-hero.jpg",
   "/dashboard",
   "/mobile",
   "/approve",

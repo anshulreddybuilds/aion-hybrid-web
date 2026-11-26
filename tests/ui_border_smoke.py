@@ -92,7 +92,7 @@ def settle(pg):
     pg.evaluate("window.AionStage.flush()"); pg.wait_for_function("window.AionStage.state.prep && !window.AionStage.state.busy", timeout=10000); pg.wait_for_timeout(250)
 
 # ---------- static checks ----------
-for f in ("stage.js", "slab.js"):
+for f in ("stage.js", "scene.js"):
     src = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", open(os.path.join(ROOT, f), encoding="utf8").read())
     ok("static: %s never uses innerHTML / insertAdjacentHTML / document.write" % f, not re.search(r"innerHTML|insertAdjacentHTML|document\.write", src))
 idx = open(os.path.join(ROOT, "index.html"), encoding="utf8").read()
@@ -102,7 +102,7 @@ ok("static: footer credits Anshul Reddy, Apache 2.0, repo and classic dashboard"
 dash = open(os.path.join(ROOT, "dashboard.html"), encoding="utf8").read()
 ok("static: dashboard.html loads app.js and links back to /", "/app.js" in dash and 'href="/"' in dash)
 sw = open(os.path.join(ROOT, "sw.js"), encoding="utf8").read()
-ok("static: sw.js caches the new files under a new cache name", all(x in sw for x in ('"/border.css"', '"/stage.js"', '"/slab.js"', '"/dashboard.html"')) and "aion-hybrid-shell-v8" not in sw)
+ok("static: sw.js caches the page files under a new cache name", all(x in sw for x in ('"/line.css"', '"/stage.js"', '"/scene.js"', '"/line-hero.webp"')) and "v13-" not in sw)
 
 with sync_playwright() as p:
     b = p.chromium.launch(channel="chrome", headless=True)

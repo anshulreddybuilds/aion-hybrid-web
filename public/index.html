@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html lang="en"><head>
+<meta charset="utf-8"/>
 <title>AION — the personal AI with a border</title>
-<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
 <meta content="AION reads a supplier quote on your device, lets the cloud see only the passages you approve, and lets plain code on your device make the final call." name="description"/>
-<meta content="#07080A" name="theme-color"/>
+<meta content="#050608" name="theme-color"/>
 <meta content="dark" name="color-scheme"/>
-<link href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2216%22%20fill=%22%2307080A%22/%3E%3Crect%20x=%2212%22%20y=%2212%22%20width=%2220%22%20height=%2240%22%20rx=%226%22%20fill=%22%235BE3A8%22/%3E%3Crect%20x=%2232%22%20y=%2212%22%20width=%2220%22%20height=%2240%22%20rx=%226%22%20fill=%22%23FF7A3D%22/%3E%3Crect%20x=%2230%22%20y=%228%22%20width=%224%22%20height=%2248%22%20rx=%222%22%20fill=%22%23FFFFFF%22/%3E%3C/svg%3E" rel="icon" type="image/svg+xml"/>
+<link href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20fill=%22%23050608%22/%3E%3Crect%20x=%2230%22%20y=%228%22%20width=%224%22%20height=%2248%22%20fill=%22%23ECE6DA%22/%3E%3Crect%20x=%2214%22%20y=%2240%22%20width=%2210%22%20height=%222%22%20fill=%22%239DB4FF%22/%3E%3Crect%20x=%2240%22%20y=%2240%22%20width=%2210%22%20height=%222%22%20fill=%22%23FF6A2B%22/%3E%3C/svg%3E" rel="icon" type="image/svg+xml"/>
 <link href="./manifest.webmanifest" rel="manifest"/>
 <link href="./icons/apple-touch-icon.png" rel="apple-touch-icon"/>
 <script>
@@ -15,60 +16,81 @@
   }
 </script>
 <link href="./fonts.css" rel="stylesheet"/>
-<link href="./border.css" rel="stylesheet"/>
+<link href="./line.css" rel="stylesheet"/>
+<link as="image" href="./line-hero.webp" media="(min-width: 901px)" rel="preload" type="image/webp"/>
+<link as="image" href="./line-hero-s.webp" media="(max-width: 900px)" rel="preload" type="image/webp"/>
 </head>
-<body class="bi" data-motion="full" data-step="quote">
+<body class="ln" data-motion="full" data-step="quote">
 <a class="skip" href="#steps">Skip to the steps</a>
+
+<!-- THE SCENE: one pre-rendered night landscape split by a single wall of
+     light. Cold sky on the left (this device), a warm glow behind the hills on
+     the right (the cloud). scene.js keeps the light lined up with the border
+     in the instrument, so the page's border and the picture's are one line. -->
+<div aria-hidden="true" class="sky" id="sky">
+<picture>
+<source media="(max-width: 900px)" srcset="./line-hero-s.webp" type="image/webp"/>
+<source srcset="./line-hero.webp" type="image/webp"/>
+<img alt="" decoding="async" fetchpriority="high" height="820" id="skyImg" src="./line-hero.jpg" width="1800"/>
+</picture>
+<canvas id="skyFx"></canvas>
+<div class="veil"></div>
+</div>
+
 <header class="bar">
 <p class="mark"><span class="wordmark">AION</span><span class="tagline">the personal AI with a border</span></p>
+<div aria-label="Live status" class="status">
+<span aria-describedby="tipNano" class="st" data-tone="grey" id="stNano" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Nano</span><span class="v" id="stNanoV">checking</span><span class="tip" id="tipNano" role="tooltip">Checking whether Gemini Nano can run in this browser.</span></span>
+<span aria-describedby="tipCloud" class="st" data-tone="idle" id="stCloud" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Cloud</span><span class="v" id="stCloudV">not tried</span><span class="tip" id="tipCloud" role="tooltip">No cloud request yet. It is reachable only after you approve the exact text.</span></span>
+<span aria-describedby="tipRoute" class="st" data-tone="amber" id="stRoute" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Route</span><span class="v" id="stRouteV">—</span><span class="tip" id="tipRoute" role="tooltip">The route rule decides where a request may run.</span></span>
+<button aria-haspopup="dialog" class="btn ghost small" id="workBtn" type="button">Show the work</button>
+</div>
+</header>
+
 <nav aria-label="Steps" class="stepper">
 <ol>
-<li><button aria-current="step" data-done="true" data-go="quote" type="button"><span class="n">01</span><span class="l">Quote</span></button></li>
+<li><button aria-current="step" data-done="false" data-go="quote" type="button"><span class="n">01</span><span class="l">Quote</span></button></li>
 <li><button data-done="false" data-go="share" type="button"><span class="n">02</span><span class="l">Share</span></button></li>
 <li><button data-done="false" data-go="send" type="button"><span class="n">03</span><span class="l">Send</span></button></li>
 <li><button data-done="false" data-go="verdict" type="button"><span class="n">04</span><span class="l">Verdict</span></button></li>
 <li><button data-done="false" data-go="proof" type="button"><span class="n">05</span><span class="l">Proof</span></button></li>
 </ol>
 </nav>
-<div aria-label="Live status" class="status">
-<span aria-describedby="tipNano" class="st" data-tone="grey" id="stNano" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Nano</span><span class="v" id="stNanoV">unavailable</span><span class="tip" id="tipNano" role="tooltip">Gemini Nano is not available here; plain code covers the local steps. This device cannot run Gemini Nano (needs enough storage and a supported computer).</span></span>
-<span aria-describedby="tipCloud" class="st" data-tone="idle" id="stCloud" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Cloud</span><span class="v" id="stCloudV">not tried</span><span class="tip" id="tipCloud" role="tooltip">No cloud request yet. It is reachable only after you approve the exact text.</span></span>
-<span aria-describedby="tipRoute" class="st" data-tone="amber" id="stRoute" tabindex="0"><i aria-hidden="true" class="lamp"></i><span class="k">Route</span><span class="v" id="stRouteV">prefer cloud</span><span class="tip" id="tipRoute" role="tooltip">PREFER_IN_CLOUD. Prefer cloud: a case is sent to the cloud only after you approve its exact text.</span></span>
-<button aria-haspopup="dialog" class="btn ghost small" id="workBtn" type="button">Show the work</button>
-</div>
-</header>
+
 <main class="spread" id="main">
-<!-- THE BORDER: a printed rule between this device and the cloud. Each slip
-       is one real passage of the loaded case (heading + character count). A
-       slip crosses the rule only after a real, approved send (stage.js). -->
+<!-- THE BORDER: what is held on this device on one side of the line, what has
+     crossed to the cloud on the other. Each slip is one real passage of the
+     loaded case (heading + character count). A slip crosses the line only
+     after a real, approved send (stage.js). -->
 <aside aria-labelledby="instTitle" class="border" data-cloud="idle" data-phase="draft" id="instrument">
 <div class="b-head">
 <h2 class="k" id="instTitle">The border</h2>
-<p class="b-case" id="caseTag">LED wall for a partner summit · Brightline Event Systems (fictional)</p>
+<p class="b-case" id="caseTag">Loading the sample case</p>
 <button aria-controls="field" aria-expanded="false" class="btn ghost small" id="fieldToggle" type="button">Show the slips</button>
 </div>
 <div class="b-body" id="bBody">
 <div aria-hidden="true" class="rule"><span class="gatemark"></span></div>
 <div class="b-side device">
-<p class="k"><i aria-hidden="true" class="mk green"></i>Held on device</p>
-<p aria-label="not measured yet" class="num" data-value="1,390" id="heldNum" role="img"></p>
+<p class="k">This device</p>
+<p aria-label="not measured yet" class="num" id="heldNum" role="img">—</p>
 <p class="unit" id="heldUnit">characters held · loaded case</p>
 </div>
 <div class="b-side cloud">
-<p class="k"><i aria-hidden="true" class="mk amber"></i>Approved for cloud</p>
-<p aria-label="not measured yet" class="num" data-value="0" id="crossNum" role="img"></p>
+<p class="k">The cloud</p>
+<p aria-label="not measured yet" class="num" id="crossNum" role="img">—</p>
 <p class="unit" id="crossUnit">characters crossed · nothing sent yet</p>
 </div>
-<ul aria-label="Passages of the loaded case and where each one is" class="field" data-mini="false" id="field" style="height: 424px;"></ul>
+<ul aria-label="Passages of the loaded case and where each one is" class="field" data-mini="false" id="field"></ul>
 <p aria-hidden="true" class="cloudword" id="cloudWord"></p>
 </div>
-<p class="b-foot" id="bFoot">5 ticked to leave · 842 chars waiting · 2 kept here. Numbers on slips are characters.</p>
+<p class="b-foot" id="bFoot"></p>
 </aside>
+
 <div class="steps" id="steps" tabindex="-1">
 <!-- 01 QUOTE -->
 <section aria-labelledby="h-quote" class="step" id="step-quote">
 <header class="step-head">
-<p class="kicker">01 / Quote</p>
+<p class="kicker"><span>01</span>Quote</p>
 <h2 id="h-quote" tabindex="-1">Bring in a supplier quote.</h2>
 <p class="lede" id="quoteLede">It is read and split into passages on this device. Nothing from this Case flow is sent until you approve the exact text.</p>
 </header>
@@ -76,9 +98,11 @@
 <div class="scenarios" id="scenarioBox">
 <p class="k" id="scenarioLabel">Scenario</p>
 <div aria-labelledby="scenarioLabel" class="seg" id="scenarios" role="radiogroup"></div>
-<p class="seg-blurb" id="scenarioBlurb">LED wall for a partner summit. Northwind Events (fictional) checks a fictional AV supplier's quote against a private budget, deadline and installation rule.</p>
+<p class="seg-blurb" id="scenarioBlurb"></p>
 <label class="poison" for="poison"><input id="poison" type="checkbox"/><span>Plant a hidden instruction in this case (to test the injection rule)</span></label>
 </div>
+</div>
+<div class="panel">
 <div aria-live="polite" class="loaded" id="caseNow"></div>
 <details class="own" id="ownQuote">
 <summary>Use your own quote</summary>
@@ -93,10 +117,11 @@
 </div>
 <div class="next"><button class="btn primary" data-go="share" type="button">Next: decide what leaves</button></div>
 </section>
+
 <!-- 02 SHARE -->
 <section aria-labelledby="h-share" class="step" hidden id="step-share">
 <header class="step-head">
-<p class="kicker">02 / Share</p>
+<p class="kicker"><span>02</span>Share</p>
 <h2 id="h-share" tabindex="-1">What stays. What leaves.</h2>
 <p class="lede">Tick a passage to let it cross. The Case disclosure has no field for your private requirements.</p>
 </header>
@@ -112,7 +137,7 @@
 </div>
 <p class="sizeline" id="sizeLine"></p>
 </div>
-<div class="panel cf" id="cfPanel">
+<div class="panel cf" hidden id="cfPanel">
 <p class="k">If you had pasted everything into a cloud chat</p>
 <div class="cf-grid">
 <div class="cf-side naive">
@@ -128,10 +153,11 @@
 </div>
 <div class="next"><button class="btn primary" data-go="send" type="button">Next: approve and send</button></div>
 </section>
+
 <!-- 03 SEND -->
 <section aria-labelledby="h-send" class="step" hidden id="step-send">
 <header class="step-head">
-<p class="kicker">03 / Send</p>
+<p class="kicker"><span>03</span>Send</p>
 <h2 id="h-send" tabindex="-1">Approve the exact text. Then send it.</h2>
 <p class="lede">The approval is bound to a fingerprint of this text and this revision of the case. It works for one send.</p>
 </header>
@@ -174,10 +200,11 @@
 </div>
 <div class="next"><button class="btn primary" data-go="verdict" type="button">Next: the verdict</button></div>
 </section>
+
 <!-- 04 VERDICT -->
 <section aria-labelledby="h-verdict" class="step" hidden id="step-verdict">
 <header class="step-head">
-<p class="kicker">04 / Verdict</p>
+<p class="kicker"><span>04</span>Verdict</p>
 <h2 id="h-verdict" tabindex="-1">The cloud advises. Plain code decides.</h2>
 <p class="lede">The final call is made in this browser, by plain code, on the whole case and your private facts.</p>
 </header>
@@ -215,24 +242,25 @@
 </div>
 <div class="next"><button class="btn primary" data-go="proof" type="button">Next: the proof</button></div>
 </section>
+
 <!-- 05 PROOF -->
 <section aria-labelledby="h-proof" class="step" hidden id="step-proof">
 <header class="step-head">
-<p class="kicker">05 / Proof</p>
+<p class="kicker"><span>05</span>Proof</p>
 <h2 id="h-proof" tabindex="-1">Measured, not promised.</h2>
 <p class="lede">Each figure is counted by code on this page and says what it measured. None of them is a guarantee.</p>
 </header>
 <div class="panel tile leak" id="leakTile">
 <p class="k">Leak audit · seeded secrets</p>
-<p aria-label="not measured yet" class="num" data-value="-" id="leakNum" role="img"></p>
+<p aria-label="not measured yet" class="num" id="leakNum" role="img">—</p>
 <p class="unit" id="leakUnit">seeded secrets found in the Firebase AI request bodies observed during this run. Not run yet.</p>
 <div class="row"><button class="btn" id="leakBtn" type="button">Run the leak audit</button></div>
-<div class="drillrow" id="drillTile">
+</div>
+<div class="panel tile drillrow" id="drillTile">
 <p class="k">Hostile-cloud drill</p>
-<p aria-label="not measured yet" class="num sm" data-value="-" id="drillNum" role="img"></p>
+<p aria-label="not measured yet" class="num sm" id="drillNum" role="img">—</p>
 <p class="unit" id="drillUnit">hostile replies blocked. Not run yet.</p>
 <div class="row"><button class="btn" id="drillBtn" type="button">Run the drill</button></div>
-</div>
 </div>
 <details class="panel more" id="moreEvidence">
 <summary><span>More evidence</span><span class="sumnote" id="moreNote">usefulness · timings · risky three · line by line</span></summary>
@@ -272,10 +300,12 @@
 </section>
 </div>
 </main>
+
 <footer class="foot">
-<p><span class="wordmark small">AION</span> — built by <b>Anshul Reddy</b> for #BuildHybridAI 2026 · Apache 2.0</p>
-<p class="links"><a href="https://github.com/anshulreddybuilds/aion-hybrid-web" rel="noopener">Source on GitHub</a></p>
+<p class="credit"><span class="wordmark small">AION</span> built by <b>Anshul Reddy</b> for #BuildHybridAI 2026</p>
+<p class="links"><span>Apache 2.0</span><a href="https://github.com/anshulreddybuilds/aion-hybrid-web" rel="noopener">Source on GitHub</a></p>
 </footer>
+
 <dialog aria-labelledby="workTitle" class="work" id="work">
 <div class="work-head">
 <h2 id="workTitle">Show the work</h2>
@@ -293,7 +323,6 @@
 <script src="./standalone.js"></script>
 <script src="./case.js"></script>
 <script src="./stage.js"></script>
-<script src="./seam.js"></script>
-<script src="./field.js"></script>
+<script src="./scene.js"></script>
 <script src="./hybrid.bundle.js" type="module"></script>
 </body></html>

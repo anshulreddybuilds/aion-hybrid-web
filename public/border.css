@@ -762,3 +762,9 @@ body[data-motion="static"] .panel, body[data-motion="static"] .bar { -webkit-bac
   #workBtn { margin-left: 0; padding: 0 10px; }
   .step-head h2 { font-size: 36px; }
 }
+@media (max-width: 360px) {
+  .st { padding: 0 2px; gap: 4px; }
+  .st .k { font-size: 11px; letter-spacing: .04em; }
+  #workBtn { padding: 0 8px; font-size: 11px; letter-spacing: .04em; }
+  .stepper button { padding: 0 4px; letter-spacing: .03em; }
+}

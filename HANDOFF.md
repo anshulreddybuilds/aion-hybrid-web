@@ -31,6 +31,12 @@ Tests: `node tests/ghost.test.mjs` **68/68** (this includes scale/restore round 
   - The check uses one limit (3.5%), rounds each gap to 0.1 before comparing, and prints the limit and every gap, so the wording can't contradict the result.
 
   Tests: ghost 90/90, ghost smoke 37/37 (mocked). Known gap: with no income line, the income gap is printed in rupees but labelled "%".
+- **Third real check found a bug: fixed.** Gemini wrote tip figures as bare numbers ("save 551 a month"), which were never divided by k.
+  - Every money figure in tip text is now restored to real rupees with ₹, ignoring percentages, counts like "3 months", and ids.
+  - A figure snaps to a rules figure only when exactly one fits. The payee the tip names is tried first, so two close real figures (a ₹1,180 bill and a ₹1,200 transfer) give "about" rather than the wrong person's amount.
+  - New test: no scaled or bare amount reaches the screen across 30 sessions and 5 writing styles. It fails on the old code.
+
+  Tests: ghost 95/95, ghost smoke 40/40 (mocked).
 - **Automated browsers can't pass App Check** (reCAPTCHA gives them a low score), so the real-cloud check after this fix needs a person to click Send.
 
 ## App Check (the required rule)

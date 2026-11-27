@@ -155,6 +155,23 @@ export function markSent(d, meta) {
   if (log.length > 50) log.shift();
 }
 
+/** A send that FAILED (timeout, offline, App Check, quota, model error) gives
+ * its approval back: the same exact text, still bound to the same fingerprint
+ * and case revision, may be sent again with one more click. An approval is
+ * used up only by a send that got an answer. The send mark stays, so any
+ * request body the failed attempt did put on the wire is still accounted for.
+ * @returns {boolean} true when the approval was kept for a retry */
+export function releaseAfterFailure(d, meta) {
+  if (!d || !d.requestId || !sent.has(d.requestId)) return false;
+  sent.delete(d.requestId);
+  approvals.set(d.requestId, d.contentDigest);
+  d.approvalState = "approved";
+  log.push(Object.assign({ requestId: d.requestId, purpose: d.purpose, digest: d.contentDigest,
+    disclosureRevision: d.disclosureRevision, caseId: d.caseId, at: new Date().toISOString(), failed: true, approvalKept: true }, meta || {}));
+  if (log.length > 50) log.shift();
+  return true;
+}
+
 export function egressLog() { return log.slice(); }
 
 /* ---------- serializer: cloud text from allowlisted fields only ---------- */
@@ -259,7 +276,10 @@ export function outboundSince(ts) { return outbound.filter((o) => o.at >= (ts ||
  * Characters means JavaScript string length, not bytes.
  * @param {string} requestId */
 export function observation(requestId, opts) {
-  const idx = sendMarks.findIndex((m) => m.requestId === requestId);
+  /* The LATEST attempt for this request: after a failed send is retried, the
+   * retry's request body belongs to the retry's mark. */
+  let idx = -1;
+  for (let i = sendMarks.length - 1; i >= 0 && idx < 0; i--) if (sendMarks[i].requestId === requestId) idx = i;
   if (idx < 0) return { attempted: false, bodyObserved: false, observedChars: 0, attemptedChars: 0, bodies: [], state: "not_attempted" };
   const mark = sendMarks[idx];
   const mine = !mark.needle ? [] : outbound.filter((o) => {

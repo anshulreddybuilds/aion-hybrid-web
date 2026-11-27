@@ -824,3 +824,15 @@ body[data-step="quote"] .steps { padding-top: calc(var(--bar) + clamp(34px, 6vh,
   #step-quote .lede { font-size: 15.5px; }
   .ans-v { font-size: clamp(28px, 7.6vw, 40px); }
 }
+
+/* "Get Nano ready" (step 01 and step 03): the on-device model's real state. */
+.nano-ready { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 16px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.nano-ready .nr-line { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; color: var(--bone-2); min-width: 0; }
+.nano-ready .nr-line .k { margin: 0; }
+.nano-ready .nr-state { color: var(--bone); }
+.nano-ready .nr-sub { grid-column: 1 / -1; margin: 0; font-size: 13.5px; }
+.nano-ready[data-nano="ready"] .lamp { background: var(--fit); }
+.nano-ready[data-nano="action"] .lamp { background: var(--caution); }
+.nano-ready[data-nano="busy"] .lamp { background: transparent; box-shadow: inset 0 0 0 1px var(--caution); }
+.nano-ready[data-nano="off"] .lamp { background: rgba(236,230,218,.32); }
+@media (max-width: 520px) { .nano-ready { grid-template-columns: minmax(0, 1fr); } .nano-ready [data-nano-btn] { justify-self: start; } }

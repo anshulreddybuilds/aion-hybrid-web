@@ -61,9 +61,13 @@ const CLOUD_MODELS = ["gemini-3.5-flash-lite", "gemini-4-hydrogen"];
 
 const MODE_KEY = "aion_hybrid_mode";
 const OFFLINE_KEY = "aion_hybrid_offline_demo";
-/* Default route: cloud first, so visitors on ordinary laptops get a fast reply
- * instead of slow local CPU inference. The other two routes stay selectable. */
-const DEFAULT_MODE = "prefer_in_cloud";
+/* Default route: on this device first. Gemini Nano answers when it is ready;
+ * until then PREFER_ON_DEVICE uses the cloud, and a case send still needs an
+ * approved disclosure either way. A route the visitor picks is remembered. */
+const DEFAULT_MODE = "prefer_on_device";
+/* Routes a case send may take. ONLY_ON_DEVICE is not one: on that route the
+ * case is not sent at all (the page offers a provisional verdict instead). */
+const SEND_ROUTES = { prefer_on_device: true, prefer_in_cloud: true, only_in_cloud: true };
 const APPCHECK_TOKEN_KEY = "aion_appcheck_debug_token";
 const MODES = {
   prefer_on_device: InferenceMode.PREFER_ON_DEVICE,
@@ -373,6 +377,11 @@ function refused(code, why) {
   return err;
 }
 
+/* A failed send does not use up its approval (see egress.releaseAfterFailure). */
+function keepApproval(disclosure, reason) {
+  return disclosure ? egress.releaseAfterFailure(disclosure, { reason: String(reason || "error") }) : false;
+}
+
 async function generate(prompt, onChunk, opts) {
   const modeKey = opts && MODES[opts.mode] ? opts.mode : state.mode;
   let disclosure = null;
@@ -443,6 +452,7 @@ async function generate(prompt, onChunk, opts) {
         const err = new Error(attempts.join("\n"));
         err.code = "timeout";
         err.sendEvidence = evidence();
+        err.approvalKept = keepApproval(disclosure, "timeout");
         throw err;
       }
       const msg = describeError(e);
@@ -455,6 +465,7 @@ async function generate(prompt, onChunk, opts) {
         const err = new Error(attempts.join("\n"));
         err.code = e && e.code;
         err.sendEvidence = evidence();
+        err.approvalKept = keepApproval(disclosure, (e && e.code) || "error");
         throw err;
       }
     }
@@ -909,9 +920,17 @@ function boot() {
     /* User-facing Case UI actions require a real click on the matching button. */
     approveFromClick: (d, event) => trustedBorderAction(event, ["approveBtn", "caseApproveBtn", "leakBtn", "caseLeakBtn"])
       ? egress.approve(d, "user_click") : Promise.reject(Object.assign(new Error("Approval needs a direct click on the approval button."), { code: "user_gesture_required" })),
-    sendFromClick: (d, event, opts) => trustedBorderAction(event, ["sendBtn", "caseSendBtn", "leakBtn", "caseLeakBtn"])
-      ? generate(null, null, Object.assign({}, opts || {}, { mode: "only_in_cloud", disclosure: d }))
-      : Promise.reject(Object.assign(new Error("Sending needs a direct click on the send button."), { code: "user_gesture_required" })),
+    /* A send follows the route the user picked (opts.mode, e.g. the leak test's
+     * ONLY_IN_CLOUD, wins when given). PREFER_ON_DEVICE with Nano ready answers
+     * on this device; the outbound monitor then sees no request body. */
+    sendFromClick: (d, event, opts) => {
+      if (!trustedBorderAction(event, ["sendBtn", "caseSendBtn", "leakBtn", "caseLeakBtn"])) {
+        return Promise.reject(Object.assign(new Error("Sending needs a direct click on the send button."), { code: "user_gesture_required" }));
+      }
+      const route = opts && SEND_ROUTES[opts.mode] ? opts.mode : state.mode;
+      if (!SEND_ROUTES[route]) return Promise.reject(refused("route_on_device", "the route is ONLY_ON_DEVICE, so the case is not sent."));
+      return generate(null, null, Object.assign({}, opts || {}, { mode: route, disclosure: d }));
+    },
     contracts: { PURPOSES: contracts.PURPOSES, validatePayload: contracts.validatePayload,
       validateCase: contracts.validateCase, PROPOSAL_OPERATIONS: contracts.PROPOSAL_OPERATIONS,
       validatePlan: contracts.validatePlan, DISCLOSURE_TIERS: contracts.DISCLOSURE_TIERS,

@@ -106,6 +106,11 @@
 <label class="btn file" id="imageLabel" title="Needs Gemini Nano in this browser. Paste the text instead.">Read a photo of it<input accept="image/png,image/jpeg" autocomplete="off" id="imageInput" type="file"/></label>
 </div>
 <p class="msg" data-tone="" id="quoteMsg" role="status"></p>
+<div class="nano-ready" data-nano="checking" data-nano-ready="">
+<p class="nr-line"><i aria-hidden="true" class="lamp"></i><span class="k">On-device AI</span> <span class="nr-state" data-nano-state="">Gemini Nano: checking</span></p>
+<button class="btn small" data-nano-btn="" disabled type="button">Get Nano ready</button>
+<p class="sub nr-sub" data-nano-sub=""></p>
+</div>
 </div>
 <div aria-labelledby="ansK" class="panel answer" data-verdict="" id="answerPanel" role="region">
 <p class="ask-k" id="ansK"><b aria-hidden="true">2</b>Your answer appears here</p>
@@ -202,6 +207,11 @@
 <label><input name="route" type="radio" value="only_on_device"/><span>Only device</span></label>
 <label><input name="route" type="radio" value="prefer_in_cloud"/><span>Prefer cloud</span></label>
 </fieldset>
+<div class="nano-ready" data-nano="checking" data-nano-ready="">
+<p class="nr-line"><i aria-hidden="true" class="lamp"></i><span class="k">On-device AI</span> <span class="nr-state" data-nano-state="">Gemini Nano: checking</span></p>
+<button class="btn small" data-nano-btn="" disabled type="button">Get Nano ready</button>
+<p class="sub nr-sub" data-nano-sub=""></p>
+</div>
 <label class="switch" for="plug">
 <input id="plug" role="switch" type="checkbox"/>
 <span aria-hidden="true" class="track"><span class="knob"></span></span>

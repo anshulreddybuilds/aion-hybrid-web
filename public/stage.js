@@ -46,6 +46,18 @@
     unavailable: "Gemini Nano is not available here; plain code covers the local steps.",
     unsupported: "This browser has no built-in Gemini Nano; plain code covers the local steps.",
   };
+  /* A failed send, in plain words. The raw SDK error goes to the console only. */
+  var SEND_FAIL = {
+    offline: "Could not reach the cloud. Check the connection.",
+    app_check: "The cloud did not accept this browser (App Check).",
+    timeout: "The cloud took too long to answer.",
+    quota: "The free cloud quota is used up for now.",
+    blocked: "Not sent: the approval does not match this text any more.",
+    unknown: "The send did not go through.",
+  };
+  function failText(r) { return SEND_FAIL[r && r.kind] || SEND_FAIL.unknown; }
+  /* Can Gemini Nano answer a send right now (route prefers the device and Nano is ready)? */
+  function sendRunsHere() { return routeMode() === "prefer_on_device" && HS().nano === "ready"; }
   /* The private fields of the built-in sample; a scenario pack can bring its own. */
   var DEFAULT_FIELDS = [
     { key: "maxBudget", label: "Maximum budget", type: "text" },
@@ -142,7 +154,7 @@
     var st = HS();
     if (st.offlineDemo) return "The plug is pulled (Offline Demo Mode), so nothing can be sent.";
     if (routeMode() === "only_on_device") return "The route is ONLY_ON_DEVICE, so this page does not send the case.";
-    if (navigator.onLine === false) return "This browser is offline.";
+    if (navigator.onLine === false && !sendRunsHere()) return "This browser is offline.";
     if (!st.ready) return "The Firebase AI module is not initialised in this browser.";
     return "";
   }
@@ -330,16 +342,17 @@
       /* The only place a slip is moved to the cloud side: after a real, successful send. */
       var ob = observedOf(g);
       S.sent = { ids: ids, chars: ob && ob.observed === false ? 0 : ob && ob.chars != null ? ob.chars : g.disclosure && typeof g.disclosure.bytes === "number" ? g.disclosure.bytes : chars, rev: rev, latencyMs: g.latencyMs, unobserved: !!(ob && ob.observed === false) };
-      say("The cloud answered. Plain code now checks its verdict.");
+      say((g.actual_source === "on_device" ? "Gemini Nano answered on this device." : "The cloud answered.") + " Plain code now checks its verdict.");
       /* On a narrow screen the border sits above the step: bring it into view to see the slips cross. */
       setFieldOpen(true);
       var inst = $("instrument"), r = inst.getBoundingClientRect();
       if (window.innerWidth <= 900 && r.bottom < 60) setTimeout(function () { inst.scrollIntoView({ block: "start", behavior: motion() === "full" ? "smooth" : "auto" }); }, 60);
     }, function (e) {
       var kind = (e && e.errorKind) || "unknown";
-      S.result = { error: String((e && e.message) || e), kind: kind, kindText: e && e.border && e.border.message, rev: rev };
+      S.result = { error: String((e && e.message) || e), kind: kind, kindText: e && e.border && e.border.message, rev: rev, approvalKept: !!(e && e.approvalKept) };
       S.lastSend = { ok: false, kind: kind };
-      say("The send failed: " + ((e && e.border && e.border.message) || "error") + ".");
+      try { console.warn("[AION] send failed (" + kind + "):", e); } catch (x) { /* no console */ }
+      say(failText(S.result) + (S.result.approvalKept ? " Your approval is kept: press Send to try again." : ""));
     }).then(function () { S.busy = ""; renderAll(); });
   }
   function provisional() {
@@ -457,8 +470,52 @@
     if ($("work").open) renderWork();
   }
 
+  /* "Get Nano ready": one button, shown on step 01 and step 03. It downloads
+   * Gemini Nano when Chrome offers it, then loads it into memory so the first
+   * on-device answer is quick. It always shows the real state. */
+  function nanoView() {
+    var st = HS(), n = st.nano || "checking";
+    if (n === "downloadable") return { tone: "action", state: "Gemini Nano: not downloaded yet", btn: "Get Nano ready", on: true,
+      sub: "Chrome downloads it once (a few GB). After that it answers on this device, with nothing sent." };
+    if (n === "downloading") return { tone: "busy", state: "Gemini Nano: downloading" + (st.nanoDetail && /%/.test(st.nanoDetail) ? " " + st.nanoDetail : ""),
+      btn: "Downloading" + (st.nanoDetail && /%/.test(st.nanoDetail) ? " " + st.nanoDetail : "…"), on: false,
+      sub: "You can carry on. Plain code covers the local steps until it finishes." };
+    if (n === "ready" && st.nanoWarming) return { tone: "busy", state: "Gemini Nano: loading", btn: "Loading Nano…", on: false,
+      sub: "The first load can take about 20 seconds." };
+    if (n === "ready" && st.nanoWarm) return { tone: "ready", state: "Gemini Nano: ready on this device", btn: "Nano is ready", on: false,
+      sub: typeof st.nanoWarmMs === "number" ? "Loaded in " + ms(st.nanoWarmMs) + "." : "" };
+    if (n === "ready") return { tone: "action", state: "Gemini Nano: downloaded", btn: "Get Nano ready", on: true,
+      sub: "Loads it into memory now, so the first answer is quick." };
+    if (n === "checking") return { tone: "busy", state: "Gemini Nano: checking", btn: "Checking…", on: false, sub: "" };
+    return { tone: "off", state: "Gemini Nano: " + (NANO_TEXT[n] || n), btn: "Not available here", on: false,
+      sub: (st.nanoDetail || NANO_WHY[n] || "") + " Send then uses the cloud, after you approve the text." };
+  }
+  function renderNano() {
+    var v = nanoView();
+    document.querySelectorAll("[data-nano-ready]").forEach(function (box) {
+      box.setAttribute("data-nano", v.tone);
+      var s = box.querySelector("[data-nano-state]"), b = box.querySelector("[data-nano-btn]"), sub = box.querySelector("[data-nano-sub]");
+      if (s && s.textContent !== v.state) s.textContent = v.state;
+      if (b) { if (b.textContent !== v.btn) b.textContent = v.btn; b.disabled = !v.on || !H(); }
+      if (sub && sub.textContent !== v.sub) sub.textContent = v.sub;
+    });
+  }
+  function getNanoReady() {
+    var hy = H(), st = HS();
+    if (!hy) return;
+    if (st.nano === "downloadable" && typeof hy.downloadNano === "function") {
+      /* Called straight from the click: Chrome needs that user gesture to start the download. */
+      Promise.resolve(hy.downloadNano()).then(renderAll, renderAll);
+      say("Downloading Gemini Nano.");
+    } else if (st.nano === "ready" && !st.nanoWarm && hy.local && typeof hy.local.warm === "function") {
+      Promise.resolve(hy.local.warm()).then(function () { say(HS().nanoWarm ? "Gemini Nano is ready on this device." : "Gemini Nano did not load."); renderAll(); }, renderAll);
+    }
+    setTimeout(renderAll, 0);
+  }
+
   function renderStatus() {
     var st = HS();
+    renderNano();
     var nano = $("stNano");
     nano.setAttribute("data-tone", st.nano === "ready" ? "green" : st.nano === "checking" || !st.nano ? "idle" : "grey");
     setText("stNanoV", (NANO_TEXT[st.nano] || "—") + (st.nano === "downloading" && st.nanoDetail ? " " + st.nanoDetail : ""));
@@ -848,7 +905,10 @@
     $("modeBanner").setAttribute("data-policy", m === "only_on_device" ? "local" : "cloud");
     setText("modeSub", m === "only_on_device"
       ? (st.offlineDemo ? "Forced by the pulled plug. " : "") + "The case is not sent. Step 04 can still give a provisional verdict made on this device."
-      : "A case send always runs ONLY_IN_CLOUD with the approved text, so it never silently falls back to the device.");
+      : m === "prefer_on_device"
+        ? (st.nano === "ready" ? "Gemini Nano is ready, so Send answers the approved text on this device. Nothing goes to the cloud."
+          : "Gemini Nano is not ready yet, so Send takes the approved text to the cloud. Get Nano ready to keep it on this device.")
+        : "Send takes the approved text to the cloud. If the cloud cannot be reached, Gemini Nano answers when it is ready, and the receipt says which ran.");
     document.querySelectorAll('#routeSet input[name="route"]').forEach(function (r) { r.checked = r.value === m; r.disabled = !!st.offlineDemo; });
     $("plug").checked = !!st.offlineDemo;
     setText("plugSub", st.offlineDemo ? "On: fetch() calls made by this page's code are blocked. Not a firewall; use airplane mode to test the network." : "Off. Turn on to block fetch() calls made by this page's code. Not a firewall.");
@@ -866,17 +926,19 @@
     $("approveBtn").disabled = !p || !!S.busy || a.key === "approved" || a.key === "sent" || hits.length > 0;
     $("approveBtn").textContent = a.key === "approved" ? "Approved" : "Approve this exact text";
     $("sendBtn").disabled = a.key !== "approved" || !!why || !!S.busy;
-    $("sendBtn").textContent = S.busy === "send" ? "Sending…" : "Send to the cloud";
+    $("sendBtn").textContent = S.busy === "send" ? (sendRunsHere() ? "Asking Gemini Nano…" : "Sending…")
+      : (S.result && S.result.error && a.key === "approved" ? "Try again" : sendRunsHere() ? "Ask Gemini Nano on this device" : "Send to the cloud");
     $("prepBtn").hidden = a.key !== "sent";
     $("approveBtn").hidden = a.key === "sent";
     $("sendBtn").hidden = a.key === "sent";
     setText("gateWhy", hits.length ? "The private-value scan found registered private values in this text, so it cannot be approved." :
       why ? why + (a.key === "approved" ? " The approval stays valid for when you plug back in." : "") :
+      S.result && S.result.error && a.key === "approved" ? "The send failed, so your approval was not used. It still covers this exact text." :
       a.key === "draft" ? "Send stays off until this exact text is approved." :
       a.key === "stale" ? "The case changed after you approved. Read the new text and approve again." : "");
     var line = $("engineLine"), r = S.result;
     line.removeAttribute("data-tone");
-    if (S.busy === "send") line.textContent = "Sending the approved disclosure…";
+    if (S.busy === "send") line.textContent = sendRunsHere() ? "Gemini Nano is answering on this device…" : "Sending the approved disclosure…";
     else if (r && r.g) {
       var g = r.g;
       line.replaceChildren(h("span", { class: "badge", text: ms(g.latencyMs) }),
@@ -890,7 +952,7 @@
         })() : ""));
     } else if (r && r.error) {
       line.setAttribute("data-tone", "red");
-      line.textContent = (r.kindText ? r.kindText + " (" + r.kind + ") " : "") + String(r.error).split("\n")[0].slice(0, 300);
+      line.textContent = failText(r) + (a.key === "approved" ? " Nothing was used up: press Try again." : a.key === "stale" ? " The case changed: approve the new text." : "");
     } else line.textContent = "Nothing sent yet.";
   }
 
@@ -927,7 +989,7 @@
       $("replyDetails").hidden = false;
       setText("replyText", r.g.text);
     } else if (r && r.error) {
-      cl.textContent = "The cloud request failed: " + (r.kindText || "error") + " (" + r.kind + "). A provisional verdict on this device is still available.";
+      cl.textContent = failText(r) + " A provisional verdict on this device is still available below.";
       $("replyDetails").hidden = true;
     } else {
       cl.textContent = "No cloud reply yet. Send in step 03, or ask this device.";
@@ -1140,6 +1202,7 @@
     document.querySelectorAll('#routeSet input[name="route"]').forEach(function (r) {
       r.addEventListener("change", function () { if (r.checked) { H().setMode(r.value); renderAll(); } });
     });
+    document.querySelectorAll("[data-nano-btn]").forEach(function (b) { b.addEventListener("click", getNanoReady); });
     $("provBtn").addEventListener("click", provisional);
     $("leakBtn").addEventListener("click", leak);
     $("drillBtn").addEventListener("click", drill);
@@ -1155,7 +1218,7 @@
     window.addEventListener("online", renderAll);
     window.addEventListener("offline", renderAll);
     /* Nano readiness and App Check change on their own: refresh the status line. */
-    setInterval(function () { if (S.c) { renderStatus(); renderBorder(); } }, 1500);
+    setInterval(function () { renderNano(); if (S.c) { renderStatus(); renderBorder(); if (S.step === "send") renderSend(); } }, 1500);
   }
 
   function ready() {

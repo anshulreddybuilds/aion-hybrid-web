@@ -8,7 +8,7 @@ import sys, json, time, threading, http.server, socketserver, os, functools
 from playwright.sync_api import sync_playwright
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public")
-PORT = 8099
+PORT = int(os.environ.get("AION_SMOKE_PORT", "8099"))
 class Q(http.server.SimpleHTTPRequestHandler):
     def log_message(self,*a): pass
 Handler = functools.partial(Q, directory=ROOT)
@@ -46,7 +46,7 @@ with sync_playwright() as p:
     ok("nano pill ready", "ready" in page.inner_text("#nanoLabel").lower(), page.inner_text("#nanoLabel"))
     ok("backend pill standalone", "standalone" in page.inner_text("#backendLabel").lower(), page.inner_text("#backendLabel"))
     ok("app check pill", "app check" in page.inner_text("#appCheckLabel").lower(), page.inner_text("#appCheckLabel"))
-    ok("default route is Prefer Cloud", page.input_value("#inferenceMode")=="prefer_in_cloud", page.input_value("#inferenceMode"))
+    ok("default route is Prefer On-Device", page.input_value("#inferenceMode")=="prefer_on_device", page.input_value("#inferenceMode"))
     page.select_option("#inferenceMode","prefer_on_device")
     ok("mode options", page.eval_on_selector_all("#inferenceMode option","o=>o.map(x=>x.value)")==["prefer_on_device","only_on_device","prefer_in_cloud"])
     # panels
@@ -223,8 +223,9 @@ with sync_playwright() as p:
     chat3("Anything else for today?", 4)
     b4 = bodies[-1] if bodies else ""
     ok("v2: local-only turn never enters cloud history", "knee" not in b4.lower() and "long runs" not in b4.lower(), b4[-300:])
-    refused = pg3.evaluate("window.AionHybrid.generate('raw', null, {mode:'prefer_in_cloud', sealed:false}).then(()=> 'SENT').catch(e=> String(e.message))")
-    ok("v2: unsealed prompt refused on cloud route", str(refused).startswith("Refused"), refused)
+    hidden_raw = pg3.evaluate("typeof AionHybrid.generate === 'undefined' && typeof AionHybrid.egress.approve === 'undefined' && typeof AionHybrid.router.dispatchChat === 'undefined' && typeof AionStandalone.caseApi.send === 'undefined'")
+    refused = pg3.evaluate("AionHybrid.sendFromClick({}, {isTrusted:false,type:'click',target:{id:'sendBtn'}}).then(()=> 'SENT', e=>e.code)")
+    ok("v2: raw generate/approve/send helpers are hidden and fake click cannot send", hidden_raw and refused == "user_gesture_required", (hidden_raw, refused))
     # ---- 15 s cloud timeout (a model that never answers) ----
     def hang(route):
         if route.request.method=="OPTIONS": return route.fulfill(status=204, headers=CORS)
@@ -303,24 +304,15 @@ with sync_playwright() as p:
     pg4.focus('[data-ptext="P1"]'); pg4.keyboard.press("End"); pg4.keyboard.type("!"); pg4.wait_for_timeout(1300)
     chip = pg4.inner_text("#caseApprovalChip")
     ok("p2: 1-character edit makes the approval stale", "stale" in chip.lower() and pg4.is_disabled("#caseSendBtn"), chip)
-    stale = pg4.evaluate("""(async () => { const A = window.AionStandalone.caseApi, E = window.AionHybrid.egress;
-        const prep = await A.prepareDisclosure(null); await E.approve(prep.disclosure, 'test');
-        await A.update(c => { c.privateConstraints.confidentialNote += '.'; });
-        return A.send(prep.disclosure).then(() => 'SENT', e => e.code + '|' + e.message); })()""")
-    ok("p2: approved disclosure refused after any case edit (stale revision)", str(stale).startswith("disclosure_stale|Refused"), stale)
+    stale = pg4.evaluate("AionStandalone.caseApi.sendFromClick({}, {isTrusted:false,type:'click',target:{id:'caseSendBtn'}}).then(()=> 'SENT', e=>e.code)")
+    ok("p2: direct page call cannot send even a stale disclosure", stale == "user_gesture_required", stale)
     unk = pg4.evaluate("""window.AionHybrid.egress.createDisclosure({purpose:'case_research', payload:{instructions:'x', question:'y', budget:'Rs 4,00,000'}})
         .then(() => 'CREATED', e => e.code + '|' + e.message)""")
     ok("p2: unknown disclosure field rejected", str(unk).startswith("disclosure_invalid") and 'unknown field "budget"' in str(unk), unk)
-    fake = pg4.evaluate("""(async () => { const E = window.AionHybrid.egress;
-        const d = await E.createDisclosure({purpose:'chat', payload:{instructions:'x', message:'hello'}});
-        d.approvalState = 'approved'; d.approvedBy = 'user_click';
-        return window.AionHybrid.generate(null, null, {mode:'prefer_in_cloud', disclosure:d}).then(() => 'SENT', e => e.code + '|' + e.message); })()""")
-    ok("p2: self-declared approval refused", str(fake).startswith("disclosure_unapproved"), fake)
-    gate = pg4.evaluate("""(async () => { const E = window.AionHybrid.egress; await window.AionStandalone.caseApi.syncPrivateRegistry();
-        const d = await E.createDisclosure({purpose:'chat', payload:{instructions:'x', message:'Note: Leadership will not accept another self-install.'}});
-        await E.approve(d, 'test');
-        return window.AionHybrid.generate(null, null, {mode:'prefer_in_cloud', disclosure:d}).then(() => 'SENT', e => e.code + '|' + e.message); })()""")
-    ok("p2: private value in an approved disclosure is blocked by the last-line scan", str(gate).startswith("private_value_blocked"), gate)
+    hidden = pg4.evaluate("typeof AionHybrid.generate === 'undefined' && typeof AionHybrid.egress.approve === 'undefined' && typeof AionHybrid.router.dispatchChat === 'undefined' && typeof AionStandalone.caseApi.send === 'undefined'")
+    ok("p2: raw generate/approve/send helpers are not on the page API", hidden, hidden)
+    scan = pg4.evaluate("(async () => { await AionStandalone.caseApi.syncPrivateRegistry(); const E=AionHybrid.egress; const d=await E.createDisclosure({purpose:'chat',payload:{instructions:'x',message:'Note: Leadership will not accept another self-install.'}}); return E.scanPrivate(E.serialize(d)).length > 0; })()")
+    ok("p2: registered private value scanner flags a matching disclosure", scan, scan)
     n0 = len(b4)
     pg4.evaluate("window.AionCase.reload()"); pg4.wait_for_timeout(800)
     pg4.click("#caseApproveBtn"); pg4.wait_for_timeout(300); pg4.click("#caseSendBtn")
@@ -329,8 +321,8 @@ with sync_playwright() as p:
     ok("p2: approved send reaches cloud (only_in_cloud) and shows reply", pg4.is_visible("#caseReplyText") and "in the cloud" in pg4.inner_text("#caseReplyMeta"), pg4.inner_text("#caseResult")[:160])
     ok("p2: sent body has shared passages only", "[P1]" in sent_body and all(x not in sent_body for x in PRIVATE), [x for x in PRIVATE if x in sent_body])
     ok("p2: approval is one-shot (used up after send)", "used up" in pg4.inner_text("#caseApprovalChip") and pg4.is_disabled("#caseSendBtn"))
-    resend = pg4.evaluate("window.AionStandalone.caseApi.send(window.AionCase.state.prep.disclosure).then(() => 'SENT', e => e.code)")
-    ok("p2: same disclosure cannot be sent twice", resend=="disclosure_used", resend)
+    resend = pg4.evaluate("window.AionStandalone.caseApi.sendFromClick(window.AionCase.state.prep.disclosure, {isTrusted:false,type:'click',target:{id:'caseSendBtn'}}).then(() => 'SENT', e => e.code)")
+    ok("p2: direct page call cannot reuse a disclosure", resend=="user_gesture_required", resend)
     # ---- private review / verdict flip ----
     pg4.wait_for_function("document.getElementById('caseVerdictChip') && document.getElementById('caseVerdictChip').textContent.length > 5", timeout=5000)
     rv = pg4.inner_text("#caseReview")
@@ -387,6 +379,8 @@ with sync_playwright() as p:
     pg4.click("#caseLeakBtn"); pg4.wait_for_selector("#caseLeakSummary, #caseLeakError", timeout=60000)
     leak = pg4.evaluate("window.AionCase.state.leak")
     ok("p2: leak test PASS, live, >=3 requests inspected", leak.get("pass") and leak.get("mode")=="live" and leak.get("inspected",0)>=3, {k:leak.get(k) for k in ("pass","mode","inspected","leaked")})
+    ok("p2: leak status is 'pass' with all 3 expected bodies observed and matched to this run's own sends",
+       leak.get("status")=="pass" and leak.get("sendsWithBodyObserved")==3 and leak.get("expectedBodies")==3 and leak.get("errors")==[], {k:leak.get(k) for k in ("status","statusReasons","sendsWithBodyObserved","otherBodiesNotCounted")})
     ok("p2: leak test positive control 6/6 present locally", leak.get("controlPresent")==6, leak.get("controlPresent"))
     canaries=[r["canary"] for r in leak.get("results",[])]
     pw_bodies=b4[n1:]
@@ -397,6 +391,21 @@ with sync_playwright() as p:
         tx.objectStore('memories').getAll().onsuccess = e => e.target.result.forEach(m => { if (String(m.id).startsWith('leaktest')) out.push(m.id); });
         tx.oncomplete = () => r(out); }; q.onerror = () => r(['open-failed']); }))""")
     ok("p2: leak test removed everything it planted", left==[], left)
+    # ---- fail closed: failing cloud requests -> inconclusive, never PASS; a send of its own is not counted ----
+    pg4.unroute("**/firebasevertexai.googleapis.com/**"); pg4.route("**/firebasevertexai.googleapis.com/**", lambda r: r.fulfill(status=204, headers=CORS) if r.request.method=="OPTIONS" else r.fulfill(status=500, headers=CORS, body="{}"))
+    pg4.click("#caseLeakBtn"); pg4.wait_for_function("document.getElementById('caseLeakSummary') && /INCONCLUSIVE/.test(document.getElementById('caseLeakSummary').textContent)", timeout=45000)
+    leak2 = pg4.inner_text("#caseLeakSummary")
+    leak2_note = pg4.inner_text("#caseLeakNote")
+    ok("p2: leak test with failing cloud requests is INCONCLUSIVE, not PASS", leak2.startswith("INCONCLUSIVE") and "not a pass" in leak2.lower() and "error" in leak2_note.lower(), (leak2, leak2_note))
+    ok("p2: failed run reports its finite observed-body result without calling it a pass", "of 6 fake secrets found" in leak2 and "requests" in leak2, leak2)
+    pg4.unroute("**/firebasevertexai.googleapis.com/**"); pg4.route("**/firebasevertexai.googleapis.com/**", vertex4)
+    sendres = pg4.evaluate("""(async () => { const A = window.AionStandalone.caseApi; await A.reset();
+        document.getElementById('caseApproveBtn').click(); const prep = await A.prepareDisclosure();
+        const m = window.AionHybrid.border.meter.snapshot(); return { helpers: [typeof A.send, typeof A.approveFromClick], prepared: prep.bytes, meter: m.charsSent }; })()""")
+    ok("send evidence: raw send is absent and the prepared disclosure has a measured character count",
+       sendres["helpers"][0] == "undefined" and sendres["helpers"][1] == "function" and sendres["prepared"] > 0 and sendres["meter"] >= 0, sendres)
+    pcc = pg4.evaluate("(async () => { const A = window.AionStandalone.caseApi; const c = await A.load(); const n = A.privateCharCount(c); const m = A.privateCharCount({ privateConstraints: { maxBudget: 'Rs 1', gstRate: '18', installationRequired: true } }); return [n > 0, m]; })()")
+    ok("item5: privateCharCount counts the GST rate and ignores yes/no rules", pcc[0] and pcc[1]==6, pcc)
     ok("p2: Focus wording no longer cites private AION docs", "docs/" not in pg4.inner_text('section[data-view="focus"] .view-head'))
     ok("p2: hidden Create tab still hidden", not pg4.is_visible('a[data-view="create"]'))
     pg4.evaluate("window.AionStandalone.caseApi.update(c => { c.question = 'edited before reset'; })"); pg4.wait_for_timeout(300)
@@ -437,7 +446,7 @@ with sync_playwright() as p:
     pg5.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionHybrid.router && window.AionHybrid.planner", timeout=15000)
     pg5.wait_for_timeout(1500)
     H = "window.AionHybrid"
-    ok("p3: router, planner, telemetry exposed", pg5.evaluate("!!(%s.router.decide && %s.planner.plan && %s.telemetry.getReceipts)" % (H,H,H)))
+    ok("p3: public router exposes decision helpers but hides raw dispatch", pg5.evaluate("!!AionHybrid.router.decide && typeof AionHybrid.router.dispatchChat === 'undefined' && typeof AionHybrid.dispatchChatFromClick === 'function' && !!AionHybrid.planner.plan && !!AionHybrid.telemetry.getReceipts"))
     d1 = pg5.evaluate("%s.router.decide({mode:'prefer_in_cloud', message:'hello there', offlineDemo:false, online:true})" % H)
     ok("p3: router keeps requested mode for a plain message", d1["effectiveMode"]=="prefer_in_cloud" and not d1["overridden"], d1)
     d2 = pg5.evaluate("%s.router.decide({mode:'prefer_in_cloud', message:'my password is hunter2 and card 4111 1111 1111 1111', offlineDemo:false, online:true})" % H)
@@ -445,37 +454,20 @@ with sync_playwright() as p:
     d3 = pg5.evaluate("%s.router.decide({mode:'prefer_in_cloud', message:'hi', offlineDemo:true, online:true})" % H)
     ok("p3: offline demo forces on-device", d3["effectiveMode"]=="only_on_device", d3)
     ok("p3: error classifier", pg5.evaluate("[%s.router.classifyError({code:'timeout'}), %s.router.classifyError({message:'403 App Check token invalid'}), %s.router.classifyError({message:'quota exceeded 429'})]" % (H,H,H))==["timeout","app_check","quota"], "")
-    # receipt via a real cloud chat through the disclosure boundary
-    n_before = pg5.evaluate("%s.telemetry.getReceipts().length" % H)
-    r1 = pg5.evaluate("""%s.router.dispatchChat({mode:'only_in_cloud', requestedMode:'prefer_in_cloud', decision:{effectiveMode:'only_in_cloud'}, payload:{instructions:'Be brief.', message:'Say hi', notes:[], tasks:[], history:[]}, prompt:null, approvedBy:'send_click'}).then(r => ({text:r.text, receipt:r.receipt}), e => ({err:e.code||e.message}))""" % H)
-    rc = r1.get("receipt") or {}
-    ok("p3: cloud chat returns text and a receipt", r1.get("text")=="Cloud reply." and rc.get("route")=="cloud-sealed-chat" and rc.get("status")=="completed", r1)
-    ok("p3: receipt latency is a measured number, hardware unavailable", isinstance(rc.get("latencyMs"),(int,float)) and rc.get("latencyMs")>=0 and rc.get("hardware")=="unavailable", rc.get("latencyMs"))
-    ok("p3: receipt egress audit has digest and bytes", len(rc.get("egressAudit",{}).get("digest",""))>=8 and rc.get("egressAudit",{}).get("bytesSent",0)>0 and rc.get("egressAudit",{}).get("disclosureTier")=="approved_cloud", rc.get("egressAudit"))
-    ok("p3: receipt count grew by one", pg5.evaluate("%s.telemetry.getReceipts().length" % H)==n_before+1)
-    fr = pg5.evaluate("(() => { const r = %s.telemetry.getReceipts(); const x = r[r.length-1]; try { x.status='tampered'; } catch(e) {} return [Object.isFrozen(x), x.status]; })()" % H)
-    ok("p3: receipts are frozen (cannot be edited)", fr[0] and fr[1]=="completed", fr)
-    summ = pg5.evaluate("%s.telemetry.summarizeTelemetry()" % H)
-    ok("p3: telemetry summary gives counts, no percent-local claim", summ.get("localShare")=="not-applicable" and "total" in json.dumps(summ).lower(), summ)
-    # purpose allowlist: unknown field must be refused before anything is sent
     n_req = len(b5)
-    bad = pg5.evaluate("""%s.router.dispatchChat({mode:'only_in_cloud', requestedMode:'only_in_cloud', decision:{effectiveMode:'only_in_cloud'}, payload:{instructions:'Be brief.', message:'x', notes:[], tasks:[], history:[], secret_notes:'LEAK'}, prompt:null, approvedBy:'send_click'}).then(() => 'SENT', e => e.code||e.message)""" % H)
-    ok("p3: extra payload field is blocked and nothing is sent", bad!="SENT" and len(b5)==n_req, bad)
-    # cloud failure -> on-device fallback, with a reason and receipts
-    mode5["m"]="403"
-    FB_JS = """%s.router.dispatchChat({mode:'%s', requestedMode:'%s', decision:{effectiveMode:'%s'}, payload:{instructions:'Be brief.', message:'Say hi', notes:[], tasks:[], history:[]}, prompt:null, buildLocalPrompt:() => Promise.resolve('Say hi'), approvedBy:'send_click'}).then(r => ({text:r.text, source:r.source, fb:r.fallback, rs:(r.receipts||[]).map(x => [x.route,x.status,x.egressAudit.disclosureTier])}), e => ({err:e.code||e.message, cls:e.errorClass, msg:String(e.message).slice(0,160)}))"""
-    fb = pg5.evaluate(FB_JS % (H,"prefer_in_cloud","prefer_in_cloud","prefer_in_cloud"))
-    ok("p3: Prefer Cloud + App Check 403 -> on-device answer, receipt says fallback and that the sealed text was sent", fb.get("source")=="on_device" and (fb.get("fb") or {}).get("errorClass")=="unreported" and fb.get("rs")==[["local-fallback","fallback","approved_cloud"]], fb)
-    pg5.evaluate("sessionStorage.setItem('nanoOff','1')"); pg5.reload(); pg5.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionHybrid.router", timeout=15000); pg5.wait_for_timeout(800)
-    nf = pg5.evaluate(FB_JS % (H,"prefer_in_cloud","prefer_in_cloud","prefer_in_cloud"))
-    ok("p3: App Check 403 with no Nano -> classified app_check, no fake answer", nf.get("cls")=="app_check" and "FAKE-NANO" not in json.dumps(nf), nf)
-    nf2 = pg5.evaluate("(() => { const r = %s.telemetry.getReceipts(); const x = r[r.length-1]; return [x.status, x.route, x.errorCode]; })()" % H)
-    ok("p3: failed cloud receipt has a non-completed status", nf2[0] in ("rejected","failed","timed_out") and nf2[1]=="cloud-sealed-chat", nf2)
-    mode5["m"]="ok"
+    direct = pg5.evaluate("AionHybrid.dispatchChatFromClick({mode:'only_in_cloud',payload:{instructions:'x',message:'x'}},{isTrusted:false,type:'submit',target:{id:'chatForm'}}).then(()=> 'SENT',e=>e.code)")
+    ok("p3: console cannot call the chat send route without a trusted submit", direct=="user_gesture_required" and len(b5)==n_req, direct)
+    bad = pg5.evaluate("AionHybrid.contracts.validatePayload('chat',{instructions:'Be brief.',message:'x',notes:[],tasks:[],history:[],secret_notes:'LEAK'})")
+    ok("p3: chat schema rejects an extra field before the send route", not bad["ok"] and any('unknown field' in x for x in bad["errors"]), bad)
     # planner
     plan_in = {"goal":"Plan my week","taskRefs":[{"ref":"[TASK_1]","line":"[TASK_1] | to do"}],"constraints":[],"taskTitles":{"[TASK_1]":"Write report"},"memoryCounts":{"total":3,"fact":3},"localContext":""}
     n_req = len(b5)
-    pr = pg5.evaluate("%s.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => r, e => ({err:e.code||e.message}))" % (H, json.dumps(plan_in)))
+    pg5.evaluate("window.__plannerPromise = %s.planner.plan(%s, {mode:'prefer_in_cloud'}); true" % (H, json.dumps(plan_in)))
+    pg5.wait_for_selector("dialog.aion-plan-consent", timeout=5000)
+    plan_preview = pg5.locator(".aion-plan-consent__text").inner_text()
+    ok("p3: exact planner disclosure is shown before any planner request", "Plan my week" in plan_preview and "[TASK_1] | to do" in plan_preview and len(b5)==n_req, plan_preview)
+    pg5.click(".aion-plan-consent__actions button:last-child")
+    pr = pg5.evaluate("window.__plannerPromise.then(r => r, e => ({err:e.code||e.message}))")
     ok("p3: planner returns a validated cloud plan", pr.get("ok") and pr.get("source")=="cloud-blindfold" and len(pr["plan"]["steps"])==2, pr.get("err") or [pr.get("source"), pr.get("fallback"), [x[:300] for x in b5[n_req:]]])
     steps = pr["plan"]["steps"] if pr.get("plan") else []
     ok("p3: mutating step needs approval, note is info only", [x["status"] for x in steps]==["PENDING_APPROVAL","INFO"], [x.get("status") for x in steps])
@@ -487,10 +479,13 @@ with sync_playwright() as p:
     ok("p3: only the mutating step becomes an approval proposal", props==1, props)
     # planner cloud failure -> local fallback, never silent
     mode5["m"]="403"
-    pf = pg5.evaluate("%s.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => ({ok:r.ok, source:r.source, fb:r.fallback}), e => ({err:e.code||e.message}))" % (H, json.dumps(plan_in)))
+    pg5.evaluate("window.__plannerPromise = %s.planner.plan(%s, {mode:'prefer_in_cloud'}); true" % (H, json.dumps(plan_in)))
+    pg5.wait_for_selector("dialog.aion-plan-consent", timeout=5000); pg5.click(".aion-plan-consent__actions button:last-child")
+    pf = pg5.evaluate("window.__plannerPromise.then(r => ({ok:r.ok, source:r.source, fb:r.fallback}), e => ({err:e.code||e.message}))")
     ok("p3: planner falls back (on-device or deterministic) and says why", pf.get("ok") and pf.get("source") in ("on-device-nano","deterministic") and pf.get("fb"), pf)
-    cold = pg5.evaluate("""(() => { const st = window.AionHybridState; const w = st.nanoWarm; st.nanoWarm = false; const t = performance.now();
-        return window.AionHybrid.planner.plan(%s, {mode:'prefer_in_cloud'}).then(r => { st.nanoWarm = w; return [r.source, Math.round(performance.now() - t)]; }); })()""" % json.dumps(plan_in))
+    pg5.evaluate("window.__plannerPromise = (() => { const st=window.AionHybridState; const w=st.nanoWarm; st.nanoWarm=false; const t=performance.now(); return window.AionHybrid.planner.plan(%s,{mode:'prefer_in_cloud'}).then(r => {st.nanoWarm=w; return [r.source,Math.round(performance.now()-t)]}); })(); true" % json.dumps(plan_in))
+    pg5.wait_for_selector("dialog.aion-plan-consent", timeout=5000); pg5.click(".aion-plan-consent__actions button:last-child")
+    cold = pg5.evaluate("window.__plannerPromise")
     ok("p3: with a cold Nano, a failed cloud plan goes straight to the instant offline plan (no long wait)", cold[0]=="deterministic" and cold[1] < 5000, cold)
     mode5["m"]="ok"
     # chat + /plan through the real UI: badge carries the receipt line, events grow
@@ -500,7 +495,11 @@ with sync_playwright() as p:
     pg5.wait_for_function("document.querySelectorAll('#chatLog .ai-badge-sub').length>=1 && /Receipt /.test(document.querySelector('#chatLog').innerText)", timeout=20000)
     log = pg5.inner_text("#chatLog")
     ok("p3: UI chat bubble shows a receipt line with measured characters sent", "Receipt " in log and "characters sent" in log and "undefined" not in log and "NaN" not in log, log[-220:])
+    ui_receipt = pg5.evaluate("(() => { const r=AionHybrid.telemetry.getReceipts().slice(-1)[0]; return r && r.egressAudit; })()")
+    ok("p3: trusted chat submit records an observed body and measured characters", ui_receipt and ui_receipt["bodyObserved"] is True and ui_receipt["observedChars"] > 0 and ui_receipt["bytesSent"] == ui_receipt["observedChars"], ui_receipt)
     pg5.fill("#chatInput", "/plan finish the hackathon video"); pg5.click("#sendBtn")
+    pg5.wait_for_selector("dialog.aion-plan-consent", timeout=10000)
+    pg5.click(".aion-plan-consent__actions button:last-child")
     try: pg5.wait_for_function("/waiting for your approval|note only/.test(document.querySelector('#chatLog').innerText)", timeout=25000)
     except Exception as e: print("   /plan wait timed out; chat tail:", pg5.inner_text("#chatLog")[-400:].replace("\n"," | "))
     log = pg5.inner_text("#chatLog")
@@ -511,6 +510,8 @@ with sync_playwright() as p:
         n_req = len(b5)
         nrc = pg5.evaluate("window.AionHybrid.telemetry.getReceipts().length")
         pg5.fill("#chatInput", "/plan " + pend); pg5.click("#sendBtn")
+        pg5.wait_for_selector("dialog.aion-plan-consent", timeout=10000)
+        pg5.click(".aion-plan-consent__actions button:last-child")
         pg5.wait_for_function("window.AionHybrid.telemetry.getReceipts().length > %d" % nrc, timeout=25000); pg5.wait_for_timeout(500)
         lastr = pg5.evaluate("(() => { const r = window.AionHybrid.telemetry.getReceipts().slice(-1)[0]; return [r.route, r.status]; })()")
         sentp = "".join(b5[n_req:])
@@ -662,6 +663,8 @@ with sync_playwright() as p:
     pg7.wait_for_function("window.AionHybrid.telemetry.getReceipts().some(r => r.route === 'cloud-sealed-chat')", timeout=20000); pg7.wait_for_timeout(800)
     ok("b2: tour step 1 sends a sealed chat through the normal path", pg7.evaluate("window.AionHybrid.telemetry.getReceipts().some(r => r.route === 'cloud-sealed-chat')"))
     pg7.click('[data-tour="plan"]')
+    pg7.wait_for_selector("dialog.aion-plan-consent", timeout=10000)
+    pg7.click(".aion-plan-consent__actions button:last-child")
     pg7.wait_for_function("window.AionHybrid.telemetry.getReceipts().some(r => /blindfold|deterministic/.test(r.route))", timeout=25000); pg7.wait_for_timeout(800)
     ok("b2: tour step 2 runs the Blindfold Planner", "waiting for your approval" in pg7.inner_text("#chatLog") or "note only" in pg7.inner_text("#chatLog"))
     pg7.click('[data-tour="proof"]'); pg7.wait_for_timeout(600)
@@ -687,6 +690,62 @@ with sync_playwright() as p:
     rq = pg7.evaluate("window.AionStandalone.caseApi.load().then(c => c.question.slice(0, 14))")
     ok("b4: RESET DEMO DATA restores the sample case and seed data", rq=="Using only the" and pg7.evaluate("window.AionStandalone.store.all('memories').then(r => r.length)")==14, rq)
     pg7.close()
+    # ================= Scenario packs (Savita Traders, scam call): local review, mocked Nano, no cloud =================
+    pg8 = ctx.new_page()
+    e8 = []; net8 = []
+    pg8.on("pageerror", lambda e: e8.append("pageerror: "+str(e)))
+    pg8.on("console", lambda m: e8.append("console.error: "+m.text) if m.type=="error" else None)
+    pg8.on("request", lambda r: net8.append(r.url) if not r.url.startswith(f"http://127.0.0.1:{PORT}/") else None)
+    pg8.goto(f"http://127.0.0.1:{PORT}/dashboard.html#case")
+    pg8.wait_for_function("window.AionHybrid && window.AionHybrid.state.ready && window.AionCase && window.AionCase.state.c", timeout=15000); pg8.wait_for_timeout(1200)
+    pk = pg8.evaluate("window.AionStandalone.caseApi.packs().map(p => [p.id, p.kind, p.privateFields.length > 3, !!p.labels.not_suitable])")
+    ok("packs: caseApi.packs() lists brightline, savita and scam", pk==[["brightline","quote",True,True],["savita","quote",True,True],["scam","scam",True,True]], pk)
+    n0 = len(net8); k0 = len(e8)
+    rv = pg8.evaluate("""(async () => {
+      const A = window.AionStandalone.caseApi, out = {};
+      for (const id of ['savita', 'scam']) {
+        const c = await window.AionCase.loadPack(id);
+        const r = window.AionCase.reconcile(c);
+        const prep = window.AionCase.state.prep;
+        const priv = await A.privateValues();
+        const leak = window.AionHybrid.border.leakAudit(priv.map(v => ({ id: v.id, value: v.value })), [prep.text]);
+        const leaky = window.AionHybrid.border.leakAudit(priv.map(v => ({ id: v.id, value: v.value })), [prep.text + ' ' + priv[0].value]);
+        const drill = await A.hostileDrill();
+        const pv = await A.provisionalLocal();
+        const cf = await A.counterfactual();
+        out[id] = { verdict: r.verdict, chip: document.getElementById('caseVerdictChip').textContent, label: A.labelsFor(c)[r.verdict],
+          fields: document.querySelectorAll('[data-pfield]').length, hits: prep.privateHits.length, bytes: prep.bytes,
+          privInText: priv.filter(v => prep.text.indexOf(v.value) >= 0).length, nPriv: priv.length,
+          scamPrompt: /public safety assistant/.test(prep.text), leakExact: leak.exact, leakyExact: leaky.exact,
+          drill: [drill.allBlocked, drill.results.length, drill.results.every(x => !x.finalChangedByCloud)], pv: [pv.fromCloud, pv.verdict],
+          cf: [cf.border.chars, cf.naive.privateFound.length, cf.savedChars === cf.naive.chars - cf.border.chars], registry: Object.assign({}, await A.syncPrivateRegistry()) };
+      }
+      return out; })()""")
+    sv, sc = rv["savita"], rv["scam"]
+    ok("packs: Savita - local review says 'Not suitable on your private numbers'", sv["verdict"]=="not_suitable" and sv["chip"]=="Not suitable on your private numbers" and sv["label"]==sv["chip"], sv)
+    ok("packs: scam - local review says 'Looks like a scam — do not act'", sc["verdict"]=="not_suitable" and sc["chip"]=="Looks like a scam — do not act" and sc["label"]==sc["chip"], sc)
+    ok("packs: each pack draws its own private fields", sv["fields"]==6 and sc["fields"]==7, (sv["fields"], sc["fields"]))
+    ok("packs: the prepared disclosure holds no private value (registry scan and direct check)", sv["hits"]==0 and sc["hits"]==0 and sv["privInText"]==0 and sc["privInText"]==0 and sv["nPriv"]>=5 and sc["nPriv"]>=6, (sv["hits"], sc["hits"], sv["privInText"], sc["privInText"]))
+    ok("packs: the scam disclosure uses the scam-call instructions", sc["scamPrompt"] and not sv["scamPrompt"])
+    ok("packs: leak audit - 0 seeded secrets in the prepared text, the planted one found in a leaky copy", sv["leakExact"]==0 and sc["leakExact"]==0 and sv["leakyExact"]==1 and sc["leakyExact"]==1)
+    ok("packs: hostile-cloud drill blocks every reply for both packs", sv["drill"]==[True,6,True] and sc["drill"]==[True,6,True], (sv["drill"], sc["drill"]))
+    ok("packs: provisional verdict made on this device, never from the cloud", sv["pv"][0] is False and sc["pv"]==[False,"not suitable"], (sv["pv"], sc["pv"]))
+    ok("packs: counterfactual - border characters = prepared disclosure; naive paste exposes the private values", sv["cf"][0]==sv["bytes"] and sc["cf"][0]==sc["bytes"] and sv["cf"][1]>=5 and sc["cf"][1]>=6 and sv["cf"][2] and sc["cf"][2], (sv["cf"], sc["cf"]))
+    ok("packs: the private registry is rebuilt for the scam pack", rv["scam"]["registry"].get("case_private_constraint",0)>=8, rv["scam"]["registry"])
+    ok("packs: 0 network requests while loading and reviewing both packs locally", len(net8)==n0, net8[n0:][:5])
+    po = pg8.evaluate("""(async () => {
+      const c = await window.AionCase.loadPack('savita', { poisoned: true });
+      const p = c.paragraphs[c.paragraphs.length - 1], prep = window.AionCase.state.prep;
+      return [c.paragraphs.length, !!(p.injection && p.injection.flagged), prep.included.passages.indexOf(p.id) < 0, /ignore all previous/i.test(prep.text),
+        prep.excluded.some(x => x.indexOf(p.id) === 0 && /held/.test(x)), window.AionCase.reconcile(c).verdict, !!document.querySelector('[data-inj="' + p.id + '"]')]; })()""")
+    ok("packs: poisoned Savita - the injected passage is flagged, held from the cloud and shown as held", po==[7,True,True,False,True,"not_suitable",True], po)
+    sr = pg8.evaluate("window.AionHybrid.border.sessionReceipt().then(r => [r.version, /^[0-9a-f]{64}$/.test(r.chainHash), !!r.drill, /not a signature/.test(r.note), JSON.stringify(r).indexOf('91234') < 0])")
+    ok("packs: session receipt is a hash chain with the drill summary and no private value", sr==[1,True,True,True,True], sr)
+    bl = pg8.evaluate("window.AionCase.loadPack('brightline').then(c => [c.pack || null, document.getElementById('caseVerdictChip').textContent, document.querySelectorAll('[data-pfield]').length, !!document.getElementById('caseBudget')])")
+    ok("packs: loading Brightline again restores the original sample view", bl==[None,"Not suitable on your private requirements",0,True], bl)
+    own8 = [x for x in e8[k0:] if not ("Failed to load resource" in x or "firebaseappcheck" in x or "CORS policy" in x)]
+    ok("packs: no page errors or AION console errors while switching packs (network noise from App Check excluded)", not own8, (own8[:5], len(e8)-k0))
+    pg8.close()
     page.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "shot.png"))
     print("\nCONSOLE/PAGE ERRORS:"); [print(" ",e[:220]) for e in errs[:25]]
     b.close()

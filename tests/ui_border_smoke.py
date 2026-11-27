@@ -1,6 +1,6 @@
 """Border Instrument UI test (Playwright + Chrome). Run: python tests/ui_border_smoke.py
 
-Checks the new light page at / (public/index.html + stage.js + slab.js) against
+Checks the page at / (public/index.html + stage.js, the paper slips) against
 the engine it draws: every number on screen is compared with the value the
 engine itself returns. Gemini Nano is MOCKED (a fake window.LanguageModel) and
 the cloud is MOCKED (Playwright routes for the Firebase AI endpoint), so this
@@ -113,21 +113,26 @@ with sync_playwright() as p:
     boot(pg)
     ok("boot: step 01 visible, others hidden", pg.is_visible("#step-quote") and all(not pg.is_visible("#step-" + s) for s in ("share", "send", "verdict", "proof")))
     ok("boot: hybrid.js tolerates the missing dashboard header ids", pg.evaluate("!!window.AionHybrid && !document.getElementById('nanoPill')"))
-    ok("boot: unmeasured leak / drill readouts show a dash", pg.get_attribute("#leakNum", "data-value") == "-" and pg.get_attribute("#drillNum", "data-value") == "-")
-    ok("status: cloud is 'not tried yet' before any request (not hard-coded healthy)", "not tried yet" in pg.inner_text("#stCloudV").lower(), pg.inner_text("#stCloudV"))
-    ok("status: route label comes from AionHybridState.mode", pg.inner_text("#stRouteV") == pg.evaluate("({prefer_on_device:'PREFER_ON_DEVICE',only_on_device:'ONLY_ON_DEVICE',prefer_in_cloud:'PREFER_IN_CLOUD'})[AionHybridState.mode]"))
+    ok("boot: unmeasured leak / drill readouts show a dash", pg.get_attribute("#leakNum", "data-value") == "—" and pg.get_attribute("#drillNum", "data-value") == "—", (pg.get_attribute("#leakNum", "data-value"), pg.get_attribute("#drillNum", "data-value")))
+    ok("status: cloud is 'not tried yet' before any request (not hard-coded healthy)", pg.inner_text("#stCloudV").lower() == "not tried", pg.inner_text("#stCloudV"))
+    ok("status: route label comes from AionHybridState.mode", pg.inner_text("#stRouteV") == pg.evaluate("({prefer_on_device:'prefer device',only_on_device:'only device',prefer_in_cloud:'prefer cloud'})[AionHybridState.mode]"), pg.inner_text("#stRouteV"))
+    ok("status: the route starts on this device (PREFER_ON_DEVICE)", pg.evaluate("AionHybridState.mode") == "prefer_on_device")
     pg.wait_for_function("AionHybridState.nano==='ready'", timeout=10000); pg.wait_for_timeout(1700)
     ok("status: nano lamp reads the real (mocked) Nano state", "ready" in pg.inner_text("#stNanoV").lower(), pg.inner_text("#stNanoV"))
+    ok("nano: Get Nano ready shows on step 01 with the real state", pg.is_visible("#step-quote [data-nano-btn]") and "Gemini Nano" in pg.inner_text("#step-quote [data-nano-state]"), pg.inner_text("#step-quote [data-nano-state]"))
+    pg.click("#step-quote [data-nano-btn]") if pg.is_enabled("#step-quote [data-nano-btn]") else None
+    pg.wait_for_function("AionHybridState.nanoWarm === true", timeout=15000); pg.wait_for_timeout(1700)
+    ok("nano: after the click Nano is loaded and the button says so", pg.inner_text("#step-quote [data-nano-btn]") == "Nano is ready" and pg.is_disabled("#step-quote [data-nano-btn]") and pg.get_attribute("#step-quote [data-nano-ready]", "data-nano") == "ready", pg.inner_text("#step-quote [data-nano-btn]"))
 
     # instrument numbers == engine numbers
     held = pg.evaluate("""AionStandalone.caseApi.load().then(c => { const sh = p => p.shared && !(p.injection && p.injection.flagged && !p.injectionOverride);
-        const pc = c.privateConstraints || {}; let n = c.paragraphs.filter(p => !sh(p)).reduce((a,p)=>a+p.text.length,0);
-        [pc.maxBudget, pc.readyBy, pc.confidentialNote].forEach(v => n += String(v||'').length); return n; })""")
-    ok("instrument: held characters == unshared passages + private requirement values", pg.get_attribute("#heldNum", "data-value") == f"{held:,}", (pg.get_attribute("#heldNum", "data-value"), held))
+        const pc = c.privateConstraints || {}; let n = c.paragraphs.reduce((a,p)=>a+p.text.length,0);
+        Object.keys(pc).forEach(k => { const v = pc[k]; if (typeof v === 'string' || typeof v === 'number') n += String(v).length; }); return n; })""")
+    ok("instrument: before any send, held characters == every passage + private requirement values", pg.get_attribute("#heldNum", "data-value") == f"{held:,}", (pg.get_attribute("#heldNum", "data-value"), held))
     cross = pg.evaluate("AionStage.state.prep.text.length")
-    ok("instrument: disclosure characters == length of the exact serialized text", pg.get_attribute("#crossNum", "data-value") == f"{cross:,}" and cross == pg.evaluate("AionHybrid.egress.serialize(AionStage.state.prep.disclosure).length"), (pg.get_attribute("#crossNum", "data-value"), cross))
-    dbg = pg.evaluate("AionSlab.debug()")
-    ok("instrument: <= 200 marks, both colours present, motion on", dbg["green"] + dbg["amber"] <= 200 and dbg["green"] > 0 and dbg["amber"] > 0 and dbg["motion"] == "full", dbg)
+    ok("instrument: nothing has crossed before a send, and the prepared text is the exact serialized disclosure", pg.get_attribute("#crossNum", "data-value") == "0" and cross == pg.evaluate("AionHybrid.egress.serialize(AionStage.state.prep.disclosure).length"), (pg.get_attribute("#crossNum", "data-value"), cross))
+    dbg = pg.evaluate("AionStage.debug()")
+    ok("instrument: one slip per passage, shared ones queued, the rest held, none crossed, motion on", sorted(dbg["held"] + dbg["queued"]) == sorted(pg.evaluate("AionStage.state.c.paragraphs.map(p=>p.id)")) and dbg["queued"] and dbg["held"] and not dbg["crossed"] and dbg["motion"] == "full", dbg)
 
     # steps reachable
     for s in ("share", "send", "verdict", "proof", "quote"):
@@ -137,19 +142,19 @@ with sync_playwright() as p:
 
     # ---- step 02: share ----
     go(pg, "share")
-    ok("share: P5, P6 stay; P1-P4, P7 leave (sample)", pg.locator("#staysList li[data-pid]").count() == 2 and pg.locator("#leavesList li[data-pid]").count() == 5)
+    ok("share: P5, P6 stay; P1-P4, P7 leave (sample)", pg.locator('#plist .psg[data-leaves="false"]').count() == 2 and pg.locator('#plist .psg[data-leaves="true"]').count() == 5)
     before = pg.evaluate("AionStage.state.prep.bytes")
     pg.uncheck('[data-share="P1"]'); settle(pg)
-    ok("share: unticking P1 moves it to 'stays' and shrinks the disclosure", pg.locator('#staysList li[data-pid="P1"]').count() == 1 and pg.evaluate("AionStage.state.prep.bytes") < before and "[P1]" not in pg.evaluate("AionStage.state.prep.text"))
-    ok("share: the count label matches the list", pg.inner_text("#staysCount").startswith("3 passages"), pg.inner_text("#staysCount"))
+    ok("share: unticking P1 moves it to 'stays' and shrinks the disclosure", pg.locator('#plist .psg[data-pid="P1"][data-leaves="false"]').count() == 1 and pg.evaluate("AionStage.state.prep.bytes") < before and "[P1]" not in pg.evaluate("AionStage.state.prep.text"))
+    ok("share: the count label matches the list", pg.inner_text("#staysCount").lower().startswith("3 stay"), pg.inner_text("#staysCount"))
     ok("share: size line shows the exact disclosure characters", f"{pg.evaluate('AionStage.state.prep.bytes'):,} characters" in pg.inner_text("#sizeLine"))
     pg.check('[data-share="P1"]'); settle(pg)
     # private requirements editor
     pg.click("#privEdit summary")
-    pg.fill("#pvBudget", "Rs 9,00,000 including GST"); settle(pg)
+    pg.fill("#pv_maxBudget", "Rs 9,00,000 including GST"); settle(pg)
     ok("share: editing the private budget is saved to the case", pg.evaluate("AionStandalone.caseApi.load().then(c=>c.privateConstraints.maxBudget)") == "Rs 9,00,000 including GST")
     ok("share: private budget never appears in the disclosure", "9,00,000" not in pg.evaluate("AionStage.state.prep.text"))
-    pg.fill("#pvBudget", "Rs 4,00,000 including GST"); settle(pg)
+    pg.fill("#pv_maxBudget", "Rs 4,00,000 including GST"); settle(pg)
 
     # ---- step 03: send ----
     go(pg, "send")
@@ -159,6 +164,17 @@ with sync_playwright() as p:
     r0 = pg.evaluate("AionHybrid.telemetry.getReceipts().filter(r=>r.route==='cloud-case-research').length")
     pg.click("#approveBtn"); pg.wait_for_timeout(300)
     ok("send: approval enables Send and the gate shows 'approved'", pg.is_enabled("#sendBtn") and pg.get_attribute("#gateChip", "data-state") == "approved" and pg.get_attribute("#instrument", "data-phase") == "approved")
+    ok("send: Prefer device + Nano ready -> the button asks Gemini Nano on this device", pg.inner_text("#sendBtn") == "Ask Gemini Nano on this device" and pg.is_visible("#step-send [data-nano-btn]"), pg.inner_text("#sendBtn"))
+    pg.click("#sendBtn")
+    pg.wait_for_function("AionStage.state.result && !AionStage.state.busy", timeout=20000); pg.wait_for_timeout(1700)
+    ok("send (device): answered by Gemini Nano with 0 cloud requests", len(cloud["bodies"]) == n0 and pg.evaluate("AionStage.state.result.g && AionStage.state.result.g.actual_source") == "on_device", (len(cloud["bodies"]) - n0, pg.evaluate("AionStage.state.result.error || ''")))
+    ok("send (device): nothing crosses: 0 characters, no slip on the cloud side, the border says so", pg.get_attribute("#crossNum", "data-value") == "0" and not pg.evaluate("AionStage.debug()")["crossed"] and pg.get_attribute("#instrument", "data-live") == "local", (pg.get_attribute("#crossNum", "data-value"), pg.get_attribute("#instrument", "data-live")))
+    ok("send (device): the engine line says it ran on this device", "on this device" in pg.inner_text("#engineLine"), pg.inner_text("#engineLine"))
+    # now the cloud: a new disclosure, approved, on Prefer cloud
+    pg.click("#prepBtn"); pg.wait_for_timeout(500)
+    pg.click('#routeSet input[value="prefer_in_cloud"]'); pg.wait_for_timeout(200)
+    pg.click("#approveBtn"); pg.wait_for_timeout(300)
+    ok("send: Prefer cloud -> the button sends to the cloud", pg.inner_text("#sendBtn") == "Send to the cloud", pg.inner_text("#sendBtn"))
     approved_text = pg.evaluate("AionStage.state.prep.text")
     pg.click("#sendBtn")
     pg.wait_for_function("AionStage.state.result", timeout=20000); pg.wait_for_timeout(1700)
@@ -166,8 +182,9 @@ with sync_playwright() as p:
     ok("send: engine label from inferenceSource", "in_cloud" in pg.inner_text("#engineLine") and "reported by the SDK" in pg.inner_text("#engineLine"), pg.inner_text("#engineLine"))
     ok("send: one cloud-case-research receipt recorded", pg.evaluate("AionHybrid.telemetry.getReceipts().filter(r=>r.route==='cloud-case-research').length") == r0 + 1)
     ok("send: cloud status now derived from the real reply", "answered" in pg.inner_text("#stCloudV").lower(), pg.inner_text("#stCloudV"))
-    pg.wait_for_function("AionSlab.debug().cloud > 0", timeout=5000)
-    ok("instrument: after the send the amber marks crossed to the cloud side", pg.evaluate("AionSlab.debug()")["stage"] == 0 and pg.get_attribute("#instrument", "data-phase") == "sent")
+    pg.wait_for_function("AionStage.debug().crossed.length > 0", timeout=5000)
+    dbg = pg.evaluate("AionStage.debug()")
+    ok("instrument: after the cloud send the shared slips crossed and the count is the approved text", sorted(dbg["crossed"]) == sorted(pg.evaluate("AionStage.state.sent.ids")) and not dbg["queued"] and pg.get_attribute("#crossNum", "data-value") == f"{len(approved_text):,}" and pg.get_attribute("#instrument", "data-phase") == "sent", (dbg, pg.get_attribute("#crossNum", "data-value")))
 
     # ---- step 04: verdict ----
     go(pg, "verdict")
@@ -198,9 +215,9 @@ with sync_playwright() as p:
     ok("proof: 0 of 6 seeded secrets found, control 6 of 6", re_audit["exact"] == 0 and re_audit["planted"] == 6 and L["controlPresent"] == 6)
     ok("fix a: the leak test's case request records a cloud-case-research receipt", pg.evaluate("AionHybrid.telemetry.getReceipts().filter(r=>r.route==='cloud-case-research').length") == r1 + 1 and L.get("caseReceipts") == 1)
     g = pg.evaluate("AionHybrid.border.gauges({leak: AionStage.state.leak.audit, caseObj: AionStage.state.c, cloudVerdict: AionCase.cloudVerdict(AionStage.state.result.g.text), localVerdict: AionCase.reconcile(AionStage.state.c).verdict})")
-    ok("proof: usefulness gauge == border.gauges", f"Shared {g['useful']['sharedPassages']} of {g['useful']['totalPassages']} passages" in pg.inner_text("#gaugeUnit") and not g["gamed"], pg.inner_text("#gaugeUnit"))
+    ok("proof: usefulness gauge == border.gauges", f"Shared {g['useful']['sharedPassages']} of {g['useful']['totalPassages']} passages" in pg.text_content("#gaugeUnit") and not g["gamed"], pg.text_content("#gaugeUnit"))
     m = pg.evaluate("AionHybrid.border.meter.snapshot()")
-    ok("proof: disclosure meter == border.meter.snapshot", f"{m['sends']} send" in pg.inner_text("#meterUnit") and f"{m['charsSent']:,} characters" in pg.inner_text("#meterUnit"), (pg.inner_text("#meterUnit"), m))
+    ok("proof: disclosure meter == border.meter.snapshot", f"{m['sends']} send" in pg.text_content("#meterUnit") and f"{m['charsSent']:,} characters" in pg.text_content("#meterUnit"), (pg.text_content("#meterUnit"), m))
     ok("proof: trifecta lamps lit by real state (all three after a send)", pg.get_attribute("#trifectaTile", "data-all") == "true" and pg.locator('#lamps li[data-lit="true"]').count() == 3)
 
     # ---- Show the work ----
@@ -216,24 +233,41 @@ with sync_playwright() as p:
     pg.click("label.switch"); pg.wait_for_timeout(400)
     ok("plug: instrument cloud side greys, status says unplugged", pg.get_attribute("#instrument", "data-cloud") == "down" and "unplugged" in pg.inner_text("#stCloudV").lower())
     ok("plug: route forced to ONLY_ON_DEVICE and Send disabled", pg.inner_text("#modeName") == "ONLY_ON_DEVICE" and pg.is_disabled("#sendBtn"))
-    n1 = len(cloud["bodies"])
-    err = pg.evaluate("AionStandalone.caseApi.send(AionStage.state.prep.disclosure).then(()=>'SENT', e => [e.errorKind, e.code, AionStage.state.prep.disclosure.approvalState])")
-    ok("plug: a send attempt is refused before marking anything sent (kind offline)", err[0] == "offline" and err[1] == "offline_demo" and err[2] == "approved" and len(cloud["bodies"]) == n1, err)
-    ok("plug: nothing crosses (amber marks stay on the device side)", pg.evaluate("AionSlab.debug()")["cloud"] == 0)
+    n1 = len(cloud["bodies"]); crossed_before = pg.evaluate("AionStage.debug().crossed.length")
+    # The page API has no raw send any more (only a real click on Send); with the plug pulled that button is off.
+    pg.evaluate("document.getElementById('sendBtn').click()"); pg.wait_for_timeout(400)
+    ok("plug: Send refuses before marking anything sent; the approval stays unused", pg.evaluate("AionStage.state.prep.disclosure.approvalState") == "approved" and "plug is pulled" in pg.inner_text("#gateWhy") and len(cloud["bodies"]) == n1, (pg.evaluate("AionStage.state.prep.disclosure.approvalState"), pg.inner_text("#gateWhy")))
+    ok("plug: nothing new crosses (no slip moves)", pg.evaluate("AionStage.debug().crossed.length") == crossed_before)
     go(pg, "verdict")
     pg.click("#provBtn"); pg.wait_for_timeout(1200)
     ok("plug: provisional local verdict still reachable", pg.evaluate("AionStage.state.provisional && AionStage.state.provisional.fromCloud === false"))
     go(pg, "send"); pg.click("label.switch"); pg.wait_for_timeout(300)
     ok("plug: back in restores the previous route", pg.inner_text("#modeName") != "ONLY_ON_DEVICE")
 
-    # ---- honest error: App Check ----
+    # ---- Prefer cloud, cloud refuses (App Check), Nano ready: Gemini Nano answers on this device ----
     cloud["mode"] = "appcheck"
     pg.wait_for_timeout(300)
     pg.click("#approveBtn") if pg.is_enabled("#approveBtn") else None
     pg.wait_for_timeout(200); pg.click("#sendBtn")
-    pg.wait_for_function("AionStage.state.result && AionStage.state.result.error", timeout=20000); pg.wait_for_timeout(300)
-    ok("errors: App Check failure shown with border.sendFailure wording and kind", "App Check could not verify" in pg.inner_text("#engineLine") and "(app_check)" in pg.inner_text("#engineLine"), pg.inner_text("#engineLine"))
+    pg.wait_for_function("AionStage.state.result && !AionStage.state.busy && AionStage.state.result.g && AionStage.state.result.g.actual_source === 'on_device'", timeout=20000); pg.wait_for_timeout(300)
+    ok("fallback: Prefer cloud + App Check refusal -> Gemini Nano answered on this device, nothing crossed", pg.get_attribute("#instrument", "data-live") == "local" and "on this device" in pg.inner_text("#engineLine"), (pg.get_attribute("#instrument", "data-live"), pg.inner_text("#engineLine")))
+
+    # ---- honest error: App Check refuses and Nano is not available either ----
+    pg.evaluate("window.__nanoAvail = 'unavailable'")
+    pg.wait_for_function("AionHybridState.nano !== 'ready'", timeout=15000)
+    pg.click("#prepBtn"); pg.wait_for_timeout(500)
+    pg.click("#approveBtn"); pg.wait_for_timeout(300)
+    pg.click("#sendBtn")
+    pg.wait_for_function("AionStage.state.result && AionStage.state.result.error && !AionStage.state.busy", timeout=20000); pg.wait_for_timeout(300)
+    line = pg.inner_text("#engineLine")
+    ok("errors: App Check failure shown as one short plain line, no raw SDK text", "(App Check)" in line and "Try again" in line and len(line) < 140 and "PERMISSION_DENIED" not in line and "firebasevertexai" not in line, line)
+    ok("errors: the failed send kept the approval: still approved, button says Try again", pg.get_attribute("#gateChip", "data-state") == "approved" and pg.inner_text("#sendBtn") == "Try again" and pg.is_enabled("#sendBtn"), (pg.get_attribute("#gateChip", "data-state"), pg.inner_text("#sendBtn")))
     cloud["mode"] = "ok"
+    nb0 = len(cloud["bodies"])
+    pg.click("#sendBtn")
+    pg.wait_for_function("AionStage.state.result && AionStage.state.result.g && !AionStage.state.busy", timeout=20000); pg.wait_for_timeout(300)
+    ok("errors: Try again sends the same approved text once and it is answered", len(cloud["bodies"]) == nb0 + 1 and pg.get_attribute("#gateChip", "data-state") == "sent", (len(cloud["bodies"]) - nb0, pg.get_attribute("#gateChip", "data-state")))
+    pg.evaluate("window.__nanoAvail = 'available'")
 
     # ---- untrusted text: XSS + injection ----
     go(pg, "quote")
@@ -248,7 +282,7 @@ with sync_playwright() as p:
     go(pg, "share")
     pg.locator(".plist details summary").first.click(); pg.wait_for_timeout(100)
     ok("xss: no <img>/<script> elements were created anywhere in the steps", pg.locator("#steps img, #steps script").count() == 0)
-    ok("injection: flag shown right after import, flagged passage held", pg.locator('.psg[data-flagged="true"]').count() >= 1 and pg.locator('#leavesList .psg[data-flagged="true"]').count() == 0)
+    ok("injection: flag shown right after import, flagged passage held", pg.locator('.psg[data-flagged="true"]').count() >= 1 and pg.locator('#plist .psg[data-flagged="true"][data-leaves="true"]').count() == 0)
     # fix c: an EDIT that adds injection text shows the warning at once
     clean = pg.evaluate("AionStage.state.c.paragraphs.find(p => /price/i.test(p.heading) && !(p.injection && p.injection.flagged)).id")
     pg.evaluate(f"document.querySelector('details[data-pid=\"{clean}\"]').open = true")
@@ -268,7 +302,7 @@ with sync_playwright() as p:
     ok("fix b: and it is not in the disclosure", "[" + clean + "]" not in pg.evaluate("AionStage.state.prep.text"))
     pg.click('.stepper [data-go="quote"]'); pg.click("#sampleBtn"); pg.wait_for_function("AionStage.state.c.sample", timeout=10000)
 
-    ok("console: no page errors or console errors on desktop (one deliberate 403 allowed)", not real_errors(errs, fails, 1), real_errors(errs, fails, 1))
+    ok("console: no page errors or console errors on desktop (two deliberate App Check 403s allowed)", not real_errors(errs, fails, 2), real_errors(errs, fails, 2))
 
     # ---- fix c on the classic dashboard (case.js) ----
     dp = ctx.new_page(); derrs, dfails = watch(dp)
@@ -286,10 +320,13 @@ with sync_playwright() as p:
     boot(kp)
     kp.keyboard.press("Tab")
     ok("keyboard: first Tab reaches the skip link", kp.evaluate("document.activeElement.className") == "skip")
-    for _ in range(4): kp.keyboard.press("Tab")
+    for _ in range(12):
+        if kp.evaluate("!!(document.activeElement && document.activeElement.closest('.stepper'))"): break
+        kp.keyboard.press("Tab")
     ok("keyboard: Tab walks into the stepper", kp.evaluate("document.activeElement.closest('.stepper') !== null"), kp.evaluate("document.activeElement.outerHTML.slice(0,80)"))
     out = kp.evaluate("getComputedStyle(document.activeElement).outlineStyle")
     ok("keyboard: focused control has a visible focus ring", out not in ("none", ""), out)
+    kp.keyboard.press("Tab")   # past 01 Quote (already open) to 02 Share
     kp.keyboard.press("Enter"); kp.wait_for_timeout(400)
     ok("keyboard: Enter on a step opens it and moves focus to its heading", kp.evaluate("document.activeElement.id.startsWith('h-')") and kp.evaluate("AionStage.state.step") != "quote", (kp.evaluate("document.activeElement.id"), kp.evaluate("AionStage.state.step")))
     ok("keyboard: no errors", not real_errors(kerrs, kfails), real_errors(kerrs, kfails))
@@ -303,8 +340,8 @@ with sync_playwright() as p:
     ok("reduced motion: static field, no animation loop", rp.evaluate("document.body.getAttribute('data-motion')") == "reduced")
     rp.click('.stepper [data-go="send"]'); rp.click("#approveBtn"); rp.wait_for_timeout(200); rp.click("#sendBtn")
     rp.wait_for_function("AionStage.state.result", timeout=20000); rp.wait_for_timeout(300)
-    dbg = rp.evaluate("AionSlab.debug()")
-    ok("reduced motion: marks jump straight to their settled place (no crossing frames)", dbg["cross"] == 0 and dbg["cloud"] == dbg["amber"], dbg)
+    dbg = rp.evaluate("AionStage.debug()")
+    ok("reduced motion: static slips, settled in place after the send", dbg["motion"] == "reduced" and rp.locator("#field .slip.bounce").count() == 0 and sorted(dbg["held"] + dbg["queued"] + dbg["crossed"]) == sorted(rp.evaluate("AionStage.state.c.paragraphs.map(p=>p.id)")), dbg)
     ok("reduced motion: no errors", not real_errors(rerrs, rfails), real_errors(rerrs, rfails))
     rctx.close()
 
@@ -315,7 +352,7 @@ with sync_playwright() as p:
     for s in ("quote", "share", "send", "verdict", "proof"):
         mp.evaluate(f"AionStage.go('{s}')"); mp.wait_for_timeout(250)
         sw_ = mp.evaluate("document.documentElement.scrollWidth")
-        small = mp.evaluate("""Array.from(document.querySelectorAll('#step-%s button, #step-%s summary, #step-%s label.tick, #step-%s label.override, #step-%s .routes span, .stepper button, #workBtn'))
+        small = mp.evaluate("""Array.from(document.querySelectorAll('#step-%s button, #step-%s summary, #step-%s label.tick, #step-%s label.override, #step-%s .routes label, .stepper button, #workBtn'))
             .filter(e => e.offsetParent !== null).map(e => [e.textContent.trim().slice(0,24), Math.round(e.getBoundingClientRect().height)]).filter(x => x[1] < 44)""" % (s, s, s, s, s))
         ok("mobile %s: no horizontal overflow, tap targets >= 44 px" % s, sw_ <= 390 and not small, (sw_, small))
     ok("mobile: no errors", not real_errors(merrs, mfails), real_errors(merrs, mfails))

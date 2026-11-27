@@ -1141,3 +1141,17 @@ body.offline-demo .hy-bar { outline:1px dashed rgba(232,181,58,.35); outline-off
 .case-out { margin-top:8px }
 .case-out-meta { font-size:11px; color:var(--steel); margin:4px 0 }
 .case-out-text { white-space:pre-wrap }
+
+
+/* Planner disclosure review: show the exact serialized text before approval. */
+.aion-plan-consent { width: min(680px, calc(100vw - 32px)); max-height: min(86vh, 760px); padding: 0; border: 1px solid #c8c3b8; background: #fcfbf7; color: #232522; box-shadow: 0 18px 60px rgba(20, 24, 22, .24); }
+.aion-plan-consent::backdrop { background: rgba(20, 24, 22, .55); }
+.aion-plan-consent__panel { padding: 24px; }
+.aion-plan-consent__panel h2 { margin: 0; font: 600 24px/1.2 Georgia, serif; }
+.aion-plan-consent__panel p { color: #50534e; line-height: 1.5; }
+.aion-plan-consent__text { max-height: 42vh; overflow: auto; margin: 16px 0; padding: 14px; border: 1px solid #d8d4ca; background: #f4f1e9; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, monospace; }
+.aion-plan-consent__count { font: 12px/1.4 ui-monospace, monospace; }
+.aion-plan-consent__actions { display: flex; justify-content: flex-end; gap: 10px; }
+.aion-plan-consent__actions button { min-height: 42px; padding: 0 16px; border: 1px solid #343833; background: transparent; color: inherit; cursor: pointer; }
+.aion-plan-consent__actions button:last-child { background: #343833; color: #fff; }
+.aion-plan-consent button:focus-visible { outline: 3px solid #b47d27; outline-offset: 2px; }

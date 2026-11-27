@@ -56,10 +56,13 @@ export function caseReceiptInput(o) {
     fields: Object.keys(d.payload || {}),
   } : { tier: "blocked" };
   if (d && checked && o.sentNow) { egress.bodyObserved = o.bodyObserved; egress.observedChars = o.bodyObserved ? (typeof o.observedChars === "number" ? o.observedChars : null) : 0; }
-  const base = { route: "cloud-case-research", requestedMode: "only_in_cloud", approvalState: d ? "approved" : "not-applicable" };
+  const base = { route: "cloud-case-research", requestedMode: (o.result && o.result.requested_mode) || "only_in_cloud", approvalState: d ? "approved" : "not-applicable" };
   if (o.ok) {
     const g = o.result || {};
     const ranLocal = g.source === "on_device";
+    /* A case send follows the picked route: when Gemini Nano answered it on
+     * this device, the receipt says so instead of naming the cloud. */
+    if (ranLocal) base.route = "on-device-nano";
     return Object.assign(base, {
       status: "completed", model: g.model || null, latencyMs: g.latencyMs, firstChunkMs: g.firstChunkMs,
       egress: Object.assign(egress, { tier: ranLocal ? "local_only" : egress.tier }),

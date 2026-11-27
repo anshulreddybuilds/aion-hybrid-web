@@ -1975,6 +1975,7 @@ function initVoiceInput() {
     const transcript = event.results[0][0].transcript;
     $("chatInput").value = transcript;
     setChatStatus("Heard: \"" + transcript + "\"");
+    if (window.AionStandalone && typeof window.AionStandalone.armChatGesture === "function") window.AionStandalone.armChatGesture(event);
     sendChatMessage(transcript);
   };
 
@@ -2461,6 +2462,7 @@ function initChatPanel() {
 
   $("chatForm").addEventListener("submit", (e) => {
     e.preventDefault();
+    if (window.AionStandalone && typeof window.AionStandalone.armChatGesture === "function") window.AionStandalone.armChatGesture(e);
     sendChatMessage();
   });
   $("muteBtn").addEventListener("click", toggleMute);
@@ -2643,7 +2645,8 @@ renderEarlier();
 
 /* ---------------------------- two-minute tour ---------------------------- */
 const TOUR_KEY = "aion_tour_hidden";
-function tourSend(text) {
+function tourSend(text, event) {
+  if (window.AionStandalone && typeof window.AionStandalone.armChatGesture === "function") window.AionStandalone.armChatGesture(event);
   location.hash = "#home";
   const input = $("chatInput");
   input.value = text;
@@ -2654,10 +2657,10 @@ function tourSend(text) {
   if (!tour) return;
   try { if (localStorage.getItem(TOUR_KEY) === "1") tour.hidden = true; } catch (e) { /* ignore */ }
   $("tourHide").addEventListener("click", () => { tour.hidden = true; try { localStorage.setItem(TOUR_KEY, "1"); } catch (e) { /* ignore */ } });
-  tour.querySelectorAll("[data-tour]").forEach((b) => b.addEventListener("click", () => {
+  tour.querySelectorAll("[data-tour]").forEach((b) => b.addEventListener("click", (event) => {
     const step = b.dataset.tour;
-    if (step === "chat") tourSend("Summarize my tasks for today");
-    else if (step === "plan") tourSend("/plan prepare my hackathon demo video");
+    if (step === "chat") tourSend("Summarize my tasks for today", event);
+    else if (step === "plan") tourSend("/plan prepare my hackathon demo video", event);
     else if (step === "case") location.hash = "#case";
     else if (step === "proof") {
       location.hash = "#home";

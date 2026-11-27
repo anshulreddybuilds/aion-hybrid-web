@@ -341,7 +341,9 @@
       S.lastSend = { ok: true, latencyMs: g.latencyMs };
       /* The only place a slip is moved to the cloud side: after a real, successful send. */
       var ob = observedOf(g);
-      S.sent = { ids: ids, chars: ob && ob.observed === false ? 0 : ob && ob.chars != null ? ob.chars : g.disclosure && typeof g.disclosure.bytes === "number" ? g.disclosure.bytes : chars, rev: rev, latencyMs: g.latencyMs, unobserved: !!(ob && ob.observed === false) };
+      /* Gemini Nano answered on this device: nothing crossed, so no slip moves. */
+      if (g.actual_source === "on_device") S.sent = { ids: [], chars: 0, rev: rev, latencyMs: g.latencyMs, onDevice: true };
+      else S.sent = { ids: ids, chars: ob && ob.observed === false ? 0 : ob && ob.chars != null ? ob.chars : g.disclosure && typeof g.disclosure.bytes === "number" ? g.disclosure.bytes : chars, rev: rev, latencyMs: g.latencyMs, unobserved: !!(ob && ob.observed === false) };
       say((g.actual_source === "on_device" ? "Gemini Nano answered on this device." : "The cloud answered.") + " Plain code now checks its verdict.");
       /* On a narrow screen the border sits above the step: bring it into view to see the slips cross. */
       setFieldOpen(true);
@@ -566,6 +568,7 @@
     var live = S.busy === "send" ? "sending"
       : (S.busy && S.busy !== "leak") ? "thinking"
       : down ? "blocked"
+      : S.sent && S.sent.onDevice ? "local"
       : S.sent ? "crossed"
       : a.key === "approved" ? "ready"
       : S.lastSend && !S.lastSend.ok ? "refused"
@@ -578,6 +581,7 @@
       thinking: "Working on this device",
       blocked: "Cloud blocked · nothing leaves",
       crossed: "Crossed to the cloud",
+      local: "Answered on this device · nothing crossed",
       ready: "Approved · ready to cross",
       refused: "Cloud refused · nothing crossed",
       waiting: "Waiting for your approval",
@@ -601,7 +605,7 @@
     setText("heldUnit", "characters held · loaded case");
     var sentChars = S.sent ? S.sent.chars : 0;
     dm($("crossNum"), fmt(sentChars), fmt(sentChars) + " characters crossed to the cloud");
-    setText("crossUnit", S.sent ? (S.sent.unobserved ? "characters observed · attempted, no outgoing body seen" : "characters crossed · the whole approved text") : "characters crossed · nothing sent yet");
+    setText("crossUnit", S.sent ? (S.sent.onDevice ? "characters crossed · Gemini Nano answered on this device" : S.sent.unobserved ? "characters observed · attempted, no outgoing body seen" : "characters crossed · the whole approved text") : "characters crossed · nothing sent yet");
     setText("cloudWord", down ? "Cloud " + (HS().offlineDemo ? "unplugged" : cs.text) + " · nothing crosses" : "");
 
     /* the slips */
@@ -624,7 +628,7 @@
       var re = slipEl("REPLY");
       var cv = rules().cloudVerdict(S.result.g.text);
       fillSlip(re, "Reply", cv ? "Advice: " + (CLOUD_TEXT[cv] || cv) : "Advice, no verdict line", ms(S.sent.latencyMs), "reply", "", { "data-kind": "advice", "data-pid": "" });
-      cld.push(re);
+      (S.sent.onDevice ? dev : cld).push(re);
     }
     if (S.drill && !S.drill.error) {
       keep.HOSTILE = true;
@@ -641,7 +645,8 @@
     layoutSlips(dev, cld);
 
     var bits = [];
-    if (S.sent) bits.push(S.sent.ids.length + " " + plural(S.sent.ids.length, "passage") + " crossed in one approved send (revision " + S.sent.rev + ")");
+    if (S.sent && S.sent.onDevice) bits.push("Gemini Nano answered on this device; nothing crossed (revision " + S.sent.rev + ")");
+    else if (S.sent) bits.push(S.sent.ids.length + " " + plural(S.sent.ids.length, "passage") + " crossed in one approved send (revision " + S.sent.rev + ")");
     if (nq || !S.sent) bits.push(nq + " ticked to leave" + (a.key === "approved" ? ", approved" : "") + " · " + fmt(queued) + " chars waiting");
     if (nh) bits.push(nh + " kept here");
     setText("bFoot", bits.join(" · ") + ". Numbers on slips are characters.");
@@ -982,7 +987,7 @@
       cv = R.cloudVerdict(r.g.text);
       var cmp = R.compareVerdicts(cv, local.verdict);
       var dir = { stricter: "The final decision is stricter than the cloud's.", looser: "The final decision is looser than the cloud's.", same: "The final decision matches the cloud's level." }[cmp.direction] || "";
-      cl.replaceChildren("Cloud said: ", h("b", { text: cv ? CLOUD_TEXT[cv] : "no valid VERDICT line" }),
+      cl.replaceChildren(r.g.actual_source === "on_device" ? "Gemini Nano said (on this device): " : "Cloud said: ", h("b", { text: cv ? CLOUD_TEXT[cv] : "no valid VERDICT line" }),
         cv ? " (its \"VERDICT:\" line, read by plain code). " : " so the cloud's view counts as none. ",
         "It was sent " + r.seen + " of " + r.total + " passages; the Case disclosure has no field for your private requirements. " + dir +
         (r.rev !== c.inputRevision ? " This reply was for revision " + r.rev + "; the case is now at revision " + c.inputRevision + "." : ""));

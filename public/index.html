@@ -7,18 +7,18 @@
 <meta content="#050608" name="theme-color"/>
 <meta content="dark" name="color-scheme"/>
 <link href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20fill=%22%23050608%22/%3E%3Crect%20x=%2230%22%20y=%228%22%20width=%224%22%20height=%2248%22%20fill=%22%23ECE6DA%22/%3E%3Crect%20x=%2214%22%20y=%2240%22%20width=%2210%22%20height=%222%22%20fill=%22%239DB4FF%22/%3E%3Crect%20x=%2240%22%20y=%2240%22%20width=%2210%22%20height=%222%22%20fill=%22%23FF6A2B%22/%3E%3C/svg%3E" rel="icon" type="image/svg+xml"/>
-<link href="/manifest.webmanifest" rel="manifest"/>
-<link href="/icons/apple-touch-icon.png" rel="apple-touch-icon"/>
+<link href="./manifest.webmanifest" rel="manifest"/>
+<link href="./icons/apple-touch-icon.png" rel="apple-touch-icon"/>
 <script>
   /* Cache the app shell for flaky connections. Best effort only. */
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
   }
 </script>
-<link href="/fonts.css" rel="stylesheet"/>
-<link href="/line.css" rel="stylesheet"/>
-<link as="image" href="/line-hero.webp" media="(min-width: 901px)" rel="preload" type="image/webp"/>
-<link as="image" href="/line-hero-s.webp" media="(max-width: 900px)" rel="preload" type="image/webp"/>
+<link href="./fonts.css" rel="stylesheet"/>
+<link href="./line.css" rel="stylesheet"/>
+<link as="image" href="./line-hero.webp" media="(min-width: 901px)" rel="preload" type="image/webp"/>
+<link as="image" href="./line-hero-s.webp" media="(max-width: 900px)" rel="preload" type="image/webp"/>
 </head>
 <body class="ln" data-motion="full" data-step="quote">
 <a class="skip" href="#steps">Skip to the steps</a>
@@ -29,9 +29,9 @@
      in the instrument, so the page's border and the picture's are one line. -->
 <div aria-hidden="true" class="sky" id="sky">
 <picture>
-<source media="(max-width: 900px)" srcset="/line-hero-s.webp" type="image/webp"/>
-<source srcset="/line-hero.webp" type="image/webp"/>
-<img alt="" decoding="async" fetchpriority="high" height="820" id="skyImg" src="/line-hero.jpg" width="1800"/>
+<source media="(max-width: 900px)" srcset="./line-hero-s.webp" type="image/webp"/>
+<source srcset="./line-hero.webp" type="image/webp"/>
+<img alt="" decoding="async" fetchpriority="high" height="820" id="skyImg" src="./line-hero.jpg" width="1800"/>
 </picture>
 <div class="tint"></div>
 <canvas id="skyFx"></canvas>
@@ -341,9 +341,9 @@
 <details><summary>Disclosure meter</summary><pre id="wMeter"></pre></details>
 </dialog>
 <div aria-atomic="true" aria-live="polite" class="sr" id="live"></div>
-<script src="/standalone.js"></script>
-<script src="/case.js"></script>
-<script src="/stage.js"></script>
-<script src="/scene.js"></script>
-<script src="/hybrid.bundle.js" type="module"></script>
+<script src="./standalone.js"></script>
+<script src="./case.js"></script>
+<script src="./stage.js"></script>
+<script src="./scene.js"></script>
+<script src="./hybrid.bundle.js" type="module"></script>
 </body></html>

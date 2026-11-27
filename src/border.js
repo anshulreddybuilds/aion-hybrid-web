@@ -20,7 +20,7 @@
  * case.js, a clock) is passed in. Nothing here claims privacy or security:
  * each instrument measures exactly what it was given and says so.
  */
-import { caseRules as moduleRules, passageClass } from "./caseRules.js";
+import { caseRules as moduleRules, passageClass, readDate, readMoney } from "./caseRules.js";
 
 /* Same route-status mapping as router.js (STATUS_FOR there). */
 const STATUS_FOR = { timeout: "timed_out", blocked: "blocked_egress", private_value_blocked: "blocked_egress" };
@@ -527,8 +527,12 @@ function plainProvisional(shared) {
   const all = shared.map((p) => String(p.text || "")).join(" ");
   const concerns = [];
   if (/not included[^.]*(install|setup|rigging)|(install|setup|rigging)[^.]*(not included|excluded|quoted separately)/i.test(all)) concerns.push("installation is excluded");
-  if (!/(\brs\b\.?|\binr\b|₹|\$|€|£)\s*\d/i.test(all)) concerns.push("no price in the shared text");
-  if (!/\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)|\d{4}-\d{2}-\d{2}/i.test(all)) concerns.push("no delivery date in the shared text");
+  if (!readMoney(all).length) concerns.push("no price in the shared text");
+  /* The same date reader as the private review, so "December 11, 2026" or
+   * "11-Dec-2026" counts as a date here too. */
+  const when = readDate(all);
+  if (!when) concerns.push("no delivery date in the shared text");
+  else if (when.invalid) concerns.push(when.ambiguous ? "the delivery date could be read two ways" : "the delivery date is not a real date");
   const cancel = all.match(/(\d{2,3})\s*%[^.]*(cancel|charged)|cancel[^.]*?(\d{2,3})\s*%/i);
   if (cancel && parseInt(cancel[1] || cancel[3], 10) >= 50) concerns.push("high cancellation charge");
   return { verdict: concerns.length ? "caution" : "reasonable",

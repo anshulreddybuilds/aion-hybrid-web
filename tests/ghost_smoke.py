@@ -29,13 +29,15 @@ def maths(lines):
             if cat in ("rent", "emi"): hous += a
     rent_who = next((w for _i, d, w, c, _a in lines if c == "rent"), "Person_A")
     subs_who, subs_amt = next(((w, int(a)) for _i, d, w, c, a in lines if c == "subscriptions"), ("Merchant_C", 0))
+    shop_who = next((w for _i, d, w, c, _a in lines if c == "shopping"), "Merchant_G")
     cloud["sent"] = [int(a) for *_x, a in lines]
     return {"income": inc, "spend": sp, "breakdown": [{"category": c, "amount": v} for c, v in by.items()],
             "rent_emi_share": hous / inc if inc else 0, "savings_rate": (inc - sp) / inc if inc else 0,
-            "tips": [{"text": "Renegotiate rent with " + rent_who + ": it is {amount} a month.", "amount": by.get("rent", 0)},
-                     {"text": cloud["tip2"], "amount": by.get("food", 0)},
+            "tips": [{"text": "Renegotiate rent with " + rent_who + " to save {amount} a month.", "amount": by.get("rent", 0) * 0.1},
+                     {"text": cloud["tip2"], "amount": by.get("food", 0) / 3},
                      {"text": "Your total spend is {amount}.", "amount": sp},
-                     {"text": "cancel subscriptions with " + subs_who + " to save " + str(subs_amt) + " a month", "amount": 0}]}
+                     {"text": "cancel subscriptions with " + subs_who + " to save " + str(subs_amt) + " a month", "amount": 0},
+                     {"text": "Cut " + shop_who + " shopping to save {amount} a month.", "amount": by.get("shopping", 0)}]}
 
 FAKE_NANO = r"""
 window.__nanoAvail = 'unavailable';
@@ -72,6 +74,7 @@ def appcheck(route):
     return route.fulfill(status=200, headers={**CORS, "content-type": "application/json"}, body=json.dumps({"token": "fake", "ttl": "3600s"}))
 
 results = []
+RECORDING = {"data": None}
 def ok(name, cond, extra=""):
     results.append((name, bool(cond)))
     print(("PASS " if cond else "FAIL ") + name + (" :: " + str(extra)[:300] if (extra != "" and not cond) else ""))
@@ -85,8 +88,10 @@ ok("static: ghost.html loads no external script or font", not re.search(r'(href|
 
 with sync_playwright() as p:
     b = p.chromium.launch(channel="chrome", headless=True)
-    def ctx_page(**kw):
+    def ctx_page(recording=None, **kw):
         ctx = b.new_context(**kw)
+        ctx.route("**/ghost-demo-recording.json", (lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(recording)))
+                  if recording else (lambda r: r.fulfill(status=404, body="")))
         ctx.add_init_script(FAKE_NANO)
         ctx.route("**/firebasevertexai.googleapis.com/**", vertex)
         ctx.route("**/content-firebaseappcheck.googleapis.com/**", appcheck)
@@ -137,7 +142,8 @@ with sync_playwright() as p:
     ok("restore: model spend back near real rupees", pg.text_content("#aSpend") in ("₹46,777",) or abs(int(re.sub(r"\D", "", pg.text_content("#aSpend"))) - 46777) <= 46777 * 0.02, pg.text_content("#aSpend"))
     tips = pg.text_content("#aTips")
     ok("restore: stand-in names in tips become real names", "rameshkumar" in tips and "Person_A" not in tips and "swiggy" in tips, tips)
-    ok("restore: rent tip shows the exact ₹24,000 (not a wobbled figure)", "₹24,000" in tips and "about ₹24" not in tips, tips)
+    ok("partial: the rent tip is a partial cut (about ₹2,400), named and in real rupees", re.search(r"rameshkumar to save about ₹2,\d{3} a month", tips) is not None, tips)
+    ok("partial: a tip cutting all shopping (the whole category) is left out", "AMAZON" not in tips and "left out" in tips, tips)
     ok("restore: spend card shows the exact rules figure", pg.text_content("#aSpend") == "₹46,777", pg.text_content("#aSpend"))
     ok("tips: the statement tip with no action is left out and says so", "Your total spend" not in tips and "left out" in tips, tips)
     ok("screen: the bare-number tip from the model shows the real ₹649 a month", "NETFLIX to save ₹649 a month" in tips, tips)
@@ -157,6 +163,28 @@ with sync_playwright() as p:
     # Send again: a fresh approval, still one body per click.
     pg.click("#ghostSendBtn"); pg.wait_for_timeout(1200)
     ok("cloud: a second click sends a second (fresh) request", len(cloud["bodies"]) == n0 + 2)
+
+    # ---------- round 3: request body toggle, row highlight, saving a recording ----------
+    ok("body: the request-body toggle appears after a send", pg.is_visible("#gBodyBox") and "actually received" in pg.text_content("#gBodySum"))
+    pg.click("#gBodySum")
+    body_txt = pg.text_content("#gBody")
+    ok("body: it shows the real request (JSON with the stand-in lines), opened by the toggle", pg.evaluate("document.getElementById('gBodyBox').open") and "Person_A" in body_txt and '"contents"' in body_txt)
+    ok("body: no real name, account or real amount in the shown request", not [x for x in REAL if x in body_txt], [x for x in REAL if x in body_txt])
+    pg.click("#gLens tr[data-id='T5']")
+    pg.wait_for_timeout(450)  # let the 0.25 s highlight transition finish
+    lit = pg.evaluate("[...document.querySelectorAll('#gLens tr.is-lit')].map(t => t.dataset.id)")
+    shade = pg.evaluate("(() => { const tr = document.querySelector('#gLens tr[data-id=T5]'); return [getComputedStyle(tr.querySelector('td.you')).backgroundColor, getComputedStyle(tr.querySelector('td.gem-amt')).boxShadow]; })()")
+    ok("highlight: clicking a row lights that entry on both sides", lit == ["T5"] and shade[0] != "rgba(0, 0, 0, 0)" and "inset" in shade[1], (lit, shade))
+    pg.click("#gLens tr[data-id='T5']")
+    ok("highlight: clicking it again clears it", pg.evaluate("document.querySelectorAll('#gLens tr.is-lit').length") == 0)
+    pg.focus("#gLens tr[data-id='T2']")
+    ok("highlight: rows are reachable by keyboard and named for screen readers", pg.evaluate("document.activeElement.dataset.id") == "T2" and "Gemini gets Person_A" in pg.evaluate("document.activeElement.getAttribute('aria-label')"))
+    ok("recording: a real cloud answer for the sample offers 'save as the demo recording'", pg.is_visible("#gSaveRec"))
+    with pg.expect_download() as dl:
+        pg.click("#gSaveRec")
+    saved = json.loads(open(dl.value.path(), encoding="utf8").read())
+    ok("recording: the saved file is a valid recording of the sample's disguised request", saved.get("schema") == "ghost-demo-recording.v1" and "Person_A" in saved["requestText"] and not [x for x in REAL if x in saved["requestText"]] and 0.55 <= saved["k"] <= 0.95, {k: saved.get(k) for k in ("schema", "k", "model")})
+    RECORDING["data"] = saved
 
     # ---------- hostile cloud: HTML in a tip ----------
     cloud["tip2"] = "Cut <img src=x onerror=\"window.__pwned=1\"> Merchant_B to free {amount}."
@@ -185,6 +213,62 @@ with sync_playwright() as p:
     cloud["mode"] = "ok"
     ok("no page errors (cloud)", not errs, errs)
     ctx.close()
+
+    # ---------- round 3: demo mode ----------
+    CAPS = ("window.__caps = []; new MutationObserver(() => { const t = document.getElementById('gCapT').textContent; "
+            "const line = (document.getElementById('gCapN').textContent + ' ' + t).trim(); "
+            "if (t && window.__caps[window.__caps.length - 1] !== line) window.__caps.push(line); })"
+            ".observe(document.getElementById('gCapT'), { childList: true, subtree: true, characterData: true });")
+    def run_demo(pg):
+        pg.evaluate("window.__ghostDemoSpeed = 40;" + CAPS)
+        pg.click("#ghostDemoBtn")
+        pg.wait_for_function("!document.getElementById('gCap').hidden", timeout=5000)
+        pg.wait_for_function("document.getElementById('gCap').hidden && !document.getElementById('ghostDemoBtn').disabled", timeout=60000)
+        return pg.evaluate("window.__caps")
+
+    # demo, cloud answers
+    cloud["mode"] = "ok"
+    ctx, pg, errs = ctx_page(recording=None)
+    pg.select_option("#gRoute", "prefer_in_cloud")
+    n0 = len(cloud["bodies"])
+    caps = run_demo(pg)
+    ok("demo: plays six numbered captions, then a closing line", all(any(c.startswith(str(i) + " / 6") for c in caps) for i in range(1, 7)) and "never sees your money" in caps[-1], caps)
+    ok("demo: types the sample, reads it on the device and shows the disguise", pg.input_value("#gInput") == pg.evaluate("AionHybrid.ghost.samples.sms") and pg.is_visible("#gLocal") and pg.locator("#gLens tr").count() == 12)
+    ok("demo: the demo click approves exactly one send of the sample", len(cloud["bodies"]) == n0 + 1, len(cloud["bodies"]) - n0)
+    ok("demo: a live cloud answer is shown and labelled live (not recorded)", "Answered by cloud Gemini" in pg.text_content("#gWho") and pg.is_hidden("#gRecorded") and any("Cloud Gemini" in c and "answered in" in c for c in caps), caps)
+    ok("demo: ends with the privacy receipt open (the real request)", pg.evaluate("document.getElementById('gBodyBox').open") and "Person_A" in pg.text_content("#gBody"))
+    ok("demo: no page errors", not errs, errs)
+    ctx.close()
+
+    # demo, cloud refused, recording bundled
+    cloud["mode"] = "appcheck"
+    ctx, pg, errs = ctx_page(recording=RECORDING["data"])
+    pg.select_option("#gRoute", "prefer_in_cloud")
+    caps = run_demo(pg)
+    rec_txt = pg.text_content("#gRecorded") if pg.is_visible("#gRecorded") else ""
+    ok("fallback: the recorded real answer plays and is labelled on screen", "Recorded answer" in rec_txt and "real Gemini answer" in rec_txt and "replay itself sends nothing" in rec_txt, rec_txt)
+    ok("fallback: the caption says it is a recorded real Gemini answer", any("recorded real Gemini answer" in c for c in caps), caps)
+    ok("fallback: the source line says recorded, with the model", pg.text_content("#gWho").startswith("Recorded Gemini answer (gemini-3.5-flash-lite)"), pg.text_content("#gWho"))
+    tips3 = pg.text_content("#aTips")
+    ok("fallback: recorded tips are in real rupees with real names", "₹" in tips3 and "swiggy" in tips3 and "Merchant_" not in tips3 and "Person_" not in tips3, tips3)
+    ok("fallback: recorded figures agree with the rules", pg.text_content("#aAgree").count("agrees") == 4, pg.text_content("#aAgree"))
+    ok("fallback: the receipt shows the recording's request, labelled", "when this was recorded" in pg.text_content("#gBodySum"))
+    ok("fallback: no page errors", not errs, errs)
+    ctx.close()
+
+    # demo, cloud refused, no recording
+    ctx, pg, errs = ctx_page(recording=None)
+    pg.select_option("#gRoute", "prefer_in_cloud")
+    caps = run_demo(pg)
+    ok("no recording: the caption says the rules' figures are the answer", any("no recorded answer is bundled" in c for c in caps), caps)
+    ok("no recording: no answer is invented; the error is shown", pg.is_hidden("#gAnswer") and "No model answer" in pg.text_content("#gSendMsg"))
+    pg.evaluate("window.__ghostDemoSpeed = 1")
+    pg.click("#ghostDemoBtn"); pg.wait_for_timeout(600); pg.click("#gCapStop")
+    pg.wait_for_function("document.getElementById('gCap').hidden && !document.getElementById('ghostDemoBtn').disabled", timeout=5000)
+    ok("stop: the Stop button ends the demo and frees the button", True)
+    ok("no recording: no page errors", not errs, errs)
+    ctx.close()
+    cloud["mode"] = "ok"
 
     # ---------- on-device route (fake Nano) ----------
     ctx, pg, errs = ctx_page()

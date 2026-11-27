@@ -83,6 +83,8 @@
       var cr = r.direction === "credit";
       var tr = el("tr");
       tr.setAttribute("data-id", r.id);
+      tr.tabIndex = 0;
+      tr.setAttribute("aria-label", (r.party || "no name") + ", " + H.ghost.rupees(r.real) + ": Gemini gets " + r.standIn + ", " + r.sent);
       tr.appendChild(cell("you", r.party || "(no name)", (CAT[r.category] || r.category) + (cr ? " · in" : "")));
       tr.appendChild(el("td", (cr ? "+" : "") + H.ghost.rupees(r.real), "amt you-amt" + (cr ? " cr" : "")));
       var gap = el("td", null, "gap"); gap.setAttribute("aria-hidden", "true"); tr.appendChild(gap);
@@ -139,28 +141,51 @@
     sendLabel();
   }
 
+  /* One send. Returns {r} with the answer, or {err} - never throws. */
+  async function trySend(event) {
+    try { return { r: await H.ghost.sendFromClick(event, $("gRoute").value) }; }
+    catch (e) { return { err: e }; }
+  }
+  function sendError(e) {
+    var kept = e && e.approvalKept ? " Your approval is kept; press the button to try again." : "";
+    return "No model answer: " + String(e && e.message || e).split("\n")[0] + kept + " The rules' figures above are complete without it.";
+  }
+
   async function send(event) {
     var b = $("ghostSendBtn");
     msg("gSendMsg", "");
     b.disabled = true;
     var before = b.textContent; b.textContent = "Working…";
-    try {
-      var r = await H.ghost.sendFromClick(event, $("gRoute").value);
-      renderAnswer(r);
-    } catch (e) {
-      var kept = e && e.approvalKept ? " Your approval is kept; press the button to try again." : "";
-      msg("gSendMsg", "No model answer: " + String(e && e.message || e).split("\n")[0] + kept + " The rules' figures above are complete without it.", true);
-    } finally { b.textContent = before; sendLabel(); }
+    var out = await trySend(event);
+    if (out.r) renderAnswer(out.r); else msg("gSendMsg", sendError(out.err), true);
+    b.textContent = before; sendLabel();
   }
 
-  function renderAnswer(r) {
+  var reduced = function () { return matchMedia("(prefers-reduced-motion: reduce)").matches; };
+  function scrollTo(node, block) { node.scrollIntoView({ behavior: reduced() ? "auto" : "smooth", block: block || "start" }); }
+
+  function renderAnswer(r, opts) {
     var who = $("gWho");
     var cloud = r.source === "in_cloud";
-    who.className = "answered " + (cloud ? "cloud" : "device");
-    who.textContent = (cloud ? "Answered by cloud Gemini (" + r.model + ")" : "Answered by Gemini Nano on this device") +
-      (r.sourceVerified ? "" : " (reported by route, not by the SDK)") + " · " + (r.latencyMs / 1000).toFixed(1) + " s" +
-      (cloud ? " · request body observed: " + (r.evidence.bodyObserved ? r.evidence.observedChars + " characters" : "no") +
-        " · real names in it: " + r.evidence.nameHits + " of " + r.evidence.namesChecked + " checked" : " · nothing was sent");
+    var rec = $("gRecorded");
+    rec.hidden = !r.recorded;
+    if (r.recorded) {
+      rec.textContent = "Recorded answer. No model could be reached here just now, so this is a real Gemini answer (" + r.model + ") to the same " +
+        "invented sample, recorded on " + new Date(r.capturedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) +
+        " and replayed. The replay itself sends nothing.";
+      who.className = "answered recorded-src";
+      who.textContent = "Recorded Gemini answer (" + r.model + ")" + (r.latencyMs ? " · took " + (r.latencyMs / 1000).toFixed(1) + " s when recorded" : "") +
+        " · real names in its request: " + r.evidence.nameHits + " of " + r.evidence.namesChecked + " checked";
+    } else {
+      who.className = "answered " + (cloud ? "cloud" : "device");
+      who.textContent = (cloud ? "Answered by cloud Gemini (" + r.model + ")" : "Answered by Gemini Nano on this device") +
+        (r.sourceVerified ? "" : " (reported by route, not by the SDK)") + " · " + (r.latencyMs / 1000).toFixed(1) + " s" +
+        (cloud ? " · request body observed: " + (r.evidence.bodyObserved ? r.evidence.observedChars + " characters" : "no") +
+          " · real names in it: " + r.evidence.nameHits + " of " + r.evidence.namesChecked + " checked" : " · nothing was sent");
+    }
+    renderBody(r);
+    lastRecordable = !!r.recordable;
+    $("gSaveRow").hidden = !r.recordable;
     if (!r.ok) { msg("gSendMsg", "The model answered but not in the JSON shape asked for, so nothing was restored. The rules' figures above stand.", true); show("gAnswer", true); return; }
     var x = r.restored;
     /* A model figure that is not one of the rules' exact figures is marked
@@ -185,7 +210,7 @@
       tips.appendChild(li);
     });
     if (!x.tips.length) tips.appendChild(el("li", "(No tips came back.)"));
-    if (x.tipsDropped) tips.appendChild(el("li", x.tipsDropped + " model tip(s) left out: they stated a figure without saying what to do.", "src"));
+    if (x.tipsDropped) tips.appendChild(el("li", x.tipsDropped + " model tip(s) left out: no clear action, or a cut of the whole amount.", "src"));
     /* The same gaps and the same limit that decided each result (rounded to 0.1
      * before comparing), so the sentence can never contradict the check. */
     var a = r.agreement || {}, g = a.gaps || {}, lim = a.tolerancePct;
@@ -195,7 +220,166 @@
       " points. Spend " + mark("spend", "%") + " · income " + mark("income", "%") + " · rent+EMI share " + mark("rentEmiShare", " pts") +
       " · savings rate " + mark("savingsRate", " pts") + ". Where they differ, trust step 02.";
     show("gAnswer", true);
-    $("gAnswer").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    if (!(opts && opts.noScroll)) scrollTo($("gAnswer"));
+  }
+
+  /* The live request body (what the page's own fetch() sent), pretty-printed.
+   * It holds only stand-ins and scaled numbers. */
+  function renderBody(r) {
+    var raw = r.evidence && r.evidence.body;
+    var box = $("gBodyBox");
+    box.hidden = !raw; box.open = false;
+    if (!raw) return;
+    var pretty = raw;
+    try { pretty = JSON.stringify(JSON.parse(raw), null, 2); } catch (e) { /* plain text (a recording's prompt) */ }
+    $("gBody").textContent = pretty;
+    $("gBodySum").textContent = (r.recorded ? "Show the request Gemini received when this was recorded" : "Show the request Gemini actually received") +
+      " (" + raw.length.toLocaleString("en-IN") + " characters)";
+    $("gBodyNote").textContent = r.recorded ? "From the recording: the disguised sample, as it was sent then."
+      : "Captured from this page's own network call, exactly as sent. Look for any real name or amount: there are none.";
+  }
+
+  /* --------------------------- demo recording --------------------------- */
+  var recording = null, lastRecordable = false;
+  function loadRecording() {
+    return fetch("./ghost-demo-recording.json", { cache: "no-store" })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (j) { recording = j && j.schema ? j : null; })
+      .catch(function () { recording = null; });
+  }
+  function saveRecording() {
+    var rec = H.ghost.lastRecording();
+    if (!rec) return;
+    var blob = new Blob([JSON.stringify(rec, null, 2) + "\n"], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "ghost-demo-recording.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    $("gSaveRec").textContent = "Saved: ghost-demo-recording.json";
+  }
+
+  /* ------------------------------ demo mode ------------------------------
+   * One click plays the whole flow on the invented sample with captions. The
+   * click on "Play the demo" is the approval to send the sample's disguised
+   * lines. If no model answers, a recorded real Gemini answer is replayed and
+   * labelled; with no recording, the rules' answer stands and the caption says so. */
+  var demo = { on: false, stop: false };
+  var STEPS = 6;
+  function wait(ms) {
+    return new Promise(function (resolve, reject) {
+      var t0 = Date.now();
+      /* Tests may speed the demo up; a person watching gets the real pacing. */
+      var speed = typeof window.__ghostDemoSpeed === "number" && window.__ghostDemoSpeed > 0 ? window.__ghostDemoSpeed : 1;
+      (function tick() {
+        if (demo.stop) return reject(new Error("stopped"));
+        if (Date.now() - t0 >= ms / speed) return resolve();
+        setTimeout(tick, 20);
+      })();
+    });
+  }
+  /* Captions take plain strings; <b>…</b> (this device) and <em>…</em> (Gemini)
+   * are built as elements, never parsed as HTML. */
+  function caption(n, text) {
+    $("gCapN").textContent = n ? n + " / " + STEPS : "";
+    var t = $("gCapT"); clear(t);
+    String(text).split(/(<b>.*?<\/b>|<em>.*?<\/em>)/).forEach(function (part) {
+      var m = part.match(/^<(b|em)>(.*)<\/\1>$/);
+      t.appendChild(m ? el(m[1], m[2]) : document.createTextNode(part));
+    });
+  }
+  function light(id, on) {
+    var tr = document.querySelector('#gLens tr[data-id="' + id + '"]');
+    if (tr) tr.classList.toggle("is-lit", !!on);
+    return tr;
+  }
+
+  async function runDemo(event) {
+    if (demo.on) return;
+    demo.on = true; demo.stop = false;
+    var btn = $("ghostDemoBtn");
+    btn.disabled = true;
+    document.body.classList.add("demo-on");
+    $("gCap").hidden = false;
+    try {
+      /* 1. The input */
+      caption(1, "Twelve real-looking bank and UPI alerts for one month. They stay <b>in this tab</b>.");
+      show("gAnswer", false); show("gLocal", false); show("gReceiptStep", false);
+      scrollTo($("gInput"), "center");
+      var lines = H.ghost.samples.sms.split("\n");
+      $("gInput").value = "";
+      for (var i = 0; i < lines.length; i++) { $("gInput").value += (i ? "\n" : "") + lines[i]; $("gInput").scrollTop = 1e6; await wait(reduced() ? 40 : 180); }
+      await wait(2500);
+
+      /* 2. Rules on the device */
+      await read();
+      scrollTo($("gLocal"));
+      caption(2, "Plain code <b>on this device</b> reads them: what you spent, your rent + EMI share, your savings rate. No AI yet.");
+      await wait(6500);
+
+      /* 3. The disguise */
+      scrollTo($("gReceiptStep"));
+      caption(3, "Before anything leaves, every name becomes a stand-in and every amount is multiplied by a <b>secret number</b>.");
+      await wait(3000);
+      var ids = ["T2", "T5", "T7"];
+      for (var j = 0; j < ids.length; j++) {
+        var tr = light(ids[j], true);
+        if (tr) tr.scrollIntoView({ behavior: reduced() ? "auto" : "smooth", block: "center" });
+        await wait(2200);
+        light(ids[j], false);
+      }
+
+      /* 4. Why the maths survives */
+      scrollTo($("gWhy"), "center");
+      caption(4, "Multiplying everything by one number keeps every proportion. Same share on <em>Gemini's numbers</em> as on yours.");
+      await wait(6500);
+
+      /* 5. Send, or replay a recording */
+      scrollTo($("ghostSendBtn"), "center");
+      caption(5, "Sending only the disguised lines to <em>Gemini</em>…");
+      var out = await trySend(event);
+      if (demo.stop) throw new Error("stopped");
+      if (out.r && out.r.ok) {
+        renderAnswer(out.r, { noScroll: true });
+        caption(5, out.r.source === "in_cloud"
+          ? "<em>Cloud Gemini</em> answered in " + (out.r.latencyMs / 1000).toFixed(1) + " s. It worked only on stand-ins and fake numbers."
+          : "<b>Gemini Nano on this device</b> answered in " + (out.r.latencyMs / 1000).toFixed(1) + " s. Nothing left the device.");
+      } else {
+        var played = false;
+        if (recording) {
+          try { renderAnswer(await H.ghost.replay(recording), { noScroll: true }); played = true; } catch (e) { played = false; }
+        }
+        if (played) {
+          caption(5, "No model could be reached here, so this plays a <em>recorded real Gemini answer</em> to the same sample. It is labelled on screen.");
+        } else {
+          msg("gSendMsg", sendError(out.err), true);
+          caption(5, "No model could be reached here and no recorded answer is bundled, so the <b>rules' figures</b> above are the answer.");
+        }
+      }
+      await wait(5000);
+
+      /* 6. Back in real rupees + the receipt */
+      if (!$("gAnswer").hidden) {
+        scrollTo($("gAnswer"));
+        caption(6, "Back <b>on this device</b>: divided by the secret number, names put back. Tips in real rupees.");
+        await wait(6500);
+        if (!$("gBodyBox").hidden) {
+          $("gBodyBox").open = true;
+          scrollTo($("gBodyBox"), "start");
+          caption(6, "The privacy receipt: the request <em>Gemini</em> received. Stand-ins and scaled numbers only, no real name or amount.");
+          await wait(7000);
+        }
+      }
+      caption(0, "Ghost-Math: the cloud does the maths, and never sees your money.");
+      await wait(5000);
+    } catch (e) {
+      /* stopped, or a step failed: leave the page as it is */
+    } finally {
+      document.querySelectorAll("#gLens tr.is-lit").forEach(function (t) { t.classList.remove("is-lit"); });
+      $("gCap").hidden = true;
+      document.body.classList.remove("demo-on");
+      btn.disabled = false;
+      demo.on = false;
+    }
   }
 
   function start(api) {
@@ -207,6 +391,19 @@
     $("gSampleBudget").addEventListener("click", function () { $("gInput").value = H.ghost.samples.budget; read(); });
     $("gRead").addEventListener("click", read);
     $("ghostSendBtn").addEventListener("click", send);
+    $("ghostDemoBtn").addEventListener("click", runDemo);
+    $("gCapStop").addEventListener("click", function () { demo.stop = true; });
+    $("gSaveRec").addEventListener("click", saveRecording);
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && demo.on) demo.stop = true; });
+    /* Clicking a row (or focusing it) lights both halves of that entry. */
+    $("gLens").addEventListener("click", function (e) {
+      var tr = e.target.closest && e.target.closest("tr");
+      if (!tr || demo.on) return;
+      var was = tr.classList.contains("is-lit");
+      document.querySelectorAll("#gLens tr.is-lit").forEach(function (t) { t.classList.remove("is-lit"); });
+      if (!was) tr.classList.add("is-lit");
+    });
+    loadRecording();
     status();
     setInterval(status, 2000);
   }

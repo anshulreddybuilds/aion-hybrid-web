@@ -744,7 +744,9 @@ async function ghostPrepare(text) {
   const disclosure = parsed.entries.length
     ? await egress.createDisclosure({ purpose: "ghost_math", payload: ghostMath.buildPayload(masked.lines) }) : null;
   const outgoing = disclosure ? egress.serialize(disclosure) : "";
-  ghostPrepared = { entries: parsed.entries, summary, disclosure };
+  /* The bundled sample (invented data) is the only input a demo recording may be made from or replayed for. */
+  const isSample = String(text).replace(/\r/g, "").trim() === SAMPLE_SMS.trim();
+  ghostPrepared = { entries: parsed.entries, summary, disclosure, isSample };
   return {
     count: parsed.entries.length, skipped: parsed.skipped.slice(), summary,
     rows: masked.rows.map((r) => Object.assign({}, r)),
@@ -756,6 +758,32 @@ async function ghostPrepare(text) {
 }
 
 const GHOST_ROUTES = { prefer_on_device: 1, prefer_in_cloud: 1, only_on_device: 1, only_in_cloud: 1 };
+let ghostLastRecording = null;
+
+/** Demo mode only: replays a recorded real Gemini answer for the bundled sample
+ * when no model can be reached now. Nothing is sent. The recording's own k (the
+ * sample's, stored with it) divides its numbers back; the answer is checked
+ * against the rules like a live one and is always labelled as recorded. */
+async function ghostReplay(rec) {
+  const p = ghostPrepared;
+  if (!p || !p.isSample) throw refused("replay_not_sample", "a recording can only be replayed for the bundled sample.");
+  const v = ghostMath.validateRecording(rec);
+  if (!v.ok) throw refused("replay_invalid", "the recording is not valid (" + v.errors.join(", ") + ").");
+  if (rec.sampleDigest !== await egress.sha256Hex(SAMPLE_SMS.trim())) throw refused("replay_stale", "the recording was made for a different sample.");
+  const s = ghostMath.createSession({ k: rec.k });
+  s.mask(p.entries);
+  const restored = s.restore(rec.response, ghostMath.exactFigures(p.entries, p.summary));
+  const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount }));
+  const picked = ghostMath.chooseTips(restored.tips, rulesTips, ghostMath.wholeAmounts(p.entries, p.summary));
+  restored.tips = picked.tips;
+  restored.tipsDropped = picked.dropped;
+  const leak = ghostMath.leakCheck(rec.requestText + "\n" + (rec.requestBody || ""), p.entries);
+  return {
+    ok: true, recorded: true, source: "recorded", model: rec.model, capturedAt: rec.capturedAt, latencyMs: rec.latencyMs || null,
+    restored, agreement: ghostMath.agreement(p.summary, restored.raw),
+    evidence: { recorded: true, body: rec.requestBody || rec.requestText, namesChecked: leak.namesChecked, nameHits: leak.nameHits.length },
+  };
+}
 
 async function ghostSend(modeKey) {
   const p = ghostPrepared;
@@ -809,10 +837,18 @@ async function ghostSend(modeKey) {
       const bodyLeak = ghostMath.leakCheck((obs.texts || []).join("\n"), p.entries);
       const restored = ghostSession.restore(json, ghostMath.exactFigures(p.entries, p.summary));
       const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount }));
-      const picked = ghostMath.chooseTips(restored.tips, rulesTips);
+      const picked = ghostMath.chooseTips(restored.tips, rulesTips, ghostMath.wholeAmounts(p.entries, p.summary));
       restored.tips = picked.tips;
       restored.tipsDropped = picked.dropped;
       const isCloud = source === SOURCE.in_cloud;
+      const body = (obs.texts || [])[0] || "";
+      /* A real cloud answer for the bundled sample can be kept as the demo recording. */
+      if (isCloud && json && p.isSample) {
+        ghostLastRecording = { schema: ghostMath.RECORDING_SCHEMA, model: cloudModel, capturedAt: new Date().toISOString(), latencyMs,
+          k: 1 / ghostSession.unscale(1), sampleDigest: await egress.sha256Hex(SAMPLE_SMS.trim()), requestText: text,
+          requestBody: body.slice(0, 60000), response: json,
+          note: "A real Gemini answer for the bundled sample (invented data), captured in Ghost-Math demo mode. k is stored only because the data is the sample." };
+      }
       const receipt = telemetry.recordReceipt({
         route: isCloud ? "cloud-ghost-math" : "on-device-nano", status: json ? "completed" : "failed",
         model: isCloud ? cloudModel : "Gemini Nano", requestedMode: route, latencyMs, approvalState: "approved",
@@ -826,7 +862,8 @@ async function ghostSend(modeKey) {
         ok: !!json, source, sourceVerified, model: isCloud ? cloudModel : "Gemini Nano", latencyMs, route,
         restored, agreement: json ? ghostMath.agreement(p.summary, restored.raw) : null,
         evidence: { bodyObserved: obs.bodyObserved, observedChars: obs.observedChars, bodies: obs.bodies.length,
-          namesChecked: bodyLeak.namesChecked, nameHits: bodyLeak.nameHits.length },
+          namesChecked: bodyLeak.namesChecked, nameHits: bodyLeak.nameHits.length, body: body.slice(0, 60000) },
+        recordable: !!(isCloud && json && p.isSample),
         receiptId: receipt.receiptId,
       };
     } catch (e) {
@@ -1078,7 +1115,13 @@ function boot() {
     /* Ghost-Math. k is never exposed; a send needs a real click on #ghostSendBtn. */
     ghost: {
       prepare: ghostPrepare,
-      sendFromClick: (event, modeKey) => trustedBorderAction(event, ["ghostSendBtn"])
+      replay: ghostReplay,
+      /* The last real cloud answer for the sample, as a recording (null otherwise). */
+      lastRecording: () => (ghostLastRecording ? JSON.parse(JSON.stringify(ghostLastRecording)) : null),
+      /* A real click on Send, or on the demo button (which says it sends the sample's
+       * disguised lines) - the demo click approves a send of the bundled sample only. */
+      sendFromClick: (event, modeKey) => (trustedBorderAction(event, ["ghostSendBtn"]) ||
+          (trustedBorderAction(event, ["ghostDemoBtn"]) && ghostPrepared && ghostPrepared.isSample))
         ? ghostSend(modeKey)
         : Promise.reject(Object.assign(new Error("Sending needs a direct click on the send button."), { code: "user_gesture_required" })),
       samples: { sms: SAMPLE_SMS, budget: SAMPLE_BUDGET },

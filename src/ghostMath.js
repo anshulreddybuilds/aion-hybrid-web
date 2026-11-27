@@ -183,14 +183,14 @@ const r2 = (n) => Math.round(n * 100) / 100;
 /** Real-rupee figures, computed here and only here. */
 export function summarize(entries) {
   let income = 0, spend = 0, invested = 0;
-  const by = {};
+  const by = {}, count = {};
   (entries || []).forEach((e) => {
     if (e.direction === "credit") income += e.amount;
     /* Money moved into a SIP / FD / savings is kept, not spent. */
     else if (e.category === "savings") invested += e.amount;
-    else { spend += e.amount; by[e.category] = (by[e.category] || 0) + e.amount; }
+    else { spend += e.amount; by[e.category] = (by[e.category] || 0) + e.amount; count[e.category] = (count[e.category] || 0) + 1; }
   });
-  const breakdown = Object.keys(by).map((category) => ({ category, amount: r2(by[category]), share: spend ? by[category] / spend : 0 }))
+  const breakdown = Object.keys(by).map((category) => ({ category, amount: r2(by[category]), share: spend ? by[category] / spend : 0, count: count[category] }))
     .sort((a, b) => b.amount - a.amount);
   const housing = (by.rent || 0) + (by.emi || 0);
   return {
@@ -219,8 +219,14 @@ export function localTips(s) {
   if (s.rentEmiShare > 0.4) tips.push({ text: "Rent and EMIs take " + pct(s.rentEmiShare) + " of your " + s.rentEmiBase + ". A common guide is under 40%; prepaying the costliest loan or a cheaper place would free {amount} a month at 40%.", amount: s.rentEmi - 0.4 * (s.rentEmiBase === "income" ? s.income : s.spend) });
   const eatOut = cat("food");
   if (s.spend > 0 && eatOut / s.spend > 0.12) tips.push({ text: "Food delivery and eating out are " + pct(eatOut / s.spend) + " of spending. Cut it by a third to save about {amount}.", amount: eatOut / 3 });
-  const subs = cat("subscriptions");
-  if (subs > 0) tips.push({ text: "Cancel the subscription you used least; together they cost {amount}.", amount: subs });
+  /* Believable, partial savings: one subscription out of several, or a cheaper
+   * plan when there is only one; a third off shopping; never "stop it all". */
+  const subsRow = s.breakdown.find((b) => b.category === "subscriptions");
+  if (subsRow) tips.push(subsRow.count > 1
+    ? { text: "Cancel the subscription you use least to save about {amount}.", amount: subsRow.amount / subsRow.count }
+    : { text: "Switch your subscription to a cheaper plan to save about {amount}.", amount: subsRow.amount / 3 });
+  const shop = cat("shopping");
+  if (s.spend > 0 && shop / s.spend > 0.05) tips.push({ text: "Cut online shopping by a third to save about {amount}.", amount: shop / 3 });
   if (s.savingsRate != null && s.savingsRate < 0.2) tips.push({ text: "You are saving " + pct(Math.max(0, s.savingsRate)) + " of income. Keep about {amount} more to reach 20%.", amount: 0.2 * s.income - (s.income - s.spend) });
   if (!tips.length) tips.push({ text: "Your biggest spend is " + ((s.breakdown[0] || {}).category || "none") + " at {amount}. Set a monthly cap for it.", amount: (s.breakdown[0] || { amount: 0 }).amount });
   return tips.slice(0, 3).map((t) => ({ text: t.text, amount: Math.max(0, Math.round(t.amount)) }));
@@ -348,7 +354,11 @@ function fitting(value, list) {
 }
 export function snap(value, exact, preferred) {
   if (value == null || !isFinite(value)) return { value, exact: false };
-  for (const list of [preferred, exact]) {
+  /* When the text names a payee, a figure may only become one of THAT payee's
+   * amounts: matching some other entry (a ₹2,400 rent saving near a ₹2,340
+   * grocery bill) would be a coincidence, so it stays "about". */
+  const lists = preferred && preferred.length ? [preferred] : [exact];
+  for (const list of lists) {
     if (!list || !list.length) continue;
     const fit = fitting(value, list);
     if (fit.length === 1) return { value: fit[0], exact: true };
@@ -428,13 +438,44 @@ function restoreResult(json, fromAlias, k, exact, aliasFigures) {
 }
 
 /** 2 to 3 tips to show: the model's actionable ones first (an action word and a
- * figure above zero), then the rules' own tips to make up at least two. */
-export function chooseTips(modelTips, rulesTips) {
+ * figure above zero), then the rules' own tips to make up at least two.
+ * `wholeAmounts` (each entry and each category total): a saving equal to one of
+ * them means "stop it entirely" (e.g. cut all Amazon shopping), which is not a
+ * believable tip, so it is left out; cancelling one subscription is allowed. */
+export function chooseTips(modelTips, rulesTips, wholeAmounts) {
+  const whole = new Set((wholeAmounts || []).filter((x) => x >= 100).map((x) => Math.round(x)));
+  const isWholeCut = (t) => t.exact && t.amount != null && whole.has(Math.round(t.amount)) && !/\bcancel\b/i.test(t.text);
   /* A figure counts whether it came in `amount` or was written into the text (now ₹, real). */
-  const good = (modelTips || []).filter((t) => ACTION_RE.test(t.text) && ((t.amount != null && t.amount >= 1) || /₹\s?[1-9]/.test(t.text)));
+  const good = (modelTips || []).filter((t) => ACTION_RE.test(t.text) && ((t.amount != null && t.amount >= 1) || /₹\s?[1-9]/.test(t.text)) && !isWholeCut(t));
   const out = good.slice(0, 3).map((t) => Object.assign({ from: "model" }, t));
   (rulesTips || []).forEach((t) => { if (out.length < 2) out.push({ text: t.text, amount: t.amount, exact: true, from: "rules" }); });
   return { tips: out.slice(0, 3).map((t) => Object.assign({}, t, { text: capitalize(t.text) })), dropped: (modelTips || []).length - good.length };
+}
+
+/** Each spending entry and each category total (what a "cut it all" tip would equal). */
+export function wholeAmounts(entries, summary) {
+  const out = (entries || []).filter((e) => e.direction === "debit").map((e) => e.amount);
+  ((summary && summary.breakdown) || []).forEach((b) => out.push(b.amount));
+  return out;
+}
+
+/* ------------------------------ demo recording ------------------------------
+ * A recorded REAL Gemini answer for the bundled sample, replayed by demo mode only
+ * when no model can be reached, and always labelled as a recording. It is made
+ * from the sample (invented data), so its k is stored with it; a real user's k is
+ * never stored. */
+export const RECORDING_SCHEMA = "ghost-demo-recording.v1";
+export function validateRecording(rec) {
+  const errors = [];
+  if (!rec || typeof rec !== "object") return { ok: false, errors: ["not an object"] };
+  if (rec.schema !== RECORDING_SCHEMA) errors.push("schema");
+  if (!(typeof rec.k === "number" && rec.k >= K_MIN && rec.k <= K_MAX)) errors.push("k");
+  if (typeof rec.model !== "string" || !rec.model) errors.push("model");
+  if (typeof rec.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(rec.capturedAt)) errors.push("capturedAt");
+  if (!rec.response || typeof rec.response !== "object") errors.push("response");
+  if (typeof rec.requestText !== "string" || !rec.requestText) errors.push("requestText");
+  if (typeof rec.sampleDigest !== "string" || !/^[0-9a-f]{64}$/.test(rec.sampleDigest)) errors.push("sampleDigest");
+  return { ok: errors.length === 0, errors };
 }
 
 /** First letter upper case ("cut swiggy ..." -> "Cut swiggy ..."); nothing else changes. */
@@ -450,7 +491,8 @@ export const INSTRUCTIONS = "You are a careful personal-finance assistant. Below
   "(spend per category, as numbers; spend and breakdown leave out the savings category, which is money kept, not spent), rent_emi_share (rent plus emi divided by income, a fraction between 0 and 1; divide by spend if " +
   "there is no income), savings_rate ((income - spend) / income, a fraction), and 2 or 3 tips. Each tip must start with one concrete action " +
   "(cut, cancel, switch, move, set, prepay, pause or renegotiate something specific, naming the party or category) and say how much it " +
-  "would free up each month; do not just restate a total. Each tip has text and amount: write it as \"save {amount} a month\" where that " +
+  "would free up each month; do not just restate a total. Suggest a believable partial cut, such as a quarter or a third of a " +
+  "category, or one subscription out of several; never cutting a whole category or a whole payment. Each tip has text and amount: write it as \"save {amount} a month\" where that " +
   "monthly rupee figure goes and give it as a plain number in amount. Do not write any other numbers in the text. Do not invent entries.";
 
 export const RESPONSE_JSON_SCHEMA = {

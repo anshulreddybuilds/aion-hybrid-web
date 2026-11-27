@@ -216,6 +216,40 @@ for (let seed = 1; seed <= 20; seed++) {
   ok("check: for 81 gaps from 0% to 8%, 'agrees' is exactly 'printed gap <= printed limit'", consistent);
 }
 
+/* ------------------------------ believable partial cuts ------------------------------ */
+{
+  const local = G.summarize(entries);
+  const whole = G.wholeAmounts(entries, local);
+  const rt = G.localTips(local);
+  const all = rt.map((t) => G.fillTip(t.text, G.rupees(t.amount))).join(" | ");
+  ok("partial: no rules tip saves a whole category or a whole payment", rt.every((t) => !whole.some((w) => Math.round(w) === t.amount)), { rt, whole });
+  ok("partial: one subscription -> a cheaper plan, about a third (₹216)", /cheaper plan to save about ₹216 a month/.test(all), all);
+  ok("partial: shopping is cut by a third (₹1,166), not stopped", /Cut online shopping by a third to save about ₹1,166 a month/.test(all), all);
+  const two = G.summarize(G.parseInput("Salary: 50000\nNetflix: 649\nSpotify subscription: 119").entries);
+  ok("partial: with two subscriptions, cancel the one used least (the average, ₹384)", G.localTips(two).some((t) => /Cancel the subscription you use least/.test(t.text) && t.amount === 384), G.localTips(two));
+  const model = [
+    { text: "Cut AMAZON shopping to save ₹3,499 a month.", amount: 3499, exact: true },        // the whole category: dropped
+    { text: "Cut AMAZON shopping by a third to save about ₹1,166 a month.", amount: 1166, exact: false },
+    { text: "Cancel NETFLIX to save ₹649 a month.", amount: 649, exact: true },               // one subscription: allowed
+    { text: "Stop paying rameshkumar to save ₹24,000 a month.", amount: 24000, exact: true },  // whole rent: dropped
+  ];
+  const picked = G.chooseTips(model, [], whole);
+  ok("partial: a model tip cutting a whole category or payment is left out", picked.dropped === 2 && !picked.tips.some((t) => /₹3,499|₹24,000/.test(t.text)), picked);
+  ok("partial: a partial cut and one cancelled subscription are kept", picked.tips.length === 2 && /by a third/.test(picked.tips[0].text) && /Cancel NETFLIX/.test(picked.tips[1].text), picked.tips);
+  ok("partial: the instructions ask for a believable partial cut", /believable partial cut/.test(G.INSTRUCTIONS) && /never cutting a whole category/.test(G.INSTRUCTIONS));
+}
+
+/* ------------------------------ demo recording ------------------------------ */
+{
+  const good = { schema: G.RECORDING_SCHEMA, k: 0.7, model: "gemini-3.5-flash-lite", capturedAt: "2026-11-28T10:00:00Z",
+    response: { income: 1 }, requestText: "x", sampleDigest: "a".repeat(64) };
+  ok("recording: a complete recording is valid", G.validateRecording(good).ok, G.validateRecording(good).errors);
+  ok("recording: a k outside 0.55-0.95 is refused", !G.validateRecording(Object.assign({}, good, { k: 1.4 })).ok);
+  ok("recording: wrong schema, no response or a bad digest is refused",
+    !G.validateRecording(Object.assign({}, good, { schema: "x" })).ok && !G.validateRecording(Object.assign({}, good, { response: null })).ok &&
+    !G.validateRecording(Object.assign({}, good, { sampleDigest: "zz" })).ok && !G.validateRecording(null).ok);
+}
+
 /* ------------------------------ tips start with a capital ------------------------------ */
 {
   ok("capital: first letter only", G.capitalize("cut swiggy to save ₹280 a month") === "Cut swiggy to save ₹280 a month" && G.capitalize("Cancel NETFLIX") === "Cancel NETFLIX" && G.capitalize("") === "");
@@ -258,6 +292,14 @@ for (let seed = 1; seed <= 20; seed++) {
   s.mask(entries);
   ok("screen: the reported tip ('save 552 a month' for NETFLIX) reads ₹649", s.restoreText("Cancel subscriptions with Merchant_C to save 552 a month", exact) === "Cancel subscriptions with NETFLIX to save ₹649 a month");
   ok("screen: a bare figure that matches no rules figure is ₹ and 'about'", s.restoreText("save 1500 a month", exact) === "save about ₹1,765 a month");
+  {
+    const s2 = G.createSession({ k: 0.8, wobble: 0 });
+    s2.mask(entries);
+    /* a rent saving of about ₹2,360 is near the ₹2,340 bigbasket bill, but the tip names the landlord */
+    ok("screen: a figure in a tip about one payee never becomes another payee's amount",
+      s2.restoreText("Renegotiate rent with Person_A to save ₹1888 a month", exact) === "Renegotiate rent with rameshkumar to save about ₹2,360 a month",
+      s2.restoreText("Renegotiate rent with Person_A to save ₹1888 a month", exact));
+  }
   ok("screen: percentages, counts, small numbers and ids are left alone", s.restoreText("cut 40% of T5, 2 times, for 3 months", exact) === "cut 40% of T5, 2 times, for 3 months");
 }
 

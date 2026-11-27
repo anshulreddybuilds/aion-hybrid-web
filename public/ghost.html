@@ -106,9 +106,38 @@
     .lens td.gem::before { content:"Gemini gets"; color:var(--signal); }
     .lens td.you-amt, .lens td.gem-amt { align-self:end; }
     .lens td.gem, .lens td.gem-amt, .lens tbody tr:hover td:not(.gap) { background:transparent; }
+    /* On a phone the whole stacked entry lights as one block. */
+    .lens table tbody tr.is-lit td:not(.gap), .lens table tbody tr:focus-visible td:not(.gap),
+    .lens table tbody tr:hover td:not(.gap) { background:transparent; box-shadow:none; }
+    .lens tbody tr.is-lit, .lens tbody tr:focus-visible { background:rgba(236,230,218,.09); box-shadow:inset 3px 0 0 var(--cold), inset -3px 0 0 var(--signal); }
+    .cap-in { flex-wrap:wrap; gap:6px 12px; padding:12px 14px; }
+    .cap-n { width:100%; } .cap-t { font-size:16px; }
     .lens td.gem, .lens td.gem-amt { padding-top:2px; padding-bottom:12px; }
     .why-cmp { grid-template-columns:1fr 1fr; } .why-cmp > div:first-child { grid-column:1 / -1; }
   }
+  /* Row highlight: hover, keyboard focus, or the demo lights both halves of one entry. */
+  .lens tbody tr { outline:none; cursor:default; }
+  .lens tbody tr.is-lit td:not(.gap), .lens tbody tr:focus-visible td:not(.gap) { background:rgba(236,230,218,.09); }
+  .lens tbody tr.is-lit td.you, .lens tbody tr:focus-visible td.you { box-shadow:inset 3px 0 0 var(--cold); }
+  .lens tbody tr.is-lit td.gem-amt, .lens tbody tr:focus-visible td.gem-amt { box-shadow:inset -3px 0 0 var(--signal); }
+  .lens tbody tr.is-lit td.gap, .lens tbody tr:focus-visible td.gap { opacity:1; }
+  /* Demo mode */
+  .demo-row { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; margin-top:16px; }
+  button.demo { background:transparent; border-color:var(--bone); font-weight:500; padding-left:40px; position:relative; }
+  button.demo::before { content:""; position:absolute; left:16px; top:50%; margin-top:-6px; border-left:10px solid var(--bone); border-top:6px solid transparent; border-bottom:6px solid transparent; }
+  button.demo:disabled::before { border-left-color:var(--mute); }
+  .cap { position:fixed; left:0; right:0; bottom:0; z-index:20; padding:0 16px calc(16px + env(safe-area-inset-bottom, 0px)); pointer-events:none; }
+  .cap-in { pointer-events:auto; max-width:880px; margin:0 auto; display:flex; gap:14px; align-items:center; background:rgba(10,11,14,.94);
+    border:1px solid var(--hair-2); border-radius:14px; padding:14px 16px 14px 20px; box-shadow:0 18px 40px rgba(0,0,0,.45); }
+  .cap-n { font:500 12px/1 var(--mono); color:var(--mute); white-space:nowrap; }
+  .cap-t { margin:0; flex:1; font:400 clamp(17px,2.2vw,21px)/1.35 var(--sans); color:var(--bone); }
+  .cap-t b { color:var(--cold); font-weight:500; } .cap-t em { color:var(--signal); font-style:normal; }
+  .cap-stop { flex:none; }
+  body.demo-on main.wrap { padding-bottom:180px; }
+  p.recorded { margin:0 0 10px; padding:10px 14px; border:1px dashed var(--caution); border-radius:8px; color:var(--caution); font-size:14px; }
+  .answered.recorded-src { border-color:var(--caution); }
+  #gBodyBox { margin-top:14px; } code { font:13px var(--mono); }
+  @media (prefers-reduced-motion:no-preference) { .lens tbody td { transition:background-color .25s ease, box-shadow .25s ease; } }
   .answered { font:13px/1.5 var(--mono); padding:12px 14px; border-radius:8px; border:1px solid var(--hair-2); }
   .answered.cloud { border-color:var(--signal); } .answered.device { border-color:var(--cold); } .answered.rules { border-color:var(--fit); }
   .msg { color:var(--caution); font-size:14px; margin-top:10px; } .msg.bad { color:var(--block); }
@@ -128,6 +157,10 @@
     <div>
       <h1>Ghost-<em>Math</em></h1>
       <p class="lede">A private money lens. Rules on this device scale every rupee by a secret number and swap every name for a stand-in, so Gemini can still do your maths without seeing your money.</p>
+      <div class="demo-row">
+        <button type="button" class="demo" id="ghostDemoBtn" aria-describedby="gDemoNote">Play the demo</button>
+        <span class="hint" id="gDemoNote">About a minute, with captions. Uses the invented sample and sends only its disguised lines.</span>
+      </div>
     </div>
     <div class="status" aria-live="polite">
       <span class="pill" id="gAppCheck">App Check: …</span>
@@ -202,6 +235,7 @@
   <section class="step" id="gAnswer" hidden aria-labelledby="s4">
     <h2 id="s4"><span class="n">04</span>Back in real rupees</h2>
     <p class="hint">The model's numbers, divided by the secret factor and given their real names back, here. A figure that matches one the rules already know is shown exactly; any other figure is marked “about”.</p>
+    <p class="recorded" id="gRecorded" hidden></p>
     <div class="answered" id="gWho"></div>
     <div class="kpis" style="margin-top:14px">
       <div class="kpi"><div class="l">Spent (model)</div><div class="v" id="aSpend">-</div><div class="s" id="aSpendS"></div></div>
@@ -210,6 +244,12 @@
     </div>
     <ul class="tips" id="aTips"></ul>
     <p class="agree" id="aAgree"></p>
+    <details id="gBodyBox" hidden><summary id="gBodySum">Show the request Gemini actually received</summary>
+      <p class="hint" id="gBodyNote"></p><pre class="out" id="gBody"></pre></details>
+    <div class="row" id="gSaveRow" hidden>
+      <button type="button" id="gSaveRec">Save this answer as the demo recording</button>
+      <span class="hint" style="margin:0">A real Gemini answer for the invented sample. Put the file in <code>public/</code> so demo mode can replay it when no model is reachable.</span>
+    </div>
   </section>
 
   <footer>
@@ -217,6 +257,13 @@
     Scaling hides the size of your money and the names, not the shape of your spending: categories and proportions are sent. Not financial advice.
   </footer>
 </main>
+<div class="cap" id="gCap" hidden>
+  <div class="cap-in">
+    <span class="cap-n" id="gCapN"></span>
+    <p class="cap-t" id="gCapT" role="status" aria-live="polite"></p>
+    <button type="button" class="cap-stop" id="gCapStop">Stop</button>
+  </div>
+</div>
 <style>.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
 <script src="./hybrid.bundle.js" type="module"></script>
 <script src="./ghost.js" defer></script>

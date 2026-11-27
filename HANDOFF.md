@@ -47,6 +47,18 @@ Tests: `node tests/ghost.test.mjs` **68/68** (this includes scale/restore round 
 - Tests: ghost 97/97, ghost smoke 51/51 (mocked), plus a visual check at 1280 px and 390 px.
 - Still to do in round 2: optionally highlight a row on both sides on hover/focus for presenting, and a "show the live request body" toggle.
 
+## Round 3 started (28 Nov): demo mode for the judges' video
+- **Play the demo** (top of the page) runs the whole flow on the invented sample, with captions numbered 1–6 at the bottom: the alerts typed in → rules on the device → the disguise (three rows light up on both sides) → why the maths survives → send to Gemini → back in real rupees, ending with the privacy receipt open. It takes about a minute at full pace, which leaves room in a 2:30 video. **Stop** or Esc ends it.
+- **The demo click is the approval** to send the sample's disguised lines (the button says so), and only for the bundled sample.
+- **If no model answers:** the demo replays a **recorded real Gemini answer** and labels it on screen and in the caption. The caption says it's recorded, a dashed banner gives the model and the recording date, the source line reads "Recorded Gemini answer", and the receipt shows the request as it was sent then. If no recording is bundled, the caption says the rules' figures are the answer. Nothing is made up.
+- **⚠ No recording is bundled yet.** I couldn't make one: my automated browser can't pass App Check, and calling Gemini directly might have cost money, which you asked me not to do without your yes. **To add one (1 minute, your Chrome):** run the demo (or a normal send with the sample) on *Prefer cloud*. When Gemini answers, click **Save this answer as the demo recording**, put the downloaded `ghost-demo-recording.json` in `public/`, then commit and redeploy the preview. The recording holds only the sample's disguised request, Gemini's reply, and that run's k (stored because the data is invented).
+- **Tips suggest believable partial cuts** ("Cut online shopping by a third to save about ₹1,166 a month", "Switch your subscription to a cheaper plan…"). A model tip whose saving equals a whole category or payment is left out (cancelling one subscription is allowed). Gemini is asked for partial cuts too.
+- **Round-2 extras:**
+  - Click or keyboard-focus a row to light both sides; the demo uses the same highlight.
+  - After a send, **Show the request Gemini actually received** opens the real request body captured from the page's own network call.
+- **Bug found and fixed:** a figure in a tip that names a payee now only snaps to that payee's own amounts. Before, a ₹2,400 rent saving could become the ₹2,340 grocery bill.
+- Tests: ghost 108/108, ghost smoke 77/77 (mocked), with visual checks at 1280 px and 390 px.
+
 ## App Check (the required rule)
 App Check is already turned on in the code: reCAPTCHA Enterprise with the site key in `src/hybrid.js`. The debug provider can never run on the production domains. I couldn't see the Firebase console, so please check these yourself:
 1. **Firebase console → App Check → APIs → Firebase AI Logic:** it should say **Enforced**. If it says Monitoring, click Enforce.

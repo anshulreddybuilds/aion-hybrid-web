@@ -252,12 +252,20 @@
     api().importQuote(q).then(function (c) {
       newCase(c); S.packId = null;
       var flagged = c.paragraphs.filter(function (p) { return p.injection && p.injection.flagged; }).length;
-      msg("Read on this device: " + c.paragraphs.length + " " + plural(c.paragraphs.length, "passage") + ", all private until you tick them." +
+      S.showAnswer = true;
+      msg("Read on this device: " + c.paragraphs.length + " " + plural(c.paragraphs.length, "passage") + ". Your answer is below. Nothing was sent." +
         (flagged ? " " + flagged + " " + plural(flagged, "passage looks", "passages look") + " like instructions and will be held back." : ""), "green");
       $("quoteText").value = "";
       return prepare();
     }, function (e) { msg("Could not save the quote: " + String((e && e.message) || e), "red"); })
-      .then(function () { S.busy = ""; renderAll(); });
+      .then(function () {
+        S.busy = ""; renderAll();
+        if (S.showAnswer) {
+          S.showAnswer = false;
+          var a = $("answerPanel");
+          if (a && a.getBoundingClientRect().bottom > window.innerHeight) a.scrollIntoView({ block: "nearest", behavior: motion() === "full" ? "smooth" : "auto" });
+        }
+      });
   }
   var IMAGE_HEADINGS = [["other", "Overview"], ["price", "Price and payment"], ["delivery", "Delivery"], ["scope", "Scope and exclusions"],
     ["warranty", "Warranty and support"], ["cancellation", "Cancellation"]];
@@ -642,6 +650,27 @@
   }
 
   /* 01 */
+  /* The answer on the first screen: the same local rules as step 04, run on
+     the whole case and the private requirements, before anything is sent. */
+  function renderAnswer() {
+    var R = rules(), c = S.c;
+    if (!R || typeof R.reconcile !== "function") return;
+    var local = R.reconcile(c);
+    $("answerPanel").setAttribute("data-verdict", local.verdict);
+    setText("ansV", verdictText(local.verdict));
+    var pk = currentPack(), sample = !!(c.sample || pk);
+    var who = c.supplier || "the supplier";
+    setText("ansFor", sample
+      ? "This is the answer for the sample from " + who + ". Paste your own quote above to check yours."
+      : "This is the answer for the quote you pasted, from " + who + ". Decided by plain code on this device, against the private requirements in step 02. Set them to your own.");
+    var bad = local.checks.filter(function (k) { return k.status !== "pass"; });
+    var shown = bad.slice(0, 3).map(function (k) {
+      return h("li", { "data-s": k.status }, h("span", { class: "cs", text: STATUS_TEXT[k.status] || k.status }), h("span", { class: "cl", text: k.label }));
+    });
+    if (!bad.length) shown = [h("li", { "data-s": "pass" }, h("span", { class: "cs", text: "OK" }), h("span", { class: "cl", text: "All " + local.checks.length + " checks passed" }))];
+    else if (bad.length > 3) shown.push(h("li", { class: "more", text: "and " + (bad.length - 3) + " more in step 04" }));
+    $("ansWhy").replaceChildren.apply($("ansWhy"), shown);
+  }
   function renderQuote() {
     var c = S.c;
     var list = packList();
@@ -665,15 +694,12 @@
         b.tabIndex = on || (!cur && b === seg.firstChild) ? 0 : -1;
         b.disabled = !!S.busy;
       });
-      setText("scenarioBlurb", cur ? (cur.title ? cur.title + ". " : "") + (cur.blurb || "") : "Pick a scenario, or use your own quote below.");
+      setText("scenarioBlurb", cur ? (cur.title ? cur.title + ". " : "") + (cur.blurb || "") : "Pick a sample, or paste your own quote above.");
       var pz = $("poison");
       if (!S.busy) pz.checked = !!c.poisoned;
       pz.disabled = !!S.busy || !cur;
     }
-    var scam = c.caseKind === "scam";
-    setText("h-quote", scam ? "Bring in the call." : "Bring in a supplier quote.");
-    setText("quoteLede", scam ? "The transcript is read and split into lines on this device. Nothing from this Case flow is sent until you approve the exact text."
-      : "It is read and split into passages on this device. Nothing from this Case flow is sent until you approve the exact text.");
+    renderAnswer();
     var flagged = c.paragraphs.filter(function (p) { return p.injection && p.injection.flagged; }).length;
     var sampleBtn = h("button", { type: "button", class: "btn ghost small", id: "sampleBtn", disabled: !!S.busy, text: list.length ? "Reset" : "Reload the sample" });
     sampleBtn.addEventListener("click", function () { var pk = currentPack(); loadScenario(pk ? pk.id : null, !!S.c.poisoned); });
@@ -1076,6 +1102,13 @@
     });
     window.addEventListener("hashchange", function () { var s = location.hash.slice(1); if (STEPS.indexOf(s) >= 0 && s !== S.step) go(s, { focus: true }); });
     $("importBtn").addEventListener("click", function () { if (!S.busy) importText(); });
+    /* Phones: the picture comes first, so a plain button takes you to the box. */
+    $("askJump").addEventListener("click", function () {
+      if (S.step !== "quote") go("quote");
+      var t = $("quoteText");
+      t.scrollIntoView({ block: "center", behavior: motion() === "full" ? "smooth" : "auto" });
+      t.focus({ preventScroll: true });
+    });
     /* Only a real pick by the user reads an image; a restored or scripted event does nothing. */
     $("imageInput").addEventListener("change", function (ev) {
       var f = ev.target.files && ev.target.files[0]; ev.target.value = "";

@@ -1,7 +1,7 @@
 {
-  "name": "AION - personal cognitive OS",
+  "name": "AION - quote checker",
   "short_name": "AION",
-  "description": "AION's dashboard: live state, chat, and approvals.",
+  "description": "Paste a supplier quote and find out if it is a good deal, without your budget leaving your device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

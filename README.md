@@ -1,20 +1,26 @@
-# AION Hybrid Web
+# AION Hybrid Web: a quote checker
 
-A personal AI dashboard that answers **on your device first** (Chrome's built-in Gemini Nano) and only goes to the **cloud** (Gemini through Firebase AI Logic) when it has to - built for **#BuildHybridAI 2026**.
+**Paste a supplier's quote and find out if it is a good deal, without your budget ever leaving your device.**
 
-It runs 100% in the browser. No server, no sign-in. Open the hosted URL and everything works: chat with local memory, privacy-checked approval cards, knowledge graph and task progress.
+AION reads the quote on your device, checks it against your private budget, deadline and rules with plain code, and asks Gemini only about the passages you approve. Gemini Nano (built into Chrome) answers on the device first; the cloud (Gemini through Firebase AI Logic) is used only after you approve the exact text. Built for **#BuildHybridAI 2026**.
+
+It runs 100% in the browser. No server, no sign-in.
 
 **Live demo: https://aion-hybrid-ai.web.app**
 
 Built by **Anshul Reddy** ([@anshulreddybuilds](https://github.com/anshulreddybuilds)).
 
-**The idea in one line:** the cloud model is smart but should not see your private life; the on-device model is private but small. AION lets each do what it is good at, and **proves on screen what left the browser**: every AI request gets a receipt, and for cloud requests you can open the exact request body that was sent.
+**Why hybrid:** the cloud model is smart but should not see your private numbers; the on-device model is private but small. AION lets each do what it is good at, and **proves on screen what left the browser**: every AI request gets a receipt, and for cloud requests you can open the exact request body that was sent.
+
+The older all-in-one dashboard (chat, memory, tasks, knowledge graph) is still at `/dashboard`. It shares the same engine, but the quote checker is the product.
 
 > Status: submission build. Read [Verification](#verification-what-was-and-was-not-tested) before judging - it says plainly what has been tested and what has not.
 
 ## Try it (judges)
 
 **New since 24 Nov: the home page is now the Border Instrument** - a light, five-step page that shows one thing at a time (01 Quote, 02 Share, 03 Send, 04 Verdict, 05 Proof). The earlier all-in-one dashboard is still here at `/dashboard` (steps 0-9 below describe that dashboard; the new page reaches the same Case flow in five screens).
+
+**On-device first:** the route starts at *Prefer device*. **Get Nano ready** (step 01 and step 03) downloads Gemini Nano when Chrome offers it and shows the progress, then loads it. With Nano ready, Send reads *Ask Gemini Nano on this device* and nothing goes to the cloud; pick *Prefer cloud* to send the approved text to Gemini instead. If a send fails (offline, timeout, App Check, quota), the approval is not used up: the page says what went wrong in one line and the button reads *Try again*.
 
 Fastest path on the new page, no Nano and no cloud needed:
 
@@ -29,7 +35,7 @@ Fastest path on the new page, no Nano and no cloud needed:
 1. Use **desktop Chrome 139 or newer**. Other browsers still work, but chat then uses the cloud only and the header light says Gemini Nano is not supported.
 2. Open the hosted URL. The header bar shows:
    - **Gemini Nano: ready / needs download / unavailable** - live status of the on-device model.
-   - **AI Route** dropdown: `Prefer Cloud` (the default, so ordinary laptops get a quick reply), `Prefer On-Device (Hybrid)` and `Only On-Device (Offline)`.
+   - **AI Route** dropdown: `Prefer On-Device (Hybrid)` (the default), `Prefer Cloud` and `Only On-Device (Offline)`.
    - **Offline Demo Mode** switch.
    - **App Check** and **Standalone demo data** status.
 3. If it says *needs download*, click **DOWNLOAD NANO** once (a few GB, one time). If Chrome says the Prompt API is off, enable `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` and restart Chrome.
@@ -195,6 +201,8 @@ Firebase console, project `aion-hybrid-ai`:
 4. Cloud models are listed in `CLOUD_MODELS` in `src/hybrid.js` (first `gemini-3.5-flash-lite`, then `gemini-4-hydrogen`). If the first is rejected as unknown, the second is tried and both errors are shown. Model names change - check Firebase's models page.
 
 ## Verification: what was and was not tested
+
+**fixes-preview branch, 27 Nov 2026 (automated, no browser):** `node tests/engine.test.mjs` **89 / 89** (the 2 parity tests that failed on design-prize now pass: `src/caseRules.js` is copied from `public/case.js` by `node scripts/sync_case_rules.mjs`); `node tests/live_engine.test.mjs` **277 / 277** (the suite of the engine the live site ships); `node tests/quotes.test.mjs` **101 / 101** (five realistic supplier quotes in `tests/fixtures/quotes.mjs`: US month-first dates and sales tax, UK DD/MM/YYYY and VAT, an Indian wholesaler with a unit rate before the total and "+ 5% GST", "Rs. 2.4 lakh" with an ordinal date, and an FOB factory quote with only a lead time; plus 18 date strings, including one that must be refused as ambiguous); `node tests/send.test.mjs` **18 / 18** (a failed send keeps its approval, a retry is counted once). Not run on this branch: the Python UI smoke tests, real Gemini Nano, real cloud Gemini and real App Check.
 
 **Border Instrument, 24 Nov 2026 (automated, mocked):** `node tests/engine.test.mjs` passes **89 / 89**; `python tests/ui_border_smoke.py` passes **85 / 85** (every number on screen is compared with the engine's own value; a planted `<img onerror>` and `<script>` in a quote render as text and do not run; with the plug pulled the cloud side is grey and no request is sent; keyboard-only use; reduced motion; no horizontal scroll and tap targets of at least 44 px at 390 x 844; no console errors beyond two named, expected ones); `python tests/headless_smoke.py` still passes **183 / 183** on the moved dashboard. **In these tests Nano and the cloud are mocked.** The new page has not yet been run against real Nano, real Gemini or real App Check; see the live-check table below for what was run live (earlier build) and the status note at the end of this section.
 

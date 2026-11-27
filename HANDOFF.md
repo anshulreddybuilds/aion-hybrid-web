@@ -25,6 +25,12 @@ Tests: `node tests/ghost.test.mjs` **68/68** (this includes scale/restore round 
 - **A real cloud answer came back on the preview** (Anshul's own browser): cloud Gemini (gemini-3.5-flash-lite) in 2.9 s, behind App Check. The page saw a 1,351-character request go out, with 0 of 12 real names in it. All four checks against the rules agreed.
 - To get there: the preview domain was added to the reCAPTCHA key (done from the laptop) and to the Firebase browser key's website list (done by Anshul in the console). App Check for Firebase AI Logic was already Enforced. The API Keys API was left off.
 - **Fix after that answer:** a restored amount within the wobble of a figure the rules already know is now shown exactly (rent reads ₹24,000, not ₹24,306); other figures say "about". Tips must name an action and a monthly figure. Plain statements ("your savings amount is …") are left out, and the rules' own tips fill in to make at least two. The model's maths is still checked on the raw numbers. Tests: ghost 78/78, ghost smoke 33/33 (mocked).
+- **Second real check (Anshul's Chrome):** gemini-3.5-flash-lite answered in 2.7 s, 0 of 12 names were sent, and rent showed ₹24,000. Three fixes followed:
+  - Tip figures now say "a month".
+  - A model figure that matches no rules figure shows "about …" with "rules: …" beside it.
+  - The check uses one limit (3.5%), rounds each gap to 0.1 before comparing, and prints the limit and every gap, so the wording can't contradict the result.
+
+  Tests: ghost 90/90, ghost smoke 37/37 (mocked). Known gap: with no income line, the income gap is printed in rupees but labelled "%".
 - **Automated browsers can't pass App Check** (reCAPTCHA gives them a low score), so the real-cloud check after this fix needs a person to click Send.
 
 ## App Check (the required rule)

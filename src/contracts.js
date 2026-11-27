@@ -67,15 +67,34 @@ export const PURPOSES = {
 
 const PASSAGE_ID = /^P\d{1,3}$/;
 const SOURCE_ID = /^S\d{1,3}$/;
+/* Caps for the small nested strings: ids look like P12 / S3; a source title is a
+ * short label. (The long texts are capped by the purpose's own `max`.) */
+const ID_MAX = 8;
+const TITLE_MAX = 200;
+
+/* Own-property test. `k in obj` is true for inherited names such as
+ * "constructor" and "toString", so it must never be used to decide what is a
+ * field. */
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 function isPlainObject(v) {
-  return v !== null && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype;
+  if (v === null || typeof v !== "object") return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/* Keys that Object.keys() does not list: symbols and non-enumerable names.
+ * A payload built with those could hide a field from the loops below. */
+function hiddenKeys(obj) {
+  const shown = new Set(Object.keys(obj));
+  return Reflect.ownKeys(obj).filter((k) => !shown.has(k));
 }
 
 function exactKeys(obj, keys, where, errors) {
   if (!isPlainObject(obj)) { errors.push(where + " must be an object"); return false; }
   Object.keys(obj).forEach((k) => { if (!keys.includes(k)) errors.push("unknown field \"" + k + "\" in " + where); });
-  keys.forEach((k) => { if (typeof obj[k] !== "string") errors.push(where + "." + k + " must be text"); });
+  hiddenKeys(obj).forEach((k) => errors.push("hidden (symbol or non-enumerable) key " + String(k) + " in " + where));
+  keys.forEach((k) => { if (!hasOwn(obj, k) || typeof obj[k] !== "string") errors.push(where + "." + k + " must be text"); });
   return true;
 }
 
@@ -95,9 +114,20 @@ function checkList(v, spec, where, errors, itemCheck) {
 /* Images and binary blobs can never be part of a cloud disclosure, in any
  * field: a data: URL, or a long unbroken base64 run. (Screenshots are read on
  * the device; only text the user reviews can be shared.) */
-const BINARY_RE = /data:[a-z]+\/[a-z0-9.+-]+;base64,|[A-Za-z0-9+/]{300,}={0,2}/i;
+/* Every data: URI is refused, whatever its media type or encoding (base64 or
+ * percent-encoded text such as data:image/svg+xml,...). Long unbroken runs of
+ * base64 OR base64url (- and _ instead of + and /) are refused too: a run of
+ * 300+ such characters with 100+ letters/digits in it. */
+const DATA_URI_RE = /(?:^|[^a-z0-9])data:[a-z0-9.+\/-]*(?:;[a-z0-9.+=_-]+)*,/i;
+const LONG_RUN_RE = /[A-Za-z0-9+\/_-]{300,}/g;
+export function looksBinary(s) {
+  if (typeof s !== "string") return false;
+  if (DATA_URI_RE.test(s)) return true;
+  const runs = s.match(LONG_RUN_RE);
+  return !!runs && runs.some((r) => r.replace(/[^A-Za-z0-9]/g, "").length >= 100);
+}
 function findBinary(v, where, out) {
-  if (typeof v === "string") { if (BINARY_RE.test(v)) out.push(where + " contains image or binary data, which can never be sent to the cloud"); }
+  if (typeof v === "string") { if (looksBinary(v)) out.push(where + " contains image or binary data (a data: address or a long base64 run), which can never be sent to the cloud"); }
   else if (Array.isArray(v)) v.forEach((x, i) => findBinary(x, where + "[" + i + "]", out));
   else if (v && typeof v === "object") Object.keys(v).forEach((k) => findBinary(v[k], where + "." + k, out));
 }
@@ -108,30 +138,33 @@ export function validatePayload(purpose, payload) {
   if (!def) return { ok: false, errors: ["unknown purpose \"" + purpose + "\""] };
   if (!isPlainObject(payload)) return { ok: false, errors: ["payload must be an object"] };
   Object.keys(payload).forEach((k) => {
-    if (!(k in def.fields)) errors.push("unknown field \"" + k + "\" (not allowed for " + purpose + ")");
+    if (!hasOwn(def.fields, k)) errors.push("unknown field \"" + k + "\" (not allowed for " + purpose + ")");
   });
-  def.required.forEach((k) => { if (!(k in payload)) errors.push("missing required field \"" + k + "\""); });
+  hiddenKeys(payload).forEach((k) => errors.push("hidden (symbol or non-enumerable) key " + String(k) + " is not allowed"));
+  def.required.forEach((k) => { if (!hasOwn(payload, k)) errors.push("missing required field \"" + k + "\""); });
   Object.keys(def.fields).forEach((k) => {
-    if (!(k in payload)) return;
+    if (!hasOwn(payload, k)) return;
     const spec = def.fields[k];
     const v = payload[k];
     if (spec.type === "string") checkString(v, spec, k, errors);
     else if (spec.type === "string[]") checkList(v, spec, k, errors, (it, w) => checkString(it, spec, w, errors));
     else if (spec.type === "passages") checkList(v, spec, k, errors, (it, w) => {
       if (exactKeys(it, ["id", "text"], w, errors)) {
-        if (!PASSAGE_ID.test(it.id)) errors.push(w + ".id must look like P1, P2 ...");
+        if (typeof it.id === "string" && (it.id.length > ID_MAX || !PASSAGE_ID.test(it.id))) errors.push(w + ".id must look like P1, P2 ...");
         if (typeof it.text === "string" && it.text.length > spec.max) errors.push(w + ".text is too long");
       }
     });
     else if (spec.type === "sources") checkList(v, spec, k, errors, (it, w) => {
       if (exactKeys(it, ["id", "title", "text"], w, errors)) {
-        if (!SOURCE_ID.test(it.id)) errors.push(w + ".id must look like S1, S2 ...");
+        if (typeof it.id === "string" && (it.id.length > ID_MAX || !SOURCE_ID.test(it.id))) errors.push(w + ".id must look like S1, S2 ...");
+        if (typeof it.title === "string" && it.title.length > TITLE_MAX) errors.push(w + ".title is too long (" + it.title.length + " > " + TITLE_MAX + " characters)");
         if (typeof it.text === "string" && it.text.length > spec.max) errors.push(w + ".text is too long");
       }
     });
     else if (spec.type === "turns") checkList(v, spec, k, errors, (it, w) => {
       if (exactKeys(it, ["user", "assistant"], w, errors)) {
-        if ((it.user || "").length > spec.max || (it.assistant || "").length > spec.max) errors.push(w + " is too long");
+        if (typeof it.user === "string" && it.user.length > spec.max) errors.push(w + ".user is too long");
+        if (typeof it.assistant === "string" && it.assistant.length > spec.max) errors.push(w + ".assistant is too long");
       }
     });
   });

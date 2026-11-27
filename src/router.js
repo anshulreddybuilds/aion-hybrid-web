@@ -45,7 +45,7 @@ export const FALLBACK_TEXT = {
   other: "the cloud request failed",
 };
 
-/** @returns {"timeout"|"blocked"|"private_value_blocked"|"app_check"|"quota"|"permission"|"network"|"model"|"other"} */
+/** @returns {"key_referrer"|"timeout"|"blocked"|"private_value_blocked"|"app_check"|"quota"|"permission"|"network"|"model"|"other"} */
 /* A 403 from the AI endpoint after this page's App Check token already failed
  * to arrive is an App Check refusal, even though the server only says
  * "Permission denied". Pass the hybrid state so the reason shown is the real one. */
@@ -61,6 +61,7 @@ function classifyRaw(err) {
   if (code === "timeout" || /\(timeout\)/.test(msg)) return "timeout";
   if (code === "private_value_blocked") return "private_value_blocked";
   if (code === "unsealed_refused" || (typeof code === "string" && code.indexOf("disclosure_") === 0)) return "blocked";
+  if (/API_KEY_HTTP_REFERRER_BLOCKED|Requests from referer .{0,300}are blocked/i.test(msg)) return "key_referrer";
   if (/app.?check|appcheck/i.test(msg)) return "app_check";
   if (/quota|429|RESOURCE_EXHAUSTED/i.test(msg)) return "quota";
   if (/403|permission|api.?key|API_NOT_ENABLED/i.test(msg)) return "permission";
@@ -122,11 +123,19 @@ export function createRouter(deps) {
 
   function egressFor(d, sent, extra) {
     if (!d) return Object.assign({ tier: DISCLOSURE_TIERS.BLOCKED }, extra);
-    return Object.assign({
+    const out = {
       tier: sent ? DISCLOSURE_TIERS.APPROVED_CLOUD : DISCLOSURE_TIERS.BLOCKED,
       purpose: d.purpose, digest: d.contentDigest, bytes: sent ? sentBytes(d) : 0,
       fields: Object.keys(d.payload || {}),
-    }, extra);
+    };
+    /* attempted vs body-observed: only when the monitor can say (see egress.observation) */
+    if (sent && typeof egress.observation === "function") {
+      try {
+        const ob = egress.observation(d.requestId);
+        out.bodyObserved = !!ob.bodyObserved; out.observedChars = ob.observedChars; out.attemptedChars = ob.attemptedChars;
+      } catch (e) { /* evidence only */ }
+    }
+    return Object.assign(out, extra);
   }
 
   /** Sends one chat request.

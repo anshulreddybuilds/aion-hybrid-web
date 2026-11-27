@@ -28,14 +28,33 @@ function gstIncluded(text) {
   if (/(plus|\+|excluding|excl\.?|exclusive of)\s*gst/.test(t)) return false;
   return null;
 }
+/* A real calendar day: build it and read it back. Feb 31 would roll into March
+ * and must not be accepted as a date. */
+function realDay(y, m, d) {
+  var ms = Date.UTC(y, m - 1, d);
+  var chk = new Date(ms);
+  return chk.getUTCFullYear() === y && chk.getUTCMonth() === m - 1 && chk.getUTCDate() === d ? ms : null;
+}
+function realTime(h, mi) { return h >= 0 && h <= 23 && mi >= 0 && mi <= 59 ? h * 60 + mi : null; }
+/* null = no date written. { invalid: true, label } = something that looks like a
+ * date or time was written but is not a real one (reported as unknown, never
+ * silently moved to another day). */
 function readDate(text) {
   var t = String(text || "");
   var iso = t.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?/);
-  if (iso) return { day: Date.UTC(+iso[1], +iso[2] - 1, +iso[3]), time: iso[4] ? (+iso[4]) * 60 + (+iso[5]) : null, label: iso[0] };
+  if (iso) {
+    var day = realDay(+iso[1], +iso[2], +iso[3]);
+    var time = iso[4] ? realTime(+iso[4], +iso[5]) : null;
+    if (day === null || (iso[4] && time === null)) return { invalid: true, label: iso[0] };
+    return { day: day, time: time, label: iso[0] };
+  }
   var dm = t.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})/i);
   if (dm) {
     var tm = t.match(/\b(\d{1,2}):(\d{2})\b/);
-    return { day: Date.UTC(+dm[3], MONTHS[dm[2].toLowerCase()], +dm[1]), time: tm ? (+tm[1]) * 60 + (+tm[2]) : null, label: dm[0],
+    var day2 = realDay(+dm[3], MONTHS[dm[2].toLowerCase()] + 1, +dm[1]);
+    var time2 = tm ? realTime(+tm[1], +tm[2]) : null;
+    if (day2 === null || (tm && time2 === null)) return { invalid: true, label: dm[0] + (tm ? " " + tm[0] : "") };
+    return { day: day2, time: time2, label: dm[0],
       vague: !tm && /morning|afternoon|evening|during the day/i.test(t) };
   }
   return null;
@@ -59,7 +78,187 @@ function installStatus(c) {
   return { state: "unknown", from: null };
 }
 
+/* ---- Scenario packs: extra quote checks (only when the private field exists) ---- */
+function readPercent(text) {
+  var m = String(text == null ? "" : text).match(/(\d{1,3}(?:\.\d+)?)\s*%/) || String(text == null ? "" : text).match(/^\s*(\d{1,3}(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  var n = parseFloat(m[1]);
+  return isFinite(n) && n >= 0 && n <= 100 ? n : null;
+}
+function readAdvance(text) {
+  var t = String(text || "");
+  if (/\bno advance\b/i.test(t)) return 0;
+  var m = t.match(/(\d{1,3}(?:\.\d+)?)\s*%\s*(?:advance|in advance|upfront|up front)/i) ||
+    t.match(/(?:advance|upfront|up front)[^.%]{0,30}?(\d{1,3}(?:\.\d+)?)\s*%/i);
+  if (!m) return null;
+  var n = parseFloat(m[1]);
+  return isFinite(n) && n >= 0 && n <= 100 ? n : null;
+}
+function gstFlag(text) {
+  var g = gstIncluded(text);
+  if (g !== null) return g;
+  return /(before|without|pre-?)\s*gst/i.test(String(text || "")) ? false : null;
+}
+function readUnitCap(text) {
+  var t = String(text || "");
+  var amount = readAmount(t);
+  var u = t.match(/\bper\s+([a-z]+?)s?\b(?:\s+of\s+([a-z]+))?/i);
+  return { amount: amount, unit: u ? u[1].toLowerCase() : null, item: u && u[2] ? u[2].toLowerCase() : null };
+}
+function findUnitPrice(c, priceP, unit, item) {
+  var ps = (c.paragraphs || []).slice();
+  if (priceP) ps = [priceP].concat(ps.filter(function (p) { return p !== priceP; }));
+  var re = new RegExp("(?:\\brs\\b\\.?|\\binr\\b|\\u20b9)\\s*([\\d][\\d,]*(?:\\.\\d+)?)\\s*(?:\\/|per)\\s*" + unit + "s?\\b", "i");
+  for (var i = 0; i < ps.length; i++) {
+    var clauses = String(ps[i].text || "").split(/;|,(?!\d)|\.(?=\s|$)/);
+    for (var j = 0; j < clauses.length; j++) {
+      var cl = clauses[j];
+      if (item && cl.toLowerCase().indexOf(item) < 0) continue;
+      var m = cl.match(re);
+      if (m) { var n = parseFloat(m[1].replace(/,/g, "")); if (isFinite(n) && n > 0) return { price: n, para: ps[i] }; }
+    }
+  }
+  return null;
+}
+function extraQuoteChecks(c, pc, rate, priceP, checks) {
+  var has = function (k) { return Object.prototype.hasOwnProperty.call(pc, k); };
+  /* Advance payment: the % asked before delivery vs the private maximum. */
+  if (has("maxAdvancePct")) {
+    var maxAdv = readPercent(pc.maxAdvancePct);
+    var payP = findPara(c, /payment|advance/i, /advance|upfront/i);
+    var adv = payP ? readAdvance(payP.text) : null;
+    if (maxAdv === null) {
+      checks.push({ id: "advance", label: "Advance payment", status: "unknown", detail: "No maximum advance entered.", from: [] });
+    } else if (adv === null) {
+      checks.push({ id: "advance", label: "Advance payment", status: "unknown", detail: "The quote does not state an advance AION can read. Ask how much must be paid before delivery.", from: payP ? [payP.id] : [] });
+    } else if (adv > maxAdv) {
+      checks.push({ id: "advance", label: "Advance payment", status: "fail", detail: "The quote asks for " + adv + "% in advance; your private maximum is " + maxAdv + "%.", from: [payP.id] });
+    } else {
+      checks.push({ id: "advance", label: "Advance payment", status: "pass", detail: "The quote asks for " + adv + "% in advance, within your private maximum of " + maxAdv + "%.", from: [payP.id] });
+    }
+  }
+  /* Margin: a per-unit rate in the quote vs the private highest buying price. */
+  if (has("maxUnitCost")) {
+    var cap = readUnitCap(pc.maxUnitCost);
+    if (!cap.amount || !cap.unit) {
+      checks.push({ id: "margin", label: "Margin", status: "unknown", detail: "No highest price per unit entered (for example \"Rs 1,900 per carton of oil, before GST\").", from: [] });
+    } else {
+      var what = (cap.item ? cap.item + " " : "") + cap.unit;
+      var hit = findUnitPrice(c, priceP, cap.unit, cap.item);
+      if (!hit) {
+        checks.push({ id: "margin", label: "Margin", status: "unknown", detail: "The quote gives no price per " + what + " that AION can read. Ask for the per-" + cap.unit + " rate.", from: [] });
+      } else {
+        var qInc = gstIncluded(hit.para.text), cInc = gstFlag(pc.maxUnitCost), f = 1 + rate / 100;
+        var q = hit.price, lim = cap.amount, status, basis;
+        if (qInc !== null && cInc !== null) {
+          if (qInc === false && cInc === true) q = q * f;
+          if (qInc === true && cInc === false) lim = lim * f;
+          status = q > lim ? "fail" : "pass";
+          basis = qInc === cInc ? (qInc ? " (both including GST)" : " (both before GST)") : " (" + rate + "% GST added to compare like with like)";
+        } else {
+          var qOptions = qInc === null ? [q, q * f] : [qInc ? q : q * f];
+          var capOptions = cInc === null ? [lim, lim * f] : [cInc ? lim : lim * f];
+          var qMin = Math.min.apply(Math, qOptions), qMax = Math.max.apply(Math, qOptions);
+          var capMin = Math.min.apply(Math, capOptions), capMax = Math.max.apply(Math, capOptions);
+          status = qMax <= capMin ? "pass" : qMin > capMax ? "fail" : "unknown";
+          basis = " (GST basis unclear; confirm whether both prices include GST before deciding)";
+        }
+        var head = cap.item ? cap.item.charAt(0).toUpperCase() + cap.item.slice(1) + " at " : "The rate of ";
+        checks.push({ id: "margin", label: "Margin", status: status, detail: head + rupees(hit.price) + " per " + cap.unit + " is " +
+          (status === "fail" ? "above" : status === "pass" ? "within" : "close to") + " your private ceiling of " + rupees(cap.amount) + " per " + cap.unit + basis + ".",
+          from: [hit.para.id] });
+      }
+    }
+  }
+}
+
+/* ---- Scenario packs: scam-call checks (c.caseKind === "scam") ---- */
+var SCAM = {
+  otp: /\b(otp|one[- ]time (?:password|code)|upi pin|mpin|m-pin|atm pin|pin|cvv|password|verification code)\b/i,
+  money: /\b(transfer|send|pay|deposit|move)\b[^.]{0,60}(\brs\b|\binr\b|₹|\d|\bupi\b|\baccount\b|\bmoney\b|\bamount\b|\bfine\b|\bfee\b)|\b(upi|gpay|google pay|phonepe|paytm|gift cards?|google play cards?|bitcoin|crypto|safe account)\b/i,
+  urgent: /\b(within \d+ (?:minutes?|mins?|hours?)|immediately|right now|urgent(?:ly)?|today itself|last chance|jaldi|turant)\b/i,
+  secret: /\b(keep (?:it|this) (?:a )?secret|keep (?:it|this) confidential|do not tell|don't tell|not a word to|do not inform|don't inform|stay on (?:this|the) (?:video )?(?:call|line)|do not (?:cut|disconnect|hang up)|don't (?:cut|disconnect|hang up))\b/i,
+  authority: /\b(police|inspector|cbi|cyber (?:cell|crime)|crime branch|narcotics|ncb|customs|enforcement directorate|income tax|rbi|reserve bank|court|judge|magistrate|trai|bank manager|bank officer)\b/i,
+  phone: /(?:\+?91[\s-]*)?[6-9]\d(?:[\s-]?\d){8}/g,
+  relation: /\byour (son|daughter|grandson|granddaughter|husband|wife|brother|sister|nephew|niece)\b(?:\s*,?\s*([A-Z][a-z]{2,}))?|\b(bete|beta|beti)\b/i,
+  trouble: /\b(arrest(?:ed)?|custody|jail|accident|hospital|police station|kidnapp?ed|detained|lock-?up)\b/i,
+};
+function phoneDigits(text) {
+  var out = [];
+  String(text || "").replace(SCAM.phone, function (m) { out.push(m.replace(/\D/g, "").slice(-10)); return m; });
+  return out;
+}
+function scamReconcile(c) {
+  var pc = c.privateConstraints || {};
+  var ps = c.paragraphs || [];
+  var checks = [];
+  var ids = function (re) { return ps.filter(function (p) { return re.test(String(p.text || "")); }).map(function (p) { return p.id; }); };
+  var none = !ps.length;
+  var unknownAll = "There are no conversation lines to check.";
+  /* 1. OTP / PIN / password */
+  var otp = ids(SCAM.otp);
+  checks.push(none ? { id: "otp", label: "Asks for a code", status: "unknown", detail: unknownAll, from: [] }
+    : otp.length ? { id: "otp", label: "Asks for a code", status: "fail", detail: "The caller asks for an OTP, PIN or password. Never share one: it lets someone take money from your account.", from: otp }
+    : { id: "otp", label: "Asks for a code", status: "pass", detail: "No request for an OTP, PIN or password in these lines.", from: [] });
+  /* 2. Money */
+  var money = ids(SCAM.money);
+  checks.push(none ? { id: "money", label: "Asks for money", status: "unknown", detail: unknownAll, from: [] }
+    : money.length ? { id: "money", label: "Asks for money", status: "fail", detail: "The caller asks you to send money (a transfer, UPI, a \"safe account\" or gift cards) to an account you do not know.", from: money }
+    : { id: "money", label: "Asks for money", status: "pass", detail: "No request to send money in these lines.", from: [] });
+  /* 3. Urgency and secrecy */
+  var urg = ids(SCAM.urgent), sec = ids(SCAM.secret);
+  var both = urg.concat(sec.filter(function (x) { return urg.indexOf(x) < 0; }));
+  checks.push(none ? { id: "pressure", label: "Urgency or secrecy", status: "unknown", detail: unknownAll, from: [] }
+    : urg.length && sec.length ? { id: "pressure", label: "Urgency or secrecy", status: "fail", detail: "The caller rushes you AND tells you to keep it secret. Genuine officials give you time and let you talk to your family.", from: both }
+    : both.length ? { id: "pressure", label: "Urgency or secrecy", status: "risk", detail: urg.length ? "The caller is rushing you. Take your time." : "The caller asks you to keep this secret or stay on the call.", from: both }
+    : { id: "pressure", label: "Urgency or secrecy", status: "pass", detail: "No rushing or secrecy in these lines.", from: [] });
+  /* 4. Claims of authority */
+  var auth = ids(SCAM.authority);
+  var authWords = [];
+  ps.forEach(function (p) { var m = String(p.text || "").match(SCAM.authority); var w = m ? (/^(cbi|rbi|ncb|trai)$/i.test(m[1]) ? m[1].toUpperCase() : m[1].toLowerCase()) : null; if (w && authWords.indexOf(w) < 0) authWords.push(w); });
+  checks.push(none ? { id: "authority", label: "Claims authority", status: "unknown", detail: unknownAll, from: [] }
+    : auth.length ? { id: "authority", label: "Claims authority", status: "risk", detail: "The caller claims to be official (" + authWords.join(", ") + "). Anyone can say this on a call; police and banks do not demand payment or codes by phone.", from: auth }
+    : { id: "authority", label: "Claims authority", status: "pass", detail: "No claim to be police, a bank or a court in these lines.", from: [] });
+  /* 5. Caller's number vs the numbers she saved (private) */
+  var idP = null;
+  for (var i = 0; i < ps.length && !idP; i++) if (/caller id|number|from/i.test(ps[i].heading || "") && phoneDigits(ps[i].text).length) idP = ps[i];
+  for (var j = 0; j < ps.length && !idP; j++) if (phoneDigits(ps[j].text).length) idP = ps[j];
+  var callerNum = idP ? phoneDigits(idP.text)[0] : null;
+  var known = phoneDigits(pc.knownNumbers);
+  if (!known.length) checks.push({ id: "caller", label: "Caller's number", status: "unknown", detail: "No family numbers saved, so AION cannot compare. Call your family on a number you already have.", from: [] });
+  else if (!callerNum) checks.push({ id: "caller", label: "Caller's number", status: "unknown", detail: "AION cannot read the caller's number in these lines. Do not trust a number the caller gives you.", from: [] });
+  else if (known.indexOf(callerNum) >= 0) checks.push({ id: "caller", label: "Caller's number", status: "pass", detail: "The caller's number matches one you saved privately.", from: [idP.id] });
+  else checks.push({ id: "caller", label: "Caller's number", status: "fail", detail: "The caller's number is not any of the family numbers you saved privately.", from: [idP.id] });
+  /* 6. A claim about the family vs her private facts */
+  var claims = [];
+  ps.forEach(function (p) {
+    var t = String(p.text || ""), m = t.match(SCAM.relation);
+    if (m && SCAM.trouble.test(t)) claims.push({ id: p.id, rel: (m[1] || m[3] || "").toLowerCase(), name: m[2] || "" });
+  });
+  var names = String(pc.familyNames || "").split(/[,;\n]|\band\b/).map(function (x) { var w = x.trim().match(/[A-Za-z]{2,}/); return w ? w[0].toLowerCase() : ""; }).filter(Boolean);
+  if (!claims.length) {
+    checks.push({ id: "family", label: "Family claim", status: "pass", detail: "The caller makes no claim that someone in your family is in trouble.", from: [] });
+  } else {
+    var rel = { bete: "son", beta: "son", beti: "daughter" }[claims[0].rel] || claims[0].rel || "family member";
+    var why = [];
+    var wrongName = claims.filter(function (k) { return k.name && names.length && names.indexOf(k.name.toLowerCase()) < 0; })[0];
+    if (wrongName) why.push("the caller calls your " + rel + " \"" + wrongName.name + "\", a name that is not in your private family list");
+    if (pc.relativeSafe === true) why.push("you noted privately that your " + rel + " is safe right now");
+    var cIds = claims.map(function (k) { return k.id; });
+    if (why.length) checks.push({ id: "family", label: "Family claim", status: "fail", detail: "The caller says your " + rel + " is in trouble, but " + why.join(", and ") + ".", from: cIds });
+    else checks.push({ id: "family", label: "Family claim", status: "unknown", detail: "The caller says your " + rel + " is in trouble. Call your " + rel + " on a number you already have before doing anything.", from: cIds });
+  }
+  var fails = checks.filter(function (k) { return k.status === "fail"; });
+  var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });
+  var verdict = fails.length ? "not_suitable" : open.length ? "needs_answers" : "fits";
+  var sharedIds = ps.filter(function (p) { return p.shared && !(p.injection && p.injection.flagged && !p.injectionOverride); }).map(function (p) { return p.id; });
+  var hiddenUsed = [];
+  checks.forEach(function (k) { (k.from || []).forEach(function (id) { if (id && sharedIds.indexOf(id) < 0 && hiddenUsed.indexOf(id) < 0) hiddenUsed.push(id); }); });
+  return { verdict: verdict, checks: checks, fails: fails.length, open: open.length, privatePassagesUsed: hiddenUsed };
+}
+
 function reconcile(c) {
+  if (c && c.caseKind === "scam") return scamReconcile(c);
   var pc = c.privateConstraints || {};
   var checks = [];
   var rate = parseFloat(String(pc.gstRate == null || pc.gstRate === "" ? "18" : pc.gstRate).replace(/[^\d.]/g, ""));
@@ -75,51 +274,79 @@ function reconcile(c) {
     checks.push({ id: "budget", label: "Budget", status: "unknown", detail: "The proposal does not state a price AION can read. Ask the supplier for a total.", from: [] });
   } else {
     var qInc = gstIncluded(priceP.text), bInc = gstIncluded(pc.maxBudget);
-    var qTotal = qInc === false ? quote * (1 + rate / 100) : quote;
-    var bTotal = bInc === false ? budget * (1 + rate / 100) : budget;
+    var f = 1 + rate / 100;
+    /* When a GST basis is not written down, both readings are kept as a range
+     * instead of guessing one: quote low/high and limit low/high. */
+    var qLow = qInc === false ? quote * f : quote, qHigh = qInc === null ? quote * f : qLow;
+    var bLow = bInc === false ? budget * f : budget, bHigh = bInc === null ? budget * f : bLow;
+    var qTotal = qLow, bTotal = bLow;
     var how = rupees(quote) + (qInc === false ? " + " + rate + "% GST = " + rupees(qTotal) : (qInc ? " including GST" : " (GST not stated)"));
-    if (qTotal > bTotal) {
-      checks.push({ id: "budget", label: "Budget", status: "fail", detail: how + " is over your private limit of " + rupees(bTotal) +
-        " by " + rupees(qTotal - bTotal) + ".", from: [priceP.id], assumption: qInc === false ? rate + "% GST assumed (change it in Private requirements)" : "" });
+    if (qLow > bHigh) {
+      checks.push({ id: "budget", label: "Budget", status: "fail", detail: how + " is over your private limit of " + rupees(bHigh) +
+        (bInc === null ? " (even if that limit also had GST added)" : "") + " by " + rupees(qLow - bHigh) + ".", from: [priceP.id],
+        assumption: qInc === false ? rate + "% GST assumed (change it in Private requirements)" : "" });
+    } else if (qHigh > bLow) {
+      /* The answer depends on a GST basis nobody wrote down: do not guess. */
+      var which = (qInc === null ? "the proposal does not say whether its price includes GST" : "") +
+        (qInc === null && bInc === null ? ", and " : "") + (bInc === null ? "your private limit does not say whether it includes GST" : "");
+      checks.push({ id: "budget", label: "Budget", status: "unknown",
+        detail: "Not decided: " + which + ". With GST at " + rate + "%, the quote is " + (qLow === qHigh ? rupees(qLow) : "between " + rupees(qLow) + " and " + rupees(qHigh)) +
+          " against a limit of " + (bLow === bHigh ? rupees(bLow) : "between " + rupees(bLow) + " and " + rupees(bHigh)) +
+          ", so the result could go either way. Ask the supplier, or state the limit's GST basis in Private requirements.",
+        from: [priceP.id], assumption: "GST basis not stated (" + [qInc === null ? "quote" : "", bInc === null ? "limit" : ""].filter(Boolean).join(" and ") + "); not guessed" });
     } else {
       checks.push({ id: "budget", label: "Budget", status: qInc === null ? "unknown" : "pass", detail: how + " is within your private limit of " + rupees(bTotal) +
-        (qInc === null ? ", but the proposal does not say whether GST is included." : "."), from: [priceP.id] });
+        (qInc === null ? ", but the proposal does not say whether GST is included." : bInc === null ? " (within it with or without GST on the limit)." : "."), from: [priceP.id] });
     }
   }
 
   /* 2. Ready-by deadline */
   var ready = readDate(pc.readyBy);
+  var dl = c.deadlineLabel ? String(c.deadlineLabel) : null;
   var delP = findPara(c, /deliver/i, /deliver/i);
   var del = delP ? readDate(delP.text) : null;
   var inst = installStatus(c);
   if (!ready) {
-    checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "No ready-by date entered.", from: [] });
+    checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: dl ? "No " + dl + " entered." : "No ready-by date entered.", from: [] });
+  } else if (ready.invalid) {
+    checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The ready-by date \"" + ready.label + "\" is not a real calendar date or time, so it is not used. Correct it in Private requirements.", from: [] });
+  } else if (del && del.invalid) {
+    checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The delivery date in the proposal (\"" + del.label + "\") is not a real calendar date or time. Ask the supplier to confirm it.", from: delP ? [delP.id] : [] });
   } else if (!del) {
     checks.push({ id: "deadline", label: "Deadline", status: "unknown", detail: "The proposal does not give a delivery date AION can read. Ask for one.", from: delP ? [delP.id] : [] });
   } else if (del.day > ready.day) {
-    checks.push({ id: "deadline", label: "Deadline", status: "fail", detail: "Delivery (" + del.label + ") is after the date it must already be working (" + ready.label + ").", from: [delP.id] });
+    checks.push({ id: "deadline", label: "Deadline", status: "fail", detail: "Delivery (" + del.label + ") is after " + (dl ? "your " + dl : "the date it must already be working") + " (" + ready.label + ").", from: [delP.id] });
   } else if (del.day === ready.day) {
-    var noSetup = pc.installationRequired && inst.state !== "included";
+    /* Excluded installation is a fact in the proposal. An installation the proposal
+     * simply does not mention is "not confirmed": it must never be reported as excluded. */
+    var noSetup = !!pc.installationRequired && inst.state === "excluded";
+    var unconfirmed = !!pc.installationRequired && inst.state === "unknown";
     var late = del.time != null && ready.time != null && del.time >= ready.time;
-    checks.push({ id: "deadline", label: "Deadline", status: noSetup || late ? "fail" : "risk",
+    checks.push({ id: "deadline", label: "Deadline", status: noSetup || late ? "fail" : unconfirmed ? "unknown" : "risk",
       detail: "Delivery is on " + del.label + (del.vague ? " (\"morning\", no time given)" : "") + ", the same day it must be working by " +
         (ready.time != null ? String(Math.floor(ready.time / 60)).padStart(2, "0") + ":" + String(ready.time % 60).padStart(2, "0") : "the start") +
-        (noSetup ? ", with no installation included, so there is no time to set it up." : late ? ", but after that time." : ". Same-day delivery leaves little margin."),
+        (noSetup ? ", with installation excluded, so there is no time to set it up." : late ? ", but after that time." :
+          unconfirmed ? ". Installation is not confirmed in the proposal, so it is not known whether there is time to set it up. Ask the supplier." : ". Same-day delivery leaves little margin."),
       from: [delP.id].concat(noSetup && inst.from ? [inst.from] : []) });
   } else {
-    checks.push({ id: "deadline", label: "Deadline", status: "pass", detail: "Delivery (" + del.label + ") is before your ready-by date (" + ready.label + ").", from: [delP.id] });
+    checks.push({ id: "deadline", label: "Deadline", status: "pass", detail: "Delivery (" + del.label + ") is before your " + (dl || "ready-by date") + " (" + ready.label + ").", from: [delP.id] });
   }
 
-  /* 3. Installation */
-  if (!pc.installationRequired) {
+  /* 3. Installation (null = not applicable: no check, used by scenario packs) */
+  if (pc.installationRequired === null) {
+    /* not applicable */
+  } else if (!pc.installationRequired) {
     checks.push({ id: "install", label: "Installation", status: "pass", detail: "You did not require installation.", from: [] });
   } else if (inst.state === "excluded") {
     checks.push({ id: "install", label: "Installation", status: "fail", detail: "You require installation, but the proposal excludes it.", from: [inst.from] });
   } else if (inst.state === "included") {
     checks.push({ id: "install", label: "Installation", status: "pass", detail: "Installation is included.", from: [inst.from] });
   } else {
-    checks.push({ id: "install", label: "Installation", status: "unknown", detail: "You require installation, and the proposal does not say whether it is included. Ask the supplier.", from: [] });
+    checks.push({ id: "install", label: "Installation", status: "unknown", detail: "Installation is not confirmed: you require it, and the proposal does not say whether it is included. Ask the supplier.", from: [] });
   }
+
+  /* 4-5. Advance payment and margin: only when those private fields exist */
+  extraQuoteChecks(c, pc, rate, priceP, checks);
 
   var fails = checks.filter(function (k) { return k.status === "fail"; });
   var open = checks.filter(function (k) { return k.status === "unknown" || k.status === "risk"; });

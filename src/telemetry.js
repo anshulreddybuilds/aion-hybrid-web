@@ -70,6 +70,16 @@ export function recordReceipt(r) {
   const tier = eg.tier || (r.route === "on-device-nano" || r.route === "local-fallback" || r.route === "local-deterministic"
     ? DISCLOSURE_TIERS.LOCAL_ONLY : DISCLOSURE_TIERS.APPROVED_CLOUD);
   if (!TIERS.includes(tier)) throw tel("receipt_invalid", "Unknown disclosure tier \"" + tier + "\".");
+  /* Sent semantics: approved / attempted / body-observed are separate facts.
+   * eg.bodyObserved is true or false only when the caller checked the outbound
+   * monitor; otherwise it stays null ("not checked") and bytesSent keeps its
+   * old meaning (characters handed to the SDK). */
+  const checked = typeof eg.bodyObserved === "boolean";
+  const isCloud = tier === DISCLOSURE_TIERS.APPROVED_CLOUD;
+  const observedChars = isCloud && checked ? (eg.bodyObserved ? measured(eg.observedChars) : 0) : null;
+  const attemptedChars = isCloud ? measured(eg.attemptedChars != null ? eg.attemptedChars : eg.bytes) : 0;
+  const sendState = !isCloud ? (tier === DISCLOSURE_TIERS.BLOCKED ? "not_attempted" : "not_applicable")
+    : !checked ? "attempted_unchecked" : eg.bodyObserved ? "body_observed" : "attempted_no_body_observed";
   const calls = (Array.isArray(r.functionCalls) ? r.functionCalls : []).map((c) => ({
     name: String((c && c.name) || "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40),
     durationMs: measured(c && c.durationMs),
@@ -88,7 +98,13 @@ export function recordReceipt(r) {
       disclosureTier: tier,
       purpose: eg.purpose || null,
       digest: eg.digest ? String(eg.digest).slice(0, 12) : null,
-      bytesSent: tier === DISCLOSURE_TIERS.APPROVED_CLOUD ? measured(eg.bytes) : 0,
+      bytesSent: !isCloud ? 0 : checked ? observedChars : measured(eg.bytes),
+      /* New (additive): what was handed to the SDK vs what a monitored request body showed. */
+      sendState,
+      bodyObserved: isCloud && checked ? !!eg.bodyObserved : null,
+      observedChars,
+      attemptedChars,
+      sendNote: sendState === "attempted_no_body_observed" ? "attempted; no outgoing body observed" : null,
       fieldsSent: Array.isArray(eg.fields) ? eg.fields.map(String).slice(0, 12) : [],
       privateValueHits: measured(eg.privateValueHits) || 0,
       blockedCode: eg.blockedCode ? String(eg.blockedCode) : null,
@@ -129,12 +145,17 @@ export function summarizeTelemetry() {
   const byRoute = {};
   const byStatus = {};
   let cloudRequests = 0, cloudBytesSent = 0, localOnly = 0, blocked = 0, calls = 0, privateHits = 0;
+  let cloudBodiesObserved = 0, cloudAttemptedNoBody = 0;
   const times = [];
   receipts.forEach((r) => {
     byRoute[r.route] = (byRoute[r.route] || 0) + 1;
     byStatus[r.status] = (byStatus[r.status] || 0) + 1;
     const tier = r.egressAudit.disclosureTier;
-    if (tier === DISCLOSURE_TIERS.APPROVED_CLOUD) { cloudRequests += 1; cloudBytesSent += r.egressAudit.bytesSent || 0; }
+    if (tier === DISCLOSURE_TIERS.APPROVED_CLOUD) {
+      cloudRequests += 1; cloudBytesSent += r.egressAudit.bytesSent || 0;
+      if (r.egressAudit.sendState === "body_observed") cloudBodiesObserved += 1;
+      else if (r.egressAudit.sendState === "attempted_no_body_observed") cloudAttemptedNoBody += 1;
+    }
     else if (tier === DISCLOSURE_TIERS.LOCAL_ONLY) localOnly += 1;
     else blocked += 1;
     calls += r.functionCalls.length;
@@ -146,7 +167,7 @@ export function summarizeTelemetry() {
   return {
     total: receipts.length,
     byRoute, byStatus,
-    cloudRequests, cloudBytesSent, localOnly, blocked,
+    cloudRequests, cloudBytesSent, cloudBodiesObserved, cloudAttemptedNoBody, localOnly, blocked,
     functionCalls: calls,
     privateValueHits: privateHits,
     latency: {

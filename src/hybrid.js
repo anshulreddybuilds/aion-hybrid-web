@@ -394,6 +394,8 @@ async function generate(prompt, onChunk, opts) {
     prompt = text;
   }
   const attempts = [];
+  /* What the outbound monitor saw for THIS disclosure (see egress.observation). */
+  const evidence = () => (disclosure ? egress.observation(disclosure.requestId) : null);
   /* On-device-only never touches the cloud model, so there is nothing to retry. */
   const candidates = modeKey === "only_on_device" ? [CLOUD_MODELS[0]] : CLOUD_MODELS;
   const expected = expectedSource(modeKey);
@@ -425,8 +427,12 @@ async function generate(prompt, onChunk, opts) {
         firstChunkMs: run.firstChunkMs,
         mode: modeKey,
         requested_mode: modeKey,
-        disclosure: disclosure ? { requestId: disclosure.requestId, digest: disclosure.contentDigest,
-          purpose: disclosure.purpose, bytes: prompt.length } : null,
+        /* bytes = characters handed to the SDK (an attempt). observedChars counts
+         * only a request body the monitor saw; sendEvidence says which it was. */
+        disclosure: disclosure ? Object.assign({ requestId: disclosure.requestId, digest: disclosure.contentDigest,
+          purpose: disclosure.purpose, bytes: prompt.length, attemptedChars: prompt.length,
+          observedChars: evidence().observedChars, bodyObserved: evidence().bodyObserved }) : null,
+        sendEvidence: evidence(),
         actual_source: source,
         source_verified: sourceVerified,
         model: source === SOURCE.on_device ? "Gemini Nano" : cloudModel,
@@ -436,6 +442,7 @@ async function generate(prompt, onChunk, opts) {
         attempts.push(candidates.length > 1 ? cloudModel + ": " + e.message : e.message);
         const err = new Error(attempts.join("\n"));
         err.code = "timeout";
+        err.sendEvidence = evidence();
         throw err;
       }
       const msg = describeError(e);
@@ -447,6 +454,7 @@ async function generate(prompt, onChunk, opts) {
       if (!modelProblem || i === candidates.length - 1) {
         const err = new Error(attempts.join("\n"));
         err.code = e && e.code;
+        err.sendEvidence = evidence();
         throw err;
       }
     }
@@ -481,6 +489,7 @@ async function plannerCloudCall(req) {
       if (!modelProblem || i === CLOUD_MODELS.length - 1) {
         const err = new Error(attempts.join("\n"));
         err.code = e && e.code;
+        err.sendEvidence = evidence();
         throw err;
       }
     }
@@ -589,6 +598,45 @@ async function localText(prompt, opts) {
     }
     throw err;
   }
+}
+
+/* The planner's consent UI is private to this module. The exact serialized
+ * disclosure is placed in a text node before a trusted click can continue. */
+function confirmPlannerDisclosure(text, meta) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "aion-plan-consent";
+    dlg.setAttribute("aria-labelledby", "aionPlanConsentTitle");
+    const wrap = document.createElement("div"); wrap.className = "aion-plan-consent__panel";
+    const title = document.createElement("h2"); title.id = "aionPlanConsentTitle"; title.textContent = "Review planner disclosure";
+    const note = document.createElement("p"); note.textContent = "This exact text will be sent to the cloud. Tool replies may be sent later as small counts or fixed labels.";
+    const pre = document.createElement("pre"); pre.className = "aion-plan-consent__text"; pre.textContent = String(text);
+    const count = document.createElement("p"); count.className = "aion-plan-consent__count"; count.textContent = String((meta && meta.chars) || 0) + " characters · JavaScript string length";
+    const actions = document.createElement("div"); actions.className = "aion-plan-consent__actions";
+    const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel";
+    const approve = document.createElement("button"); approve.type = "button"; approve.textContent = "Approve and send";
+    let done = false;
+    const finish = (ok) => { if (done) return; done = true; try { dlg.close(); } catch (e) {} dlg.remove(); resolve(ok); };
+    cancel.addEventListener("click", (e) => finish(e.isTrusted === true && e.target === cancel ? false : false));
+    approve.addEventListener("click", (e) => finish(e.isTrusted === true && e.target === approve));
+    dlg.addEventListener("cancel", () => finish(false), { once: true });
+    actions.append(cancel, approve); wrap.append(title, note, pre, count, actions); dlg.appendChild(wrap); document.body.appendChild(dlg);
+    if (typeof dlg.showModal === "function") dlg.showModal(); else { dlg.setAttribute("open", ""); cancel.focus(); }
+    approve.focus();
+  });
+}
+function trustedBorderAction(event, allowedIds) {
+  return !!(event && event.isTrusted === true && event.type === "click" && event.target && allowedIds.indexOf(event.target.id) >= 0);
+}
+function trustedChatAction(event) {
+  if (!event || event.isTrusted !== true) return false;
+  if (event.type === "submit" && event.target && event.target.id === "chatForm") return true;
+  if (event.type === "result") return true; /* native SpeechRecognition result */
+  if (event.type === "click" && event.target && typeof event.target.closest === "function") {
+    const tour = event.target.closest("[data-tour]");
+    return !!(tour && (tour.getAttribute("data-tour") === "chat" || tour.getAttribute("data-tour") === "plan"));
+  }
+  return false;
 }
 
 /* Warm-up: one tiny on-device prompt so the model is loaded before a real
@@ -782,12 +830,26 @@ function makeBorder(router) {
   const meter = borderEngine.createDisclosureMeter();
   /* The exact rules the real reply goes through: case.js when it is loaded. */
   const rulesNow = () => (window.AionCase && typeof window.AionCase.reconcile === "function" ? window.AionCase : caseRules);
+  /* Last results, kept in memory for the session receipt (summaries only). */
+  const last = { leak: null, drill: null, gauges: null, prepared: null, sent: null };
   return Object.assign({}, borderEngine, {
     rules: caseRules,
     meter,
     recordCaseSend: (o) => telemetry.recordReceipt(borderEngine.caseReceiptInput(o)),
-    hostileCloudDrill: (c, replies) => borderEngine.hostileCloudDrill(c, replies, { rules: rulesNow() }),
-    gauges: (o) => borderEngine.gauges(Object.assign({ rules: rulesNow() }, o)),
+    leakAudit: (planted, bodies) => { const a = borderEngine.leakAudit(planted, bodies); last.leak = borderEngine.leakSummary(a); return a; },
+    hostileCloudDrill: (c, replies) => { const d = borderEngine.hostileCloudDrill(c, replies, { rules: rulesNow() }); last.drill = borderEngine.drillSummary(d); return d; },
+    gauges: (o) => { const g = borderEngine.gauges(Object.assign({ rules: rulesNow() }, o)); last.gauges = g; return g; },
+    /* standalone.js reports each prepared case disclosure (length only). */
+    notePrepared: (p) => { last.prepared = p && typeof p.chars === "number" ? { caseId: p.caseId || null, inputRevision: p.inputRevision, chars: p.chars } : null; },
+    /* standalone.js reports each case send's observed result (counts only). */
+    noteSent: (p) => { last.sent = p ? { caseId: p.caseId || null, inputRevision: p.inputRevision, bodyObserved: !!p.bodyObserved, observedChars: p.bodyObserved ? p.observedChars : 0 } : null; },
+    counterfactual: (c, o) => borderEngine.counterfactual(c, Object.assign({
+      observedChars: last.sent && c && last.sent.inputRevision === c.inputRevision && (!last.sent.caseId || last.sent.caseId === c.id) ? last.sent.observedChars : null,
+      bodyObserved: last.sent && c && last.sent.inputRevision === c.inputRevision && (!last.sent.caseId || last.sent.caseId === c.id) ? last.sent.bodyObserved : undefined,
+      preparedChars: last.prepared && c && last.prepared.inputRevision === c.inputRevision && (!last.prepared.caseId || last.prepared.caseId === c.id) ? last.prepared.chars : 0 }, o)),
+    sessionReceipt: () => borderEngine.buildSessionReceipt({ receipts: telemetry.getReceipts(), sha256Hex: egress.sha256Hex, mode: state.mode,
+      leak: last.leak, drill: last.drill, gauges: last.gauges }),
+    verifySessionReceipt: (rec) => borderEngine.verifySessionReceipt(rec, egress.sha256Hex),
     provisionalVerdictLocal: (shared, o) => borderEngine.provisionalVerdictLocal(shared,
       Object.assign({ nanoReady: state.nano === "ready", localJson: localJSON }, o)),
     sendFailure: (err) => borderEngine.sendFailure(router.classifyError(err, state), { online: navigator.onLine !== false }),
@@ -812,12 +874,15 @@ function boot() {
     try { window.dispatchEvent(new CustomEvent("aion:receipt", { detail: receipt })); } catch (e) { /* UI only */ }
   });
   const router = createRouter({ generate, egress, recordReceipt: telemetry.recordReceipt, getState: () => state });
-  const planner = createPlanner({ cloudCall: plannerCloudCall, localCall: plannerLocalCall, egress,
+  const planner = createPlanner({ cloudCall: plannerCloudCall, localCall: plannerLocalCall, egress, confirmDisclosure: confirmPlannerDisclosure,
     recordReceipt: telemetry.recordReceipt, getState: () => state });
+  const publicRouter = { decide: router.decide, classifyError: router.classifyError, FALLBACK_TEXT: router.FALLBACK_TEXT };
 
   window.AionHybrid = {
-    generate,
-    router,
+    router: publicRouter,
+    dispatchChatFromClick: (request, event) => trustedChatAction(event)
+      ? router.dispatchChat(request)
+      : Promise.reject(Object.assign(new Error("Chat send needs a direct submit from the chat form."), { code: "user_gesture_required" })),
     planner,
     telemetry: { getReceipts: telemetry.getReceipts, summarizeTelemetry: telemetry.summarizeTelemetry, onReceipt: telemetry.onReceipt,
       evidenceFor, exportReceipts },
@@ -835,11 +900,18 @@ function boot() {
     mayReachCloud: (modeKey) => (modeKey || state.mode) !== "only_on_device",
     /* The disclosure boundary (Packet 2). */
     egress: {
-      createDisclosure: egress.createDisclosure, approve: egress.approve, verify: egress.verify,
+      createDisclosure: egress.createDisclosure, verify: egress.verify,
       isApproved: egress.isApproved, serialize: egress.serialize, sha256Hex: egress.sha256Hex,
       setPrivate: egress.setPrivate, clearPrivate: egress.clearPrivate, privateCounts: egress.privateCounts,
       scanPrivate: egress.scanPrivate, outboundSince: egress.outboundSince, log: egress.egressLog,
+      observation: egress.observation,
     },
+    /* User-facing Case UI actions require a real click on the matching button. */
+    approveFromClick: (d, event) => trustedBorderAction(event, ["approveBtn", "caseApproveBtn", "leakBtn", "caseLeakBtn"])
+      ? egress.approve(d, "user_click") : Promise.reject(Object.assign(new Error("Approval needs a direct click on the approval button."), { code: "user_gesture_required" })),
+    sendFromClick: (d, event, opts) => trustedBorderAction(event, ["sendBtn", "caseSendBtn", "leakBtn", "caseLeakBtn"])
+      ? generate(null, null, Object.assign({}, opts || {}, { mode: "only_in_cloud", disclosure: d }))
+      : Promise.reject(Object.assign(new Error("Sending needs a direct click on the send button."), { code: "user_gesture_required" })),
     contracts: { PURPOSES: contracts.PURPOSES, validatePayload: contracts.validatePayload,
       validateCase: contracts.validateCase, PROPOSAL_OPERATIONS: contracts.PROPOSAL_OPERATIONS,
       validatePlan: contracts.validatePlan, DISCLOSURE_TIERS: contracts.DISCLOSURE_TIERS,

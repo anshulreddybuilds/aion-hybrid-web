@@ -219,7 +219,7 @@ function parseJson(text) {
  * @param {number} [deps.timeoutMs]
  */
 export function createPlanner(deps) {
-  const { cloudCall, localCall, egress, recordReceipt, getState } = deps;
+  const { cloudCall, localCall, egress, recordReceipt, getState, confirmDisclosure } = deps;
   const budgetMs = deps.timeoutMs || PLAN_TIMEOUT_MS;
   const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   const st = () => (typeof getState === "function" ? getState() : {}) || {};
@@ -284,6 +284,17 @@ export function createPlanner(deps) {
     let disclosure = null;
     const calls = [];
     let bytes = 0;
+    const sendObservation = () => {
+      try { return disclosure && typeof egress.observation === "function" ? egress.observation(disclosure.requestId) : null; }
+      catch (e) { return null; }
+    };
+    const plannerEgress = () => {
+      const o = sendObservation();
+      return { tier: DISCLOSURE_TIERS.APPROVED_CLOUD, purpose: "plan", digest: disclosure && disclosure.contentDigest,
+        bytes: o && o.bodyObserved ? o.observedChars : 0, attemptedChars: o && o.attempted ? o.attemptedChars : 0,
+        bodyObserved: o ? !!o.bodyObserved : false, observedChars: o && o.bodyObserved ? o.observedChars : 0,
+        sendState: o ? o.state : "attempted_no_body_observed", fields: Object.keys((disclosure && disclosure.payload) || {}) };
+    };
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     let timer = null;
     const deadline = new Promise((_, reject) => {
@@ -313,11 +324,13 @@ export function createPlanner(deps) {
         instructions: PLAN_INSTRUCTIONS, goal: clip(input.goal, 800),
         task_refs: taskRefs.map((r) => clip(r.line, 200)).slice(0, 24),
         constraints: (input.constraints || []).map((c) => clip(c, 200)).slice(0, 8) } });
+      const text = egress.serialize(disclosure);
+      if (egress.scanPrivate(text).length) { const e = new Error("Refused: the outbound text contains values registered as private."); e.code = "private_value_blocked"; throw e; }
+      const consented = typeof confirmDisclosure === "function" && await confirmDisclosure(text, { purpose: "plan", digest: disclosure.contentDigest, chars: text.length });
+      if (!consented) { const e = new Error("Planner disclosure was not approved."); e.code = "approval_declined"; throw e; }
       await egress.approve(disclosure, opt.approvedBy || "plan_click");
       const verdict = await egress.verify(disclosure);
       if (!verdict.ok) { const e = new Error("Refused: the disclosure is not valid to send: " + verdict.reason + "."); e.code = verdict.code; throw e; }
-      const text = egress.serialize(disclosure);
-      if (egress.scanPrivate(text).length) { const e = new Error("Refused: the outbound text contains values registered as private."); e.code = "private_value_blocked"; throw e; }
       egress.markSent(disclosure, { route: "cloud-blindfold", bytes: text.length, purpose: "plan" });
       bytes += text.length;
 
@@ -368,8 +381,7 @@ export function createPlanner(deps) {
       const receipt = recordReceipt({ route: "cloud-blindfold", status: "completed", model: model || "cloud model", requestedMode,
         latencyMs: now() - t0, functionCalls: calls,
         approvalState: v.plan.steps.some((s) => s.status === "PENDING_APPROVAL") ? "pending" : "not-applicable",
-        egress: { tier: DISCLOSURE_TIERS.APPROVED_CLOUD, purpose: "plan", digest: disclosure.contentDigest, bytes,
-          fields: Object.keys(disclosure.payload) },
+        egress: plannerEgress(),
         contributors: { local_deterministic: true, cloud_ai: true } });
       receipts.push(receipt);
       return { ok: true, source: "cloud-blindfold", plan: v.plan, receipts, fallback: null, rounds, model };
@@ -381,9 +393,8 @@ export function createPlanner(deps) {
       const status = cls === "timeout" ? "timed_out" : (cls === "blocked" || cls === "private_value_blocked") ? "blocked_egress"
         : err && err.code === "invalid_plan" ? "rejected" : "failed";
       receipts.push(recordReceipt({ route: "cloud-blindfold", status, requestedMode, latencyMs: now() - t0, functionCalls: calls,
-        approvalState: disclosure ? "approved" : "not-applicable", errorCode: (err && err.code) || cls,
-        egress: sent ? { tier: DISCLOSURE_TIERS.APPROVED_CLOUD, purpose: "plan", digest: disclosure.contentDigest, bytes,
-            fields: Object.keys(disclosure.payload) }
+        approvalState: !disclosure ? "not-applicable" : (disclosure.approvalState === "approved" || disclosure.approvalState === "sent") ? "approved" : "rejected", errorCode: (err && err.code) || cls,
+        egress: sent ? plannerEgress()
           : { tier: DISCLOSURE_TIERS.BLOCKED, purpose: disclosure ? "plan" : null, blockedCode: (err && err.code) || cls } }));
       const reason = err && err.code === "invalid_plan" ? "the cloud returned a plan that failed validation"
         : err && err.code === "tool_result_invalid" ? "a local tool result was refused before sending"

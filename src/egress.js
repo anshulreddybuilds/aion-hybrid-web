@@ -14,8 +14,21 @@
  *                            local code registered as private.
  * hybrid.js runs 3-5 for every cloud-reachable request.
  *
- * Honest limit: this protects against mistakes and stale or edited content.
- * Any script running on this page could still call approve() itself.
+ * Three different facts are kept apart (never merged into one "sent"):
+ *   approved       - the user cleared exactly this content (approve()).
+ *   attempted      - the app handed the text to the SDK (markSent()). The SDK
+ *                    can still fail before any request reaches fetch() (App
+ *                    Check, API-key referrer, a preflight), so an attempt is
+ *                    not proof that anything left.
+ *   body-observed  - the fetch monitor below saw a request body that contains
+ *                    exactly this disclosure's text (observation()). Only this
+ *                    counts as characters sent.
+ *
+ * Honest limit: this is the app's own confirmation gate. It protects against
+ * mistakes and stale or edited content, not against hostile code on the page
+ * (any script running here could still call approve() itself). The monitor
+ * sees fetch() bodies sent to two Firebase AI hostnames from this page's code,
+ * not XHR, WebSocket, beacons, other hosts or browser extensions.
  */
 import { PURPOSES, SCHEMA_VERSION, POLICY_VERSION, validatePayload } from "./contracts.js";
 
@@ -120,14 +133,25 @@ export function isApproved(d) { return !!(d && approvals.get(d.requestId) === d.
 const sendMarks = [];
 let outboundSeq = 0;
 
+/* How a disclosure's text appears inside a JSON request body: the same
+ * escaping JSON.stringify applies, without the surrounding quotes. */
+const escapedForBody = (text) => JSON.stringify(String(text)).slice(1, -1);
+
+/** Records that the app is handing this disclosure to the SDK: an ATTEMPT, not
+ * proof that anything reached the network (see observation()). The mark keeps
+ * the escaped text (memory only) so later request bodies can be matched to
+ * this disclosure exactly, even when sends overlap. */
 export function markSent(d, meta) {
-  sendMarks.push({ digest: d.contentDigest, seq: outboundSeq, at: Date.now() });
+  let text = "";
+  try { text = serialize(d); } catch (e) { text = ""; }
+  sendMarks.push({ requestId: d.requestId, digest: d.contentDigest, seq: outboundSeq, at: Date.now(),
+    needle: text ? escapedForBody(text) : "", textChars: text.length });
   if (sendMarks.length > 100) sendMarks.shift();
   sent.add(d.requestId);
   approvals.delete(d.requestId);
   d.approvalState = "sent";
   log.push(Object.assign({ requestId: d.requestId, purpose: d.purpose, digest: d.contentDigest,
-    disclosureRevision: d.disclosureRevision, caseId: d.caseId, at: new Date().toISOString() }, meta || {}));
+    disclosureRevision: d.disclosureRevision, caseId: d.caseId, at: new Date().toISOString(), attempted: true }, meta || {}));
   if (log.length > 50) log.shift();
 }
 
@@ -135,7 +159,9 @@ export function egressLog() { return log.slice(); }
 
 /* ---------- serializer: cloud text from allowlisted fields only ---------- */
 export function serialize(d) {
-  const p = d.payload;
+  /* Own properties only: a polluted Object.prototype must never add text. */
+  const src = d.payload;
+  const p = new Proxy(src, { get: (t, k) => (Object.prototype.hasOwnProperty.call(t, k) ? t[k] : undefined) });
   if (d.purpose === "chat") {
     const notes = (p.notes || []).length ? p.notes.map((n, i) => (i + 1) + ". " + n).join("\n") : "(no relevant notes)";
     const tasks = (p.tasks || []).length ? p.tasks.join("\n") : "(no open tasks)";
@@ -193,8 +219,10 @@ export function scanPrivate(text) {
 }
 
 /* ---------- outbound monitor (evidence for the leak test) ---------- */
-/* Records the body of every request to the Firebase AI endpoint, in memory
- * only (never stored), so the leak test can inspect what really left. */
+/* Records the body of each fetch() this page's code makes to the two Firebase
+ * AI hostnames, in memory only (never stored), so the leak test can inspect
+ * those bodies. It does not see XHR, WebSocket, beacons, other hosts or
+ * extensions. */
 const outbound = [];
 let monitorInstalled = false;
 export function installOutboundMonitor() {
@@ -214,6 +242,49 @@ export function installOutboundMonitor() {
   };
 }
 export function outboundSince(ts) { return outbound.filter((o) => o.at >= (ts || 0)); }
+
+/** What the monitor saw for ONE disclosure, matched by content, not by time:
+ * a captured body counts only if it contains this disclosure's exact text and
+ * was captured after the disclosure was handed to the SDK. A body whose text
+ * matches a later mark of another disclosure is not counted here, so two sends
+ * that overlap in time are not mixed up.
+ *
+ *   attempted      - the disclosure was handed to the SDK (markSent ran)
+ *   bodyObserved   - at least one matching request body was captured
+ *   observedChars  - the disclosure's text length, counted ONLY when a
+ *                    matching body was observed (otherwise 0)
+ *   attemptedChars - the length handed to the SDK (0 if never attempted)
+ *   bodies         - [{seq, at, url, bodyChars}] (no body text)
+ *   state          - "not_attempted" | "attempted_no_body_observed" | "body_observed"
+ * Characters means JavaScript string length, not bytes.
+ * @param {string} requestId */
+export function observation(requestId, opts) {
+  const idx = sendMarks.findIndex((m) => m.requestId === requestId);
+  if (idx < 0) return { attempted: false, bodyObserved: false, observedChars: 0, attemptedChars: 0, bodies: [], state: "not_attempted" };
+  const mark = sendMarks[idx];
+  const mine = !mark.needle ? [] : outbound.filter((o) => {
+    if (o.seq <= mark.seq || !o.body || o.body.indexOf(mark.needle) === -1) return false;
+    /* The latest mark at or before this body that also matches it owns it. */
+    for (let i = sendMarks.length - 1; i >= 0; i--) {
+      const m = sendMarks[i];
+      if (m.seq < o.seq && m.needle && o.body.indexOf(m.needle) !== -1) return m === mark;
+    }
+    return false;
+  });
+  const bodyObserved = mine.length > 0;
+  return {
+    attempted: true, bodyObserved,
+    observedChars: bodyObserved ? mark.textChars : 0,
+    attemptedChars: mark.textChars,
+    bodies: mine.map((o) => ({ seq: o.seq, at: o.at, url: o.url, bodyChars: o.bytes })),
+    /* the captured text itself, only when asked for (the leak test searches it) */
+    texts: opts && opts.withBodies ? mine.map((o) => o.body) : undefined,
+    state: bodyObserved ? "body_observed" : "attempted_no_body_observed",
+  };
+}
+
+/** Test and harness helper: forget captured bodies and marks. */
+export function _resetObservations() { outbound.length = 0; sendMarks.length = 0; }
 
 /** The captured requests sent for the disclosure with this digest (a prefix is
  * enough) that was marked sent at or before `endAt`. Empty if none matched. */

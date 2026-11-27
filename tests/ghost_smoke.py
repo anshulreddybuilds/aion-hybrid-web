@@ -28,11 +28,14 @@ def maths(lines):
             sp += a; by[cat] = by.get(cat, 0) + a
             if cat in ("rent", "emi"): hous += a
     rent_who = next((w for _i, d, w, c, _a in lines if c == "rent"), "Person_A")
+    subs_who, subs_amt = next(((w, int(a)) for _i, d, w, c, a in lines if c == "subscriptions"), ("Merchant_C", 0))
+    cloud["sent"] = [int(a) for *_x, a in lines]
     return {"income": inc, "spend": sp, "breakdown": [{"category": c, "amount": v} for c, v in by.items()],
             "rent_emi_share": hous / inc if inc else 0, "savings_rate": (inc - sp) / inc if inc else 0,
             "tips": [{"text": "Renegotiate rent with " + rent_who + ": it is {amount} a month.", "amount": by.get("rent", 0)},
                      {"text": cloud["tip2"], "amount": by.get("food", 0)},
-                     {"text": "Your total spend is {amount}.", "amount": sp}]}
+                     {"text": "Your total spend is {amount}.", "amount": sp},
+                     {"text": "Cancel subscriptions with " + subs_who + " to save " + str(subs_amt) + " a month", "amount": 0}]}
 
 FAKE_NANO = r"""
 window.__nanoAvail = 'unavailable';
@@ -123,6 +126,15 @@ with sync_playwright() as p:
     ok("restore: rent tip shows the exact ₹24,000 (not a wobbled figure)", "₹24,000" in tips and "about ₹24" not in tips, tips)
     ok("restore: spend card shows the exact rules figure", pg.text_content("#aSpend") == "₹46,777", pg.text_content("#aSpend"))
     ok("tips: the statement tip with no action is left out and says so", "Your total spend" not in tips and "left out" in tips, tips)
+    ok("screen: the bare-number tip from the model shows the real ₹649 a month", "NETFLIX to save ₹649 a month" in tips, tips)
+    # Real figures on this page (each entry and the rules' totals); any other number from the request is a leak.
+    reals = {int(re.sub(r"\D", "", t)) for t in pg.locator("#gReal td.num").all_text_contents()}
+    reals |= {46777, 85000, 36450, 5000, 38223}
+    flat = tips.replace(",", "")
+    leaked = [n for n in cloud["sent"] if n >= 10 and n not in reals and re.search(r"(?<!\d)" + str(n) + r"(?!\d)", flat)]
+    ok("screen: no scaled number from the request appears in the tips (with or without ₹)", not leaked, (leaked, tips))
+    bare = [d for d in re.findall(r"(?<![₹\d,.])\d[\d,]*(?![\d,]|\s*%)", tips) if int(d.replace(",", "")) >= 10]
+    ok("screen: every number of 10+ in the tips has a ₹ sign (or is a %)", not bare, (bare, tips))
     ok("check: model's maths agrees with the rules", pg.text_content("#aAgree").count("agrees") == 4, pg.text_content("#aAgree"))
     rc = pg.evaluate("AionHybrid.telemetry.getReceipts().filter(r => r.route === 'cloud-ghost-math')")
     ok("receipt: one frozen cloud-ghost-math receipt, body observed, 0 private hits", len(rc) == 1 and rc[0]["egressAudit"]["bodyObserved"] is True and rc[0]["egressAudit"]["privateValueHits"] == 0, rc)

@@ -277,6 +277,7 @@ export function createSession(opts) {
   const fromAlias = new Map();   // stand-in -> real name as first seen
   const counts = { person: 0, merchant: 0, payer: 0, item: 0 };
   const jitter = new Map();      // entry key -> its own factor (stable for the session)
+  const aliasFigures = new Map(); // stand-in -> real amounts of its entries, and their total
 
   function alias(name, kind) {
     const key = String(name || "").toLowerCase().replace(/\s+/g, " ").trim() || "(unnamed " + kind + ")";
@@ -300,14 +301,17 @@ export function createSession(opts) {
         const sent = Math.max(1, Math.round(e.amount * k * factor(e)));
         return { id: e.id, direction: e.direction, category: e.category, party: e.party, standIn, real: e.amount, sent };
       });
+      aliasFigures.clear();
+      rows.forEach((r) => { if (!aliasFigures.has(r.standIn)) aliasFigures.set(r.standIn, []); aliasFigures.get(r.standIn).push(r.real); });
+      aliasFigures.forEach((list) => { if (list.length > 1) list.push(r2(list.reduce((a, b) => a + b, 0))); });
       return { rows, lines: rows.map((r) => [r.id, r.direction, r.standIn, r.category, String(r.sent)].join(" | ")) };
     },
     /** Real names (for the private-value scanner). */
     realNames() { return Array.from(fromAlias.values()).filter(isPrivateName); },
     unscale(n) { return typeof n === "number" && isFinite(n) ? n / k : null; },
-    restoreText(text, exact) { return restoreText(text, fromAlias, k, exact); },
+    restoreText(text, exact) { return restoreText(text, fromAlias, k, exact, aliasFigures); },
     /** The cloud's JSON, back in real rupees and real names. Never trusts it. */
-    restore(json, exact) { return restoreResult(json, fromAlias, k, exact); },
+    restore(json, exact) { return restoreResult(json, fromAlias, k, exact, aliasFigures); },
   };
 }
 
@@ -320,7 +324,6 @@ export function isPrivateName(n) {
 }
 
 const STAND_IN_RE = /\b(Person|Merchant|Payer|Item)_([A-Z]{1,2})\b/g;
-const TEXT_AMOUNT_RE = /(₹|\brs\.?\s?|\binr\s?)([0-9][0-9,]*(?:\.[0-9]+)?)/gi;
 
 /* Exact figures the rules already know (category totals, single entries, income,
  * spend ...). A restored amount within the wobble of one of them IS that figure:
@@ -336,21 +339,56 @@ export function exactFigures(entries, summary) {
   }
   return out.filter((n) => typeof n === "number" && isFinite(n) && n > 0);
 }
-export function snap(value, exact) {
-  if (value == null || !isFinite(value) || !exact || !exact.length) return { value, exact: false };
-  let best = null;
-  exact.forEach((x) => { const d = Math.abs(value - x); if (d <= SNAP_TOLERANCE * x + 1 && (best === null || d < Math.abs(value - best))) best = x; });
-  return best === null ? { value, exact: false } : { value: best, exact: true };
+/* Snaps only when exactly ONE known figure fits. Two real figures can sit within
+ * the wobble of each other (a ₹1,180 bill and a ₹1,200 transfer); picking the
+ * nearer one could print someone else's real amount, so then it stays "about".
+ * `preferred` (the figures of the payee the tip names) is tried first. */
+function fitting(value, list) {
+  return Array.from(new Set(list)).filter((x) => Math.abs(value - x) <= SNAP_TOLERANCE * x + 1);
+}
+export function snap(value, exact, preferred) {
+  if (value == null || !isFinite(value)) return { value, exact: false };
+  for (const list of [preferred, exact]) {
+    if (!list || !list.length) continue;
+    const fit = fitting(value, list);
+    if (fit.length === 1) return { value: fit[0], exact: true };
+    if (fit.length > 1) return { value, exact: false };
+  }
+  return { value, exact: false };
 }
 const shown = (s) => (s.exact ? "" : "about ") + rupees(s.value);
 
-function restoreText(text, fromAlias, k, exact) {
+/* Every money figure the model writes into its text is a SCALED one, with or
+ * without a currency sign ("save 551 a month", "Rs 1,500", "₹420.50"). Each is
+ * divided by k, snapped to an exact rules figure when within the wobble, and
+ * shown with ₹ ("about" when not exact). Left alone: percentages and points,
+ * counts with a unit (3 months, 2 times), parts of words or ids (T5, Merchant_B),
+ * and bare numbers under 10 (counts such as "2 subscriptions"). */
+const NUM = "\\d{1,3}(?:,\\d{2,3})+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?";
+const NOT_MONEY_AFTER = "(?![\\w%]|\\.\\d|\\s*(?:%|percent|per ?cent|pts?\\b|points?\\b|x\\b|times\\b|days?\\b|weeks?\\b|months\\b|years?\\b|subscriptions?\\b|entries\\b|items\\b))";
+export const TEXT_AMOUNT_RE = new RegExp(
+  "(?:(₹|\\brs\\.?|\\binr)\\s?(" + NUM + "))" +          // with a currency sign
+  "|(?<![\\w.,₹/])(" + NUM + ")" + NOT_MONEY_AFTER,      // a bare number
+  "gi");
+
+/* The real figures of every stand-in a text names (each entry, and their total). */
+function namedFigures(text, aliasFigures) {
+  const out = [];
+  if (!aliasFigures) return out;
+  (String(text || "").match(STAND_IN_RE) || []).forEach((m) => { (aliasFigures.get(m) || []).forEach((x) => out.push(x)); });
+  return out;
+}
+
+function restoreText(text, fromAlias, k, exact, aliasFigures) {
+  const preferred = namedFigures(text, aliasFigures);
   return String(text == null ? "" : text).slice(0, 600)
     .replace(STAND_IN_RE, (m) => (fromAlias.has(m) ? fromAlias.get(m) : m))
-    /* A rupee figure written inside the text is a scaled one too. */
-    .replace(TEXT_AMOUNT_RE, (m, cur, digits) => {
-      const v = parseFloat(digits.replace(/,/g, ""));
-      return isFinite(v) ? shown(snap(v / k, exact)) : m;
+    .replace(TEXT_AMOUNT_RE, (m, cur, withSign, bare) => {
+      const digits = withSign != null ? withSign : bare;
+      const v = parseFloat(String(digits).replace(/,/g, ""));
+      if (!isFinite(v)) return m;
+      if (withSign == null && v < 10) return m;
+      return shown(snap(v / k, exact, preferred));
     });
 }
 
@@ -363,7 +401,7 @@ export const ACTION_RE = /\b(cut|cancel|switch|move|set|prepay|pause|renegotiate
 /** The model's JSON, back in real rupees and real names. Never trusts it.
  * `raw` holds the plain divided-by-k numbers (used to check the model's maths);
  * the top-level figures are snapped to exact rules values where they match. */
-function restoreResult(json, fromAlias, k, exact) {
+function restoreResult(json, fromAlias, k, exact, aliasFigures) {
   const j = json && typeof json === "object" ? json : {};
   const div = (v) => (num(v) == null ? null : num(v) / k);
   const raw = { income: div(j.income), spend: div(j.spend), rentEmiShare: share(j.rent_emi_share), savingsRate: share(j.savings_rate) };
@@ -374,8 +412,8 @@ function restoreResult(json, fromAlias, k, exact) {
   })).filter((b) => b.amount != null);
   const tips = (Array.isArray(j.tips) ? j.tips : []).slice(0, 5).map((t) => {
     const a = div(t && t.amount);
-    const s = snap(a == null ? null : Math.max(0, a), exact);
-    const text = restoreText(t && t.text, fromAlias, k, exact);
+    const s = snap(a == null ? null : Math.max(0, a), exact, namedFigures(t && t.text, aliasFigures));
+    const text = restoreText(t && t.text, fromAlias, k, exact, aliasFigures);
     return { text: s.value == null ? text.split("{amount}").join("") : fillTip(text, shown(s)),
       amount: s.value, exact: s.exact, from: "model" };
   }).filter((t) => t.text.trim());
@@ -392,7 +430,8 @@ function restoreResult(json, fromAlias, k, exact) {
 /** 2 to 3 tips to show: the model's actionable ones first (an action word and a
  * figure above zero), then the rules' own tips to make up at least two. */
 export function chooseTips(modelTips, rulesTips) {
-  const good = (modelTips || []).filter((t) => ACTION_RE.test(t.text) && t.amount != null && t.amount >= 1);
+  /* A figure counts whether it came in `amount` or was written into the text (now ₹, real). */
+  const good = (modelTips || []).filter((t) => ACTION_RE.test(t.text) && ((t.amount != null && t.amount >= 1) || /₹\s?[1-9]/.test(t.text)));
   const out = good.slice(0, 3).map((t) => Object.assign({ from: "model" }, t));
   (rulesTips || []).forEach((t) => { if (out.length < 2) out.push({ text: t.text, amount: t.amount, exact: true, from: "rules" }); });
   return { tips: out.slice(0, 3), dropped: (modelTips || []).length - good.length };

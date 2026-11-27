@@ -216,6 +216,44 @@ for (let seed = 1; seed <= 20; seed++) {
   ok("check: for 81 gaps from 0% to 8%, 'agrees' is exactly 'printed gap <= printed limit'", consistent);
 }
 
+/* ------------------------------ no scaled amount reaches the screen ------------------------------ */
+{
+  const local = G.summarize(entries);
+  const exact = G.exactFigures(entries, local);
+  const rulesTips = G.localTips(local).map((t) => ({ text: G.fillTip(t.text, G.rupees(t.amount)), amount: t.amount }));
+  const styles = [
+    (n, who) => "Cancel " + who + " to save " + n + " a month.",                  // bare (the real bug)
+    (n, who) => "Cut " + who + " to save ₹" + n + " a month.",                    // with ₹
+    (n, who) => "Cut " + who + " to save Rs " + n.toLocaleString("en-IN") + ".",   // Rs and grouping
+    (n, who) => "Switch " + who + " plan, save INR" + n + ".50 a month.",          // INR and decimals
+    (n, who) => "Pause " + who + " to save {amount}.",                              // the token
+  ];
+  let leaks = [], wrong = [];
+  for (let seed = 1; seed <= 30; seed++) {
+    const s = G.createSession({ random: seeded(seed) });
+    const m = s.mask(entries);
+    const debits = m.rows.filter((r) => r.direction === "debit" && r.sent >= 10);
+    const tips = styles.map((f, i) => { const r = debits[(seed + i) % debits.length]; return { text: f(r.sent, r.standIn), amount: r.sent, row: r }; });
+    const back = s.restore({ tips }, exact);
+    const shown = G.chooseTips(back.tips, rulesTips).tips.map((t) => t.text).join("\n");
+    /* 1. Every number of 10 or more on screen sits after ₹ (or is a % / count). */
+    const bare = (shown.replace(/₹[\d,]+(?:\.\d+)?/g, "").match(/\d[\d,]*(?:\.\d+)?(?!\s*(?:%|months|times))/g) || []).filter((d) => parseFloat(d.replace(/,/g, "")) >= 10);
+    if (bare.length) leaks.push({ seed, bare, shown });
+    /* 2. No scaled figure is printed as a rupee amount, unless it is also a real figure. */
+    const realSet = new Set(exact.map((x) => Math.round(x)));
+    m.rows.forEach((r) => { if (!realSet.has(r.sent) && new RegExp("₹" + G.rupees(r.sent).slice(1).replace(/,/g, ",?") + "(?![\d,])").test(shown)) leaks.push({ seed, scaledShown: r.sent }); });
+    /* 3. A tip about one entry shows that entry's exact real rupees (no "about"). */
+    back.tips.slice(0, 3).forEach((t, i) => { const r = tips[i].row; if (!t.text.includes(G.rupees(r.real)) || /about ₹/.test(t.text)) wrong.push({ seed, want: G.rupees(r.real), got: t.text }); });
+  }
+  ok("screen: across 30 sessions and 5 writing styles, no scaled or bare amount is shown", leaks.length === 0, leaks.slice(0, 2));
+  ok("screen: a tip about one entry shows its exact real rupees with ₹ (bare, ₹ and Rs styles)", wrong.length === 0, wrong.slice(0, 3));
+  const s = G.createSession({ k: 0.85, wobble: 0 });
+  s.mask(entries);
+  ok("screen: the reported tip ('save 552 a month' for NETFLIX) reads ₹649", s.restoreText("Cancel subscriptions with Merchant_C to save 552 a month", exact) === "Cancel subscriptions with NETFLIX to save ₹649 a month");
+  ok("screen: a bare figure that matches no rules figure is ₹ and 'about'", s.restoreText("save 1500 a month", exact) === "save about ₹1,765 a month");
+  ok("screen: percentages, counts, small numbers and ids are left alone", s.restoreText("cut 40% of T5, 2 times, for 3 months", exact) === "cut 40% of T5, 2 times, for 3 months");
+}
+
 /* ------------------------------ the disclosure boundary ------------------------------ */
 {
   const s = G.createSession({ random: seeded(3) });

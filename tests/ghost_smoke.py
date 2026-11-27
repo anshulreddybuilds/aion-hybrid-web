@@ -61,6 +61,7 @@ def vertex(route):
                              body=json.dumps({"error": {"code": 403, "message": "App Check token is invalid.", "status": "PERMISSION_DENIED"}}))
     text = json.loads(body)["contents"][0]["parts"][0]["text"]
     out = maths(LINE.findall(text))
+    if cloud.get("skew"): out["spend"] = out["spend"] * cloud["skew"]; out["savings_rate"] = out["savings_rate"] + 0.02
     c = {"candidates": [{"content": {"role": "model", "parts": [{"text": json.dumps(out)}]}, "finishReason": "STOP"}]}
     return route.fulfill(status=200, headers={**CORS, "content-type": "application/json"}, body=json.dumps(c))
 def appcheck(route):
@@ -134,6 +135,19 @@ with sync_playwright() as p:
     pg.click("#ghostSendBtn"); pg.wait_for_timeout(1500)
     ok("hostile: HTML from the model is shown as text", pg.locator("#aTips img").count() == 0 and "<img" in pg.text_content("#aTips") and not pg.evaluate("window.__pwned"))
     cloud["tip2"] = "Cut Merchant_B orders, which cost {amount}."
+
+    # ---------- a model figure that matches no rules figure ----------
+    cloud["skew"] = 0.965
+    pg.click("#ghostSendBtn"); pg.wait_for_timeout(1500)
+    sp, sps = pg.text_content("#aSpend"), pg.text_content("#aSpendS")
+    ok("about: an off spend is marked 'about' with the rules figure beside it", sp.startswith("about ₹") and sps == "rules: ₹46,777", (sp, sps))
+    sv, svs = pg.text_content("#aSave"), pg.text_content("#aSaveS")
+    ok("about: an off savings rate is marked 'about' with the rules rate beside it", sv.startswith("about ") and svs == "rules: 45%", (sv, svs))
+    ag = pg.text_content("#aAgree")
+    marks = re.findall(r"(agrees|differs) \((\d+\.\d)(?:%| pts)\)", ag)
+    ok("check: wording states 3.5 and each verdict matches its printed gap", "within 3.5%" in ag and len(marks) == 4 and all((v == "agrees") == (float(n) <= 3.5) for v, n in marks), ag)
+    ok("per month: model tips say 'a month'", all("month" in li for li in pg.locator("#aTips li").all_text_contents() if "left out" not in li), pg.locator("#aTips li").all_text_contents())
+    cloud["skew"] = None
 
     # ---------- App Check failure ----------
     cloud["mode"] = "appcheck"

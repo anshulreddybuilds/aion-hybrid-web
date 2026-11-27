@@ -187,6 +187,35 @@ for (let seed = 1; seed <= 20; seed++) {
   ok("instructions: ask for one concrete action per tip", /concrete action/.test(G.INSTRUCTIONS) && /do not just restate a total/.test(G.INSTRUCTIONS));
 }
 
+/* ------------------------------ per month, "about", one tolerance ------------------------------ */
+{
+  ok("per month: a bare saving gets 'a month'", G.fillTip("Cancel Merchant_C to save {amount}.", "₹649") === "Cancel Merchant_C to save ₹649 a month.");
+  ok("per month: no second 'month' when the sentence already says it",
+    G.fillTip("free up {amount} each month", "₹9") === "free up ₹9 each month" && G.fillTip("a monthly saving of {amount}", "₹9") === "a monthly saving of ₹9");
+  ok("per month: a month word in the NEXT sentence does not count", G.fillTip("Save {amount}. Plan meals each month.", "₹9") === "Save ₹9 a month. Plan meals each month.");
+  const local = G.summarize(entries);
+  const rulesTips = G.localTips(local).map((t) => G.fillTip(t.text, G.rupees(t.amount)));
+  ok("per month: every rules tip states its figure per month", rulesTips.every((t) => /month/i.test(t)), rulesTips);
+  const s = G.createSession({ k: 0.7, wobble: 0 });
+  const m = s.mask(entries);
+  const back = s.restore({ spend: 45130 * 0.7, income: 85000 * 0.7, rent_emi_share: 0.43, savings_rate: 0.47,
+    tips: [{ text: "Cancel Merchant_C to save {amount}.", amount: 649 * 0.7 }] }, G.exactFigures(entries, local));
+  ok("about: spend ₹45,130 matches no rules figure, so it is not marked exact", back.spend === 45130 && back.spendExact === false);
+  ok("about: income that matches the rules is exact", back.income === 85000 && back.incomeExact === true);
+  ok("per month: a model tip reads 'save ₹649 a month'", back.tips[0].text === "Cancel NETFLIX to save ₹649 a month.", back.tips[0].text);
+  const a = G.agreement(local, back.raw);
+  ok("check: one tolerance, 3.5", G.CHECK_TOLERANCE === G.WOBBLE + 0.02 && a.tolerancePct === 3.5);
+  ok("check: the reported case (₹45,130 vs ₹46,777 = 3.5%) agrees, as its wording says", a.gaps.spend === 3.5 && a.spend === true, a);
+  ok("check: savings rate 47% vs 45% is a 2-point gap and agrees", a.gaps.savingsRate === 2 && a.savingsRate === true, a);
+  ok("check: 3.6% is printed as 3.6 and differs", (() => { const b = G.agreement(local, { spend: 46777 * 0.964, income: 85000, rentEmiShare: local.rentEmiShare, savingsRate: local.savingsRate }); return b.gaps.spend === 3.6 && b.spend === false; })());
+  let consistent = true;
+  for (let i = 0; i <= 80; i++) {
+    const r = G.agreement(local, { spend: 46777 * (1 - i / 1000), income: 85000, rentEmiShare: local.rentEmiShare, savingsRate: local.savingsRate });
+    if (r.spend !== (r.gaps.spend <= r.tolerancePct)) consistent = false;
+  }
+  ok("check: for 81 gaps from 0% to 8%, 'agrees' is exactly 'printed gap <= printed limit'", consistent);
+}
+
 /* ------------------------------ the disclosure boundary ------------------------------ */
 {
   const s = G.createSession({ random: seeded(3) });

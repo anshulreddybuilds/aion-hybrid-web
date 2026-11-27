@@ -751,7 +751,7 @@ async function ghostPrepare(text) {
     outgoing, outgoingChars: outgoing.length,
     leak: ghostMath.leakCheck(outgoing, parsed.entries),
     scannerHits: egress.scanPrivate(outgoing).length,
-    localTips: ghostMath.localTips(summary).map((t) => ({ text: ghostMath.fillAmount(t.text, t.amount), amount: t.amount })),
+    localTips: ghostMath.localTips(summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount })),
   };
 }
 
@@ -808,7 +808,7 @@ async function ghostSend(modeKey) {
       const obs = egress.observation(d.requestId, { withBodies: true });
       const bodyLeak = ghostMath.leakCheck((obs.texts || []).join("\n"), p.entries);
       const restored = ghostSession.restore(json, ghostMath.exactFigures(p.entries, p.summary));
-      const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillAmount(t.text, t.amount), amount: t.amount }));
+      const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount }));
       const picked = ghostMath.chooseTips(restored.tips, rulesTips);
       restored.tips = picked.tips;
       restored.tipsDropped = picked.dropped;
@@ -824,7 +824,7 @@ async function ghostSend(modeKey) {
       });
       return {
         ok: !!json, source, sourceVerified, model: isCloud ? cloudModel : "Gemini Nano", latencyMs, route,
-        restored, agreement: json ? ghostMath.agreement(p.summary, restored.raw, ghostMath.WOBBLE + 0.02) : null,
+        restored, agreement: json ? ghostMath.agreement(p.summary, restored.raw) : null,
         evidence: { bodyObserved: obs.bodyObserved, observedChars: obs.observedChars, bodies: obs.bodies.length,
           namesChecked: bodyLeak.namesChecked, nameHits: bodyLeak.nameHits.length },
         receiptId: receipt.receiptId,
@@ -1082,7 +1082,7 @@ function boot() {
         ? ghostSend(modeKey)
         : Promise.reject(Object.assign(new Error("Sending needs a direct click on the send button."), { code: "user_gesture_required" })),
       samples: { sms: SAMPLE_SMS, budget: SAMPLE_BUDGET },
-      rupees: ghostMath.rupees, kRange: [ghostMath.K_MIN, ghostMath.K_MAX], wobble: ghostMath.WOBBLE,
+      rupees: ghostMath.rupees, checkTolerance: ghostMath.CHECK_TOLERANCE, kRange: [ghostMath.K_MIN, ghostMath.K_MAX], wobble: ghostMath.WOBBLE,
     },
     border: makeBorder(router),
   };

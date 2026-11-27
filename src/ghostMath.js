@@ -218,16 +218,32 @@ export function localTips(s) {
   const cat = (name) => (s.breakdown.find((b) => b.category === name) || { amount: 0 }).amount;
   if (s.rentEmiShare > 0.4) tips.push({ text: "Rent and EMIs take " + pct(s.rentEmiShare) + " of your " + s.rentEmiBase + ". A common guide is under 40%; prepaying the costliest loan or a cheaper place would free {amount} a month at 40%.", amount: s.rentEmi - 0.4 * (s.rentEmiBase === "income" ? s.income : s.spend) });
   const eatOut = cat("food");
-  if (s.spend > 0 && eatOut / s.spend > 0.12) tips.push({ text: "Food delivery and eating out are " + pct(eatOut / s.spend) + " of spending. Cutting it by a third saves about {amount}.", amount: eatOut / 3 });
+  if (s.spend > 0 && eatOut / s.spend > 0.12) tips.push({ text: "Food delivery and eating out are " + pct(eatOut / s.spend) + " of spending. Cut it by a third to save about {amount}.", amount: eatOut / 3 });
   const subs = cat("subscriptions");
-  if (subs > 0) tips.push({ text: "Subscriptions add up to {amount}. Cancel the one you used least this month.", amount: subs });
-  if (s.savingsRate != null && s.savingsRate < 0.2) tips.push({ text: "You are saving " + pct(Math.max(0, s.savingsRate)) + " of income. Reaching 20% means keeping about {amount} more each month.", amount: 0.2 * s.income - (s.income - s.spend) });
+  if (subs > 0) tips.push({ text: "Cancel the subscription you used least; together they cost {amount}.", amount: subs });
+  if (s.savingsRate != null && s.savingsRate < 0.2) tips.push({ text: "You are saving " + pct(Math.max(0, s.savingsRate)) + " of income. Keep about {amount} more to reach 20%.", amount: 0.2 * s.income - (s.income - s.spend) });
   if (!tips.length) tips.push({ text: "Your biggest spend is " + ((s.breakdown[0] || {}).category || "none") + " at {amount}. Set a monthly cap for it.", amount: (s.breakdown[0] || { amount: 0 }).amount });
   return tips.slice(0, 3).map((t) => ({ text: t.text, amount: Math.max(0, Math.round(t.amount)) }));
 }
 
 export function fillAmount(text, amount) {
   return String(text).split("{amount}").join(rupees(amount));
+}
+
+/* Tips are about one month, so each figure says so: "save ₹649 a month". A
+ * figure whose sentence already says month or monthly is left as it is. */
+const MONTH_WORD = /\bmonth(?:ly|s)?\b|\/\s*mo\b/i;
+export function fillTip(text, shown) {
+  const parts = String(text).split("{amount}");
+  let out = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    const after = parts[i];
+    /* The sentence around the figure: from the last full stop before it to the first after it. */
+    const sentence = out.split(/[.!?]/).pop() + after.split(/[.!?]/)[0];
+    const monthly = MONTH_WORD.test(sentence);
+    out += shown + (monthly ? "" : " a month") + after;
+  }
+  return out;
 }
 
 /* ------------------------------ session: scale + stand-ins ------------------------------ */
@@ -360,12 +376,13 @@ function restoreResult(json, fromAlias, k, exact) {
     const a = div(t && t.amount);
     const s = snap(a == null ? null : Math.max(0, a), exact);
     const text = restoreText(t && t.text, fromAlias, k, exact);
-    return { text: s.value == null ? text.split("{amount}").join("") : text.split("{amount}").join(shown(s)),
+    return { text: s.value == null ? text.split("{amount}").join("") : fillTip(text, shown(s)),
       amount: s.value, exact: s.exact, from: "model" };
   }).filter((t) => t.text.trim());
+  const sIncome = snap(raw.income, exact), sSpend = snap(raw.spend, exact);
   return {
-    income: raw.income == null ? null : fig(raw.income),
-    spend: raw.spend == null ? null : fig(raw.spend),
+    income: sIncome.value, incomeExact: sIncome.exact,
+    spend: sSpend.value, spendExact: sSpend.exact,
     /* Shares do not change with k: they come back as they are. */
     rentEmiShare: raw.rentEmiShare, savingsRate: raw.savingsRate,
     breakdown, tips, raw,
@@ -389,7 +406,7 @@ export const INSTRUCTIONS = "You are a careful personal-finance assistant. Below
   "(spend per category, as numbers; spend and breakdown leave out the savings category, which is money kept, not spent), rent_emi_share (rent plus emi divided by income, a fraction between 0 and 1; divide by spend if " +
   "there is no income), savings_rate ((income - spend) / income, a fraction), and 2 or 3 tips. Each tip must start with one concrete action " +
   "(cut, cancel, switch, move, set, prepay, pause or renegotiate something specific, naming the party or category) and say how much it " +
-  "would free up each month; do not just restate a total. Each tip has text and amount: put the token {amount} in the text where that " +
+  "would free up each month; do not just restate a total. Each tip has text and amount: write it as \"save {amount} a month\" where that " +
   "monthly rupee figure goes and give it as a plain number in amount. Do not write any other numbers in the text. Do not invent entries.";
 
 export const RESPONSE_JSON_SCHEMA = {
@@ -411,15 +428,29 @@ export function buildPayload(lines) {
 }
 
 /** Do the cloud's restored figures agree with the rules? (within wobble + rounding) */
+/* One tolerance for the check AND for the sentence that reports it. Amounts are
+ * compared as a percent of the rules figure; shares and rates in percentage
+ * points. Each gap is rounded to 0.1 BEFORE it is compared, so the number the
+ * page prints is exactly the number that decided "agrees" or "differs". */
+export const CHECK_TOLERANCE = WOBBLE + 0.02;
+const tenth = (x) => Math.round(x * 10) / 10;
 export function agreement(local, restored, tolerance) {
-  const tol = tolerance == null ? 0.05 : tolerance;
-  const close = (a, b) => a != null && b != null && Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
-  const nearShare = (a, b) => a != null && b != null && Math.abs(a - b) <= tol;
+  const tol = tenth((tolerance == null ? CHECK_TOLERANCE : tolerance) * 100);
+  const pctGap = (a, b) => (a == null || b == null ? null : tenth(Math.abs(a - b) / Math.max(1, Math.abs(b)) * 100));
+  const ptGap = (a, b) => (a == null || b == null ? null : tenth(Math.abs(a - b) * 100));
+  const gaps = {
+    spend: pctGap(restored.spend, local.spend),
+    income: local.income === 0 ? (restored.income == null ? 0 : tenth(Math.abs(restored.income))) : pctGap(restored.income, local.income),
+    rentEmiShare: ptGap(restored.rentEmiShare, local.rentEmiShare),
+    savingsRate: local.savingsRate == null ? 0 : ptGap(restored.savingsRate, local.savingsRate),
+  };
+  const within = (g) => g != null && g <= tol;
   return {
-    spend: close(restored.spend, local.spend),
-    income: local.income === 0 ? restored.income == null || Math.abs(restored.income) < 1 : close(restored.income, local.income),
-    rentEmiShare: nearShare(restored.rentEmiShare, local.rentEmiShare),
-    savingsRate: local.savingsRate == null ? true : nearShare(restored.savingsRate, local.savingsRate),
+    spend: within(gaps.spend),
+    income: local.income === 0 ? gaps.income < 1 : within(gaps.income),
+    rentEmiShare: within(gaps.rentEmiShare),
+    savingsRate: within(gaps.savingsRate),
+    gaps, tolerancePct: tol,
   };
 }
 

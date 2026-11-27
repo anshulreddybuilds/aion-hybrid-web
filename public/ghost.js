@@ -128,9 +128,21 @@
         " · real names in it: " + r.evidence.nameHits + " of " + r.evidence.namesChecked + " checked" : " · nothing was sent");
     if (!r.ok) { msg("gSendMsg", "The model answered but not in the JSON shape asked for, so nothing was restored. The rules' figures above stand.", true); show("gAnswer", true); return; }
     var x = r.restored;
-    $("aSpend").textContent = H.ghost.rupees(x.spend);
-    $("aRent").textContent = pct(x.rentEmiShare);
-    $("aSave").textContent = pct(x.savingsRate);
+    /* A model figure that is not one of the rules' exact figures is marked
+     * "about" and shown next to the rules figure. */
+    var rules = prepared.summary;
+    var money = function (id, v, exact, rulesV) {
+      $(id).textContent = v == null ? "-" : (exact ? "" : "about ") + H.ghost.rupees(v);
+      $(id + "S").textContent = v == null || exact ? (v == null ? "" : "matches the rules") : "rules: " + H.ghost.rupees(rulesV);
+    };
+    var ratio = function (id, v, rulesV) {
+      var same = v != null && rulesV != null && pct(v) === pct(rulesV);
+      $(id).textContent = v == null ? "-" : (same ? "" : "about ") + pct(v);
+      $(id + "S").textContent = v == null || rulesV == null ? "" : same ? "matches the rules" : "rules: " + pct(rulesV);
+    };
+    money("aSpend", x.spend, x.spendExact, rules.spend);
+    ratio("aRent", x.rentEmiShare, rules.rentEmiShare);
+    ratio("aSave", x.savingsRate, rules.savingsRate);
     var tips = $("aTips"); clear(tips);
     x.tips.forEach(function (t) {
       var li = el("li", t.text);
@@ -139,11 +151,14 @@
     });
     if (!x.tips.length) tips.appendChild(el("li", "(No tips came back.)"));
     if (x.tipsDropped) tips.appendChild(el("li", x.tipsDropped + " model tip(s) left out: they stated a figure without saying what to do.", "src"));
-    var a = r.agreement || {};
-    var mark = function (k) { return a[k] ? "agrees" : "differs"; };
-    $("aAgree").textContent = "Checked against the rules (within " + Math.round((H.ghost.wobble + 0.02) * 100) + "%): spend " + mark("spend") +
-      " · income " + mark("income") + " · rent+EMI share " + mark("rentEmiShare") + " · savings rate " + mark("savingsRate") +
-      ". Where they differ, trust step 02.";
+    /* The same gaps and the same limit that decided each result (rounded to 0.1
+     * before comparing), so the sentence can never contradict the check. */
+    var a = r.agreement || {}, g = a.gaps || {}, lim = a.tolerancePct;
+    var one = function (n) { return n == null ? "?" : (Math.round(n * 10) / 10).toFixed(1); };
+    var mark = function (k, unit) { return (a[k] ? "agrees" : "differs") + " (" + one(g[k]) + unit + ")"; };
+    $("aAgree").textContent = "Checked against the rules: amounts within " + one(lim) + "%, shares within " + one(lim) +
+      " points. Spend " + mark("spend", "%") + " · income " + mark("income", "%") + " · rent+EMI share " + mark("rentEmiShare", " pts") +
+      " · savings rate " + mark("savingsRate", " pts") + ". Where they differ, trust step 02.";
     show("gAnswer", true);
     $("gAnswer").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
   }

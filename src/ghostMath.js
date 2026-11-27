@@ -289,9 +289,9 @@ export function createSession(opts) {
     /** Real names (for the private-value scanner). */
     realNames() { return Array.from(fromAlias.values()).filter(isPrivateName); },
     unscale(n) { return typeof n === "number" && isFinite(n) ? n / k : null; },
-    restoreText(text) { return restoreText(text, fromAlias, k); },
+    restoreText(text, exact) { return restoreText(text, fromAlias, k, exact); },
     /** The cloud's JSON, back in real rupees and real names. Never trusts it. */
-    restore(json) { return restoreResult(json, fromAlias, k); },
+    restore(json, exact) { return restoreResult(json, fromAlias, k, exact); },
   };
 }
 
@@ -306,38 +306,79 @@ export function isPrivateName(n) {
 const STAND_IN_RE = /\b(Person|Merchant|Payer|Item)_([A-Z]{1,2})\b/g;
 const TEXT_AMOUNT_RE = /(₹|\brs\.?\s?|\binr\s?)([0-9][0-9,]*(?:\.[0-9]+)?)/gi;
 
-function restoreText(text, fromAlias, k) {
+/* Exact figures the rules already know (category totals, single entries, income,
+ * spend ...). A restored amount within the wobble of one of them IS that figure:
+ * the gap is only the scaling noise, so the exact rules value is shown. Anything
+ * else is the model's own estimate and is labelled "about". */
+export const SNAP_TOLERANCE = WOBBLE + 0.005;
+export function exactFigures(entries, summary) {
+  const out = (entries || []).map((e) => e.amount);
+  if (summary) {
+    out.push(summary.income, summary.spend, summary.invested, summary.rentEmi);
+    (summary.breakdown || []).forEach((b) => out.push(b.amount));
+    if (summary.income > 0) out.push(summary.income - summary.spend);
+  }
+  return out.filter((n) => typeof n === "number" && isFinite(n) && n > 0);
+}
+export function snap(value, exact) {
+  if (value == null || !isFinite(value) || !exact || !exact.length) return { value, exact: false };
+  let best = null;
+  exact.forEach((x) => { const d = Math.abs(value - x); if (d <= SNAP_TOLERANCE * x + 1 && (best === null || d < Math.abs(value - best))) best = x; });
+  return best === null ? { value, exact: false } : { value: best, exact: true };
+}
+const shown = (s) => (s.exact ? "" : "about ") + rupees(s.value);
+
+function restoreText(text, fromAlias, k, exact) {
   return String(text == null ? "" : text).slice(0, 600)
     .replace(STAND_IN_RE, (m) => (fromAlias.has(m) ? fromAlias.get(m) : m))
     /* A rupee figure written inside the text is a scaled one too. */
     .replace(TEXT_AMOUNT_RE, (m, cur, digits) => {
       const v = parseFloat(digits.replace(/,/g, ""));
-      return isFinite(v) ? rupees(v / k) : m;
+      return isFinite(v) ? shown(snap(v / k, exact)) : m;
     });
 }
 
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
 const share = (v) => { const n = num(v); return n == null ? null : n > 1.5 && n <= 150 ? n / 100 : n; };
 
-function restoreResult(json, fromAlias, k) {
+/* A tip is kept only if it asks for something to be done. */
+export const ACTION_RE = /\b(cut|cancel|switch|move|set|prepay|pause|renegotiate|negotiate|reduce|cap|limit|skip|swap|drop|automate|shift|refinance|consolidate|compare|cook|plan|review|trim|stop|batch|redirect|raise|increase|start|put|keep)\b/i;
+
+/** The model's JSON, back in real rupees and real names. Never trusts it.
+ * `raw` holds the plain divided-by-k numbers (used to check the model's maths);
+ * the top-level figures are snapped to exact rules values where they match. */
+function restoreResult(json, fromAlias, k, exact) {
   const j = json && typeof json === "object" ? json : {};
+  const div = (v) => (num(v) == null ? null : num(v) / k);
+  const raw = { income: div(j.income), spend: div(j.spend), rentEmiShare: share(j.rent_emi_share), savingsRate: share(j.savings_rate) };
+  const fig = (v) => snap(v, exact).value;
   const breakdown = (Array.isArray(j.breakdown) ? j.breakdown : []).slice(0, 20).map((b) => ({
     category: CATEGORY_NAMES.indexOf(String(b && b.category).toLowerCase()) >= 0 ? String(b.category).toLowerCase() : "other",
-    amount: num(b && b.amount) == null ? null : num(b.amount) / k,
+    amount: div(b && b.amount) == null ? null : fig(div(b.amount)),
   })).filter((b) => b.amount != null);
-  const tips = (Array.isArray(j.tips) ? j.tips : []).slice(0, 3).map((t) => {
-    const amount = num(t && t.amount) == null ? null : Math.max(0, num(t.amount) / k);
-    const text = restoreText(t && t.text, fromAlias, k);
-    return { text: amount == null ? text.split("{amount}").join("") : fillAmount(text, amount), amount };
+  const tips = (Array.isArray(j.tips) ? j.tips : []).slice(0, 5).map((t) => {
+    const a = div(t && t.amount);
+    const s = snap(a == null ? null : Math.max(0, a), exact);
+    const text = restoreText(t && t.text, fromAlias, k, exact);
+    return { text: s.value == null ? text.split("{amount}").join("") : text.split("{amount}").join(shown(s)),
+      amount: s.value, exact: s.exact, from: "model" };
   }).filter((t) => t.text.trim());
   return {
-    income: num(j.income) == null ? null : num(j.income) / k,
-    spend: num(j.spend) == null ? null : num(j.spend) / k,
+    income: raw.income == null ? null : fig(raw.income),
+    spend: raw.spend == null ? null : fig(raw.spend),
     /* Shares do not change with k: they come back as they are. */
-    rentEmiShare: share(j.rent_emi_share),
-    savingsRate: share(j.savings_rate),
-    breakdown, tips,
+    rentEmiShare: raw.rentEmiShare, savingsRate: raw.savingsRate,
+    breakdown, tips, raw,
   };
+}
+
+/** 2 to 3 tips to show: the model's actionable ones first (an action word and a
+ * figure above zero), then the rules' own tips to make up at least two. */
+export function chooseTips(modelTips, rulesTips) {
+  const good = (modelTips || []).filter((t) => ACTION_RE.test(t.text) && t.amount != null && t.amount >= 1);
+  const out = good.slice(0, 3).map((t) => Object.assign({ from: "model" }, t));
+  (rulesTips || []).forEach((t) => { if (out.length < 2) out.push({ text: t.text, amount: t.amount, exact: true, from: "rules" }); });
+  return { tips: out.slice(0, 3), dropped: (modelTips || []).length - good.length };
 }
 
 /* ------------------------------ the cloud's task ------------------------------ */
@@ -346,9 +387,10 @@ export const INSTRUCTIONS = "You are a careful personal-finance assistant. Below
   "id | debit or credit | party | category | amount in rupees. Names are placeholders such as Person_A or Merchant_B; keep them " +
   "exactly as written. Using ONLY these entries, return JSON with: income (sum of credits), spend (sum of debits), breakdown " +
   "(spend per category, as numbers; spend and breakdown leave out the savings category, which is money kept, not spent), rent_emi_share (rent plus emi divided by income, a fraction between 0 and 1; divide by spend if " +
-  "there is no income), savings_rate ((income - spend) / income, a fraction), and 2 or 3 tips. Each tip has text and amount: put the " +
-  "token {amount} in the text where the rupee figure goes and give that figure as a plain number in amount. Do not write any other " +
-  "numbers in the text. Do not invent entries.";
+  "there is no income), savings_rate ((income - spend) / income, a fraction), and 2 or 3 tips. Each tip must start with one concrete action " +
+  "(cut, cancel, switch, move, set, prepay, pause or renegotiate something specific, naming the party or category) and say how much it " +
+  "would free up each month; do not just restate a total. Each tip has text and amount: put the token {amount} in the text where that " +
+  "monthly rupee figure goes and give it as a plain number in amount. Do not write any other numbers in the text. Do not invent entries.";
 
 export const RESPONSE_JSON_SCHEMA = {
   type: "object",

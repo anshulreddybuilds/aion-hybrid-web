@@ -149,10 +149,42 @@ for (let seed = 1; seed <= 20; seed++) {
   ok("hostile: non-numbers become null, never NaN", bad.income === null && bad.spend === null && bad.savingsRate === null);
   ok("hostile: unknown category becomes 'other'; a string amount is dropped", bad.breakdown.length === 1 && bad.breakdown[0].category === "other" && bad.breakdown[0].amount === 100);
   ok("hostile: a percent like 43 is read as 0.43", Math.abs(bad.rentEmiShare - 0.43) < 1e-9);
-  ok("hostile: at most 3 tips, negative amounts clamped to 0", bad.tips.length === 3 && bad.tips.every((t) => t.amount === 0));
+  ok("hostile: negative tip amounts clamped to 0", bad.tips.every((t) => t.amount === 0));
+  ok("hostile: chooseTips shows at most 3 and drops tips with no figure", G.chooseTips(bad.tips, []).tips.length === 0);
   ok("hostile: null / empty reply restores to empty", s.restore(null).breakdown.length === 0 && s.restore(null).tips.length === 0);
   const lying = honestCloud(s.mask(entries).lines); lying.spend *= 2;
   ok("hostile: a cloud that doubles spend is caught by the rules check", G.agreement(G.summarize(entries), s.restore(lying)).spend === false);
+}
+
+/* ------------------------------ exact figures and actionable tips ------------------------------ */
+{
+  const local = G.summarize(entries);
+  const exact = G.exactFigures(entries, local);
+  let allExact = true, bad = [];
+  for (let seed = 1; seed <= 30; seed++) {
+    const s = G.createSession({ random: seeded(seed) });
+    const m = s.mask(entries);
+    const back = s.restore(honestCloud(m.lines), exact);
+    const rent = back.breakdown.find((b) => b.category === "rent").amount;
+    if (rent !== 24000 || back.spend !== local.spend || back.income !== local.income || !back.tips[0].text.includes("₹24,000") || back.tips[0].text.includes("about")) { allExact = false; bad.push({ seed, rent, spend: back.spend, tip: back.tips[0].text }); }
+  }
+  ok("snap: across 30 random sessions rent reads exactly ₹24,000, spend and income exact", allExact, bad.slice(0, 2));
+  const s = G.createSession({ k: 0.7 });
+  s.mask(entries);
+  const back = s.restore({ spend: 46777 * 0.7, tips: [{ text: "Cut Merchant_B orders by half to free {amount}.", amount: 293.65 }] }, exact);
+  ok("snap: a figure the rules do not know is marked 'about'", /about ₹420/.test(back.tips[0].text) && back.tips[0].exact === false, back.tips[0]);
+  ok("snap: raw numbers are kept for the maths check", Math.abs(back.raw.spend - 46777) < 1e-6);
+  ok("snap: a doubled spend is not snapped and still fails the check", (() => { const b = s.restore({ spend: 2 * 46777 * 0.7 }, exact); return b.spend > 90000 && G.agreement(local, b.raw).spend === false; })());
+  ok("snap: nothing to snap to leaves the value alone", G.snap(123.4, []).value === 123.4 && G.snap(null, exact).value === null);
+  const rulesTips = G.localTips(local).map((t) => ({ text: G.fillAmount(t.text, t.amount), amount: t.amount }));
+  const statement = [{ text: "Your savings amount this month is ₹4,989.", amount: 4989 }, { text: "Your total spend on rent is ₹24,306.", amount: 24306 }];
+  const picked = G.chooseTips(statement, rulesTips);
+  ok("tips: statements with no action are dropped and the rules' tips fill in", picked.dropped === 2 && picked.tips.length === 2 && picked.tips.every((t) => t.from === "rules"), picked);
+  const good = [{ text: "Cancel Merchant_C to free ₹649 a month.", amount: 649 }, { text: "Cut food delivery by a third to free about ₹280.", amount: 280 }, { text: "Prepay the car loan.", amount: 2000 }, { text: "Set a cap", amount: 10 }];
+  const p2 = G.chooseTips(good, rulesTips);
+  ok("tips: actionable model tips are kept, at most 3, all from the model", p2.tips.length === 3 && p2.tips.every((t) => t.from === "model") && p2.dropped === 0, p2);
+  ok("tips: one good model tip gets one rules tip to make two", (() => { const r = G.chooseTips(good.slice(0, 1).concat(statement), rulesTips); return r.tips.length === 2 && r.tips[0].from === "model" && r.tips[1].from === "rules"; })());
+  ok("instructions: ask for one concrete action per tip", /concrete action/.test(G.INSTRUCTIONS) && /do not just restate a total/.test(G.INSTRUCTIONS));
 }
 
 /* ------------------------------ the disclosure boundary ------------------------------ */

@@ -807,7 +807,11 @@ async function ghostSend(modeKey) {
       const latencyMs = Math.round(performance.now() - t0);
       const obs = egress.observation(d.requestId, { withBodies: true });
       const bodyLeak = ghostMath.leakCheck((obs.texts || []).join("\n"), p.entries);
-      const restored = ghostSession.restore(json);
+      const restored = ghostSession.restore(json, ghostMath.exactFigures(p.entries, p.summary));
+      const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillAmount(t.text, t.amount), amount: t.amount }));
+      const picked = ghostMath.chooseTips(restored.tips, rulesTips);
+      restored.tips = picked.tips;
+      restored.tipsDropped = picked.dropped;
       const isCloud = source === SOURCE.in_cloud;
       const receipt = telemetry.recordReceipt({
         route: isCloud ? "cloud-ghost-math" : "on-device-nano", status: json ? "completed" : "failed",
@@ -820,7 +824,7 @@ async function ghostSend(modeKey) {
       });
       return {
         ok: !!json, source, sourceVerified, model: isCloud ? cloudModel : "Gemini Nano", latencyMs, route,
-        restored, agreement: json ? ghostMath.agreement(p.summary, restored, ghostMath.WOBBLE + 0.02) : null,
+        restored, agreement: json ? ghostMath.agreement(p.summary, restored.raw, ghostMath.WOBBLE + 0.02) : null,
         evidence: { bodyObserved: obs.bodyObserved, observedChars: obs.observedChars, bodies: obs.bodies.length,
           namesChecked: bodyLeak.namesChecked, nameHits: bodyLeak.nameHits.length },
         receiptId: receipt.receiptId,

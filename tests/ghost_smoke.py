@@ -30,8 +30,9 @@ def maths(lines):
     rent_who = next((w for _i, d, w, c, _a in lines if c == "rent"), "Person_A")
     return {"income": inc, "spend": sp, "breakdown": [{"category": c, "amount": v} for c, v in by.items()],
             "rent_emi_share": hous / inc if inc else 0, "savings_rate": (inc - sp) / inc if inc else 0,
-            "tips": [{"text": "Rent to " + rent_who + " is {amount}; aim for under 40% with EMIs.", "amount": by.get("rent", 0)},
-                     {"text": cloud["tip2"], "amount": 100}]}
+            "tips": [{"text": "Renegotiate rent with " + rent_who + ": it is {amount} a month.", "amount": by.get("rent", 0)},
+                     {"text": cloud["tip2"], "amount": by.get("food", 0)},
+                     {"text": "Your total spend is {amount}.", "amount": sp}]}
 
 FAKE_NANO = r"""
 window.__nanoAvail = 'unavailable';
@@ -49,7 +50,7 @@ window.LanguageModel = {
 };
 """
 CORS = {"access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*"}
-cloud = {"mode": "ok", "bodies": [], "tip2": "Merchant_B is a small spend."}
+cloud = {"mode": "ok", "bodies": [], "tip2": "Cut Merchant_B orders, which cost {amount}."}
 def vertex(route):
     r = route.request
     if r.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
@@ -118,7 +119,9 @@ with sync_playwright() as p:
     ok("restore: model spend back near real rupees", pg.text_content("#aSpend") in ("₹46,777",) or abs(int(re.sub(r"\D", "", pg.text_content("#aSpend"))) - 46777) <= 46777 * 0.02, pg.text_content("#aSpend"))
     tips = pg.text_content("#aTips")
     ok("restore: stand-in names in tips become real names", "rameshkumar" in tips and "Person_A" not in tips and "swiggy" in tips, tips)
-    ok("restore: rent tip in real rupees", "₹24,000" in tips or "₹23," in tips or "₹24," in tips, tips)
+    ok("restore: rent tip shows the exact ₹24,000 (not a wobbled figure)", "₹24,000" in tips and "about ₹24" not in tips, tips)
+    ok("restore: spend card shows the exact rules figure", pg.text_content("#aSpend") == "₹46,777", pg.text_content("#aSpend"))
+    ok("tips: the statement tip with no action is left out and says so", "Your total spend" not in tips and "left out" in tips, tips)
     ok("check: model's maths agrees with the rules", pg.text_content("#aAgree").count("agrees") == 4, pg.text_content("#aAgree"))
     rc = pg.evaluate("AionHybrid.telemetry.getReceipts().filter(r => r.route === 'cloud-ghost-math')")
     ok("receipt: one frozen cloud-ghost-math receipt, body observed, 0 private hits", len(rc) == 1 and rc[0]["egressAudit"]["bodyObserved"] is True and rc[0]["egressAudit"]["privateValueHits"] == 0, rc)
@@ -127,10 +130,10 @@ with sync_playwright() as p:
     ok("cloud: a second click sends a second (fresh) request", len(cloud["bodies"]) == n0 + 2)
 
     # ---------- hostile cloud: HTML in a tip ----------
-    cloud["tip2"] = "<img src=x onerror=\"window.__pwned=1\"> Merchant_B"
+    cloud["tip2"] = "Cut <img src=x onerror=\"window.__pwned=1\"> Merchant_B to free {amount}."
     pg.click("#ghostSendBtn"); pg.wait_for_timeout(1500)
     ok("hostile: HTML from the model is shown as text", pg.locator("#aTips img").count() == 0 and "<img" in pg.text_content("#aTips") and not pg.evaluate("window.__pwned"))
-    cloud["tip2"] = "Merchant_B is a small spend."
+    cloud["tip2"] = "Cut Merchant_B orders, which cost {amount}."
 
     # ---------- App Check failure ----------
     cloud["mode"] = "appcheck"

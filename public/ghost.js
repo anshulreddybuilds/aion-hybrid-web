@@ -132,8 +132,13 @@
     $("aRent").textContent = pct(x.rentEmiShare);
     $("aSave").textContent = pct(x.savingsRate);
     var tips = $("aTips"); clear(tips);
-    x.tips.forEach(function (t) { tips.appendChild(el("li", t.text)); });
+    x.tips.forEach(function (t) {
+      var li = el("li", t.text);
+      if (t.from === "rules") li.appendChild(el("span", " (from the rules on this device)", "src"));
+      tips.appendChild(li);
+    });
     if (!x.tips.length) tips.appendChild(el("li", "(No tips came back.)"));
+    if (x.tipsDropped) tips.appendChild(el("li", x.tipsDropped + " model tip(s) left out: they stated a figure without saying what to do.", "src"));
     var a = r.agreement || {};
     var mark = function (k) { return a[k] ? "agrees" : "differs"; };
     $("aAgree").textContent = "Checked against the rules (within " + Math.round((H.ghost.wobble + 0.02) * 100) + "%): spend " + mark("spend") +

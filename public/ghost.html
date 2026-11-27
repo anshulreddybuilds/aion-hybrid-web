@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<title>Ghost-Math — the cloud does your money maths on fake numbers</title>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<meta content="Paste bank or UPI SMS alerts or a budget. Rules on your device scale every rupee by a secret factor and swap names for stand-ins before Gemini sees anything." name="description"/>
+<meta content="#050608" name="theme-color"/>
+<meta content="dark" name="color-scheme"/>
+<link href="./fonts.css" rel="stylesheet"/>
+<script>
+  window.AionHybridReady = new Promise(function (resolve) { window.__resolveAionHybrid = resolve; });
+</script>
+<style>
+  :root {
+    --ink:#050608; --page:#0a0b0e; --panel:#101217; --bone:#ece6da; --bone-2:rgba(236,230,218,.78); --mute:rgba(236,230,218,.62);
+    --hair:rgba(236,230,218,.14); --hair-2:rgba(236,230,218,.28); --cold:#a9bcff; --signal:#ff6a2b; --block:#ff5c4d; --caution:#f0b45a; --fit:#cfe3c4;
+    --serif:"Instrument Serif","Iowan Old Style",Georgia,serif; --sans:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"DM Mono",ui-monospace,Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--page); color:var(--bone); font:16px/1.5 var(--sans); }
+  .wrap { max-width:1080px; margin:0 auto; padding:28px clamp(16px,4vw,48px) 80px; }
+  header.top { display:flex; flex-wrap:wrap; gap:16px 28px; align-items:flex-end; justify-content:space-between; border-bottom:1px solid var(--hair); padding-bottom:20px; }
+  h1 { font:400 clamp(40px,7vw,72px)/.95 var(--serif); margin:0; letter-spacing:-.01em; }
+  h1 em { color:var(--cold); }
+  .lede { max-width:52ch; color:var(--bone-2); margin:10px 0 0; }
+  .status { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font:12px/1 var(--mono); color:var(--mute); }
+  .pill { border:1px solid var(--hair-2); border-radius:999px; padding:8px 12px; white-space:nowrap; }
+  .pill.ok { border-color:var(--fit); color:var(--fit); } .pill.warn { border-color:var(--caution); color:var(--caution); } .pill.bad { border-color:var(--block); color:var(--block); }
+  select, button, textarea { font:inherit; color:inherit; }
+  select { background:var(--panel); border:1px solid var(--hair-2); border-radius:8px; padding:10px 12px; min-height:44px; }
+  section.step { margin-top:40px; }
+  .step h2 { font:400 30px/1.1 var(--serif); margin:0 0 4px; }
+  .step h2 .n { font:500 12px/1 var(--mono); color:var(--mute); margin-right:10px; vertical-align:middle; }
+  .hint { color:var(--mute); font-size:14px; margin:0 0 14px; }
+  textarea { width:100%; min-height:200px; background:var(--panel); border:1px solid var(--hair-2); border-radius:10px; padding:14px; font:13px/1.5 var(--mono); resize:vertical; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; align-items:center; }
+  button { min-height:44px; padding:10px 18px; border-radius:8px; border:1px solid var(--hair-2); background:transparent; cursor:pointer; }
+  button.primary { background:var(--bone); color:var(--ink); border-color:var(--bone); font-weight:500; }
+  button.send { background:var(--signal); color:var(--ink); border-color:var(--signal); font-weight:500; }
+  button.send.device { background:var(--cold); border-color:var(--cold); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline:2px solid var(--cold); outline-offset:2px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1px; background:var(--hair); border:1px solid var(--hair); border-radius:10px; overflow:hidden; }
+  .kpi { background:var(--panel); padding:16px; }
+  .kpi .l { font:12px/1.2 var(--mono); color:var(--mute); text-transform:uppercase; letter-spacing:.06em; }
+  .kpi .v { font:400 36px/1.1 var(--serif); margin-top:6px; }
+  .kpi .s { font-size:13px; color:var(--mute); }
+  .bars { margin-top:18px; display:grid; gap:8px; }
+  .bar { display:grid; grid-template-columns:120px 1fr 96px; gap:12px; align-items:center; font-size:14px; }
+  .bar .track { height:10px; background:var(--hair); border-radius:5px; overflow:hidden; }
+  .bar .fill { height:100%; background:var(--bone-2); }
+  .bar .amt { font:13px var(--mono); text-align:right; }
+  ul.tips { margin:16px 0 0; padding-left:20px; } ul.tips li { margin:6px 0; }
+  .receipt { display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--hair); border-radius:10px; overflow:hidden; }
+  .receipt .side { padding:14px 16px; }
+  .receipt .side.real { border-right:2px solid var(--bone); background:rgba(169,188,255,.05); }
+  .receipt .side.sent { background:rgba(255,106,43,.05); }
+  .side h3 { margin:0 0 8px; font:500 12px/1.2 var(--mono); text-transform:uppercase; letter-spacing:.08em; }
+  .side.real h3 { color:var(--cold); } .side.sent h3 { color:var(--signal); }
+  .tablewrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font:13px/1.35 var(--mono); }
+  th, td { text-align:left; padding:6px 6px; border-bottom:1px solid var(--hair); vertical-align:top; }
+  th { color:var(--mute); font-weight:400; } td.num { text-align:right; white-space:nowrap; }
+  .facts { margin:14px 0 0; padding:0; list-style:none; font:13px/1.5 var(--mono); color:var(--bone-2); }
+  .facts li::before { content:"— "; color:var(--mute); }
+  details { margin-top:12px; } summary { cursor:pointer; color:var(--bone-2); min-height:44px; display:flex; align-items:center; }
+  pre.out { white-space:pre-wrap; word-break:break-word; background:var(--panel); border:1px solid var(--hair); border-radius:8px; padding:12px; font:12px/1.5 var(--mono); max-height:320px; overflow:auto; }
+  .answered { font:13px/1.5 var(--mono); padding:12px 14px; border-radius:8px; border:1px solid var(--hair-2); }
+  .answered.cloud { border-color:var(--signal); } .answered.device { border-color:var(--cold); } .answered.rules { border-color:var(--fit); }
+  .msg { color:var(--caution); font-size:14px; margin-top:10px; } .msg.bad { color:var(--block); }
+  .agree { font:13px var(--mono); margin-top:12px; color:var(--bone-2); }
+  footer { margin-top:56px; color:var(--mute); font-size:13px; border-top:1px solid var(--hair); padding-top:16px; }
+  a { color:var(--cold); }
+  @media (max-width:720px) {
+    .receipt { grid-template-columns:1fr; } .receipt .side.real { border-right:0; border-bottom:2px solid var(--bone); }
+    .bar { grid-template-columns:90px 1fr 80px; }
+  }
+  @media (prefers-reduced-motion:no-preference) { .fill { transition:width .5s cubic-bezier(.2,.7,.1,1); } }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <div>
+      <h1>Ghost-<em>Math</em></h1>
+      <p class="lede">A private money lens. Rules on this device scale every rupee by a secret number and swap every name for a stand-in, so Gemini can still do your maths without seeing your money.</p>
+    </div>
+    <div class="status" aria-live="polite">
+      <span class="pill" id="gAppCheck">App Check: …</span>
+      <span class="pill" id="gNano">Gemini Nano: checking…</span>
+      <label for="gRoute" class="sr">Route</label>
+      <select id="gRoute" aria-label="Where the model runs">
+        <option value="prefer_on_device">Prefer this device</option>
+        <option value="prefer_in_cloud">Prefer cloud</option>
+        <option value="only_on_device">This device only</option>
+      </select>
+    </div>
+  </header>
+
+  <section class="step" aria-labelledby="s1">
+    <h2 id="s1"><span class="n">01</span>Paste your month</h2>
+    <p class="hint">Bank or UPI SMS alerts (one per line), or a budget like “Rent: 22,000”. It stays in this tab; nothing is stored.</p>
+    <label for="gInput" class="sr">SMS alerts or budget</label>
+    <textarea id="gInput" spellcheck="false" placeholder="Rs.450.00 debited from A/c XX1234 on 06-11-26 to VPA swiggy@icici …"></textarea>
+    <div class="row">
+      <button type="button" id="gSampleSms">Use sample SMS</button>
+      <button type="button" id="gSampleBudget">Use sample budget</button>
+      <button type="button" class="primary" id="gRead">Read on this device</button>
+    </div>
+    <p class="msg" id="gReadMsg" hidden></p>
+  </section>
+
+  <section class="step" id="gLocal" hidden aria-labelledby="s2">
+    <h2 id="s2"><span class="n">02</span>Your month, by the rules</h2>
+    <p class="hint">Worked out by plain code in this browser, in real rupees. No model involved yet.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Spent</div><div class="v" id="kSpend">-</div><div class="s" id="kSpendS"></div></div>
+      <div class="kpi"><div class="l">Rent + EMI share</div><div class="v" id="kRent">-</div><div class="s" id="kRentS"></div></div>
+      <div class="kpi"><div class="l">Savings rate</div><div class="v" id="kSave">-</div><div class="s" id="kSaveS"></div></div>
+    </div>
+    <div class="bars" id="gBars"></div>
+    <ul class="tips" id="gLocalTips"></ul>
+  </section>
+
+  <section class="step" id="gReceiptStep" hidden aria-labelledby="s3">
+    <h2 id="s3"><span class="n">03</span>Privacy receipt</h2>
+    <p class="hint">Left: what stays here. Right: the only thing a model gets. Every amount is multiplied by a secret factor picked for this tab (between 0.55 and 0.95, kept in memory, never shown or sent), with a small extra wobble per line.</p>
+    <div class="receipt">
+      <div class="side real"><h3>Real · stays on this device</h3><div class="tablewrap"><table><thead><tr><th>#</th><th>Who</th><th>What</th><th class="num">₹</th></tr></thead><tbody id="gReal"></tbody></table></div></div>
+      <div class="side sent"><h3>Sent · fake numbers</h3><div class="tablewrap"><table><thead><tr><th>#</th><th>Stand-in</th><th>What</th><th class="num">Number</th></tr></thead><tbody id="gSent"></tbody></table></div></div>
+    </div>
+    <ul class="facts" id="gFacts"></ul>
+    <details><summary>The exact text that leaves this device</summary><pre class="out" id="gOut"></pre></details>
+    <div class="row">
+      <button type="button" class="send" id="ghostSendBtn">Send fake numbers</button>
+      <span class="hint" id="gSendHint" style="margin:0"></span>
+    </div>
+    <p class="msg" id="gSendMsg" hidden></p>
+  </section>
+
+  <section class="step" id="gAnswer" hidden aria-labelledby="s4">
+    <h2 id="s4"><span class="n">04</span>Back in real rupees</h2>
+    <p class="hint">The model's numbers, divided by the secret factor and given their real names back, here.</p>
+    <div class="answered" id="gWho"></div>
+    <div class="kpis" style="margin-top:14px">
+      <div class="kpi"><div class="l">Spent (model)</div><div class="v" id="aSpend">-</div></div>
+      <div class="kpi"><div class="l">Rent + EMI share (model)</div><div class="v" id="aRent">-</div></div>
+      <div class="kpi"><div class="l">Savings rate (model)</div><div class="v" id="aSave">-</div></div>
+    </div>
+    <ul class="tips" id="aTips"></ul>
+    <p class="agree" id="aAgree"></p>
+  </section>
+
+  <footer>
+    Ghost-Math by Anshul Reddy · #BuildHybridAI 2026 · Firebase AI Logic (Gemini Nano on this device, Gemini in the cloud) with App Check.
+    Scaling hides the size of your money and the names, not the shape of your spending: categories and proportions are sent. Not financial advice.
+  </footer>
+</main>
+<style>.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+<script src="./hybrid.bundle.js" type="module"></script>
+<script src="./ghost.js" defer></script>
+</body></html>

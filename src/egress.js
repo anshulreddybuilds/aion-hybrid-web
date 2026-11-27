@@ -191,6 +191,9 @@ export function serialize(d) {
     const cons = (p.constraints || []).length ? p.constraints.map((c) => "- " + c).join("\n") : "(none stated)";
     return p.instructions + "\n\nGOAL:\n" + p.goal + "\n\nTASK REFERENCES:\n" + refs + "\n\nCONSTRAINTS:\n" + cons;
   }
+  if (d.purpose === "ghost_math") {
+    return p.instructions + "\n\nENTRIES:\n" + ((p.entries || []).join("\n") || "(none)");
+  }
   if (d.purpose === "case_research") {
     const passages = (p.shared_passages || []).map((x) => "[" + x.id + "] " + x.text).join("\n") || "(none shared)";
     const srcs = (p.public_sources || []).map((s) => "[" + s.id + "] " + s.title + "\n" + s.text).join("\n\n") || "(none)";

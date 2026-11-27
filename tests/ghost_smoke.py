@@ -1,0 +1,174 @@
+"""Ghost-Math page smoke test (Playwright, headless Chrome). Apache-2.0.
+Created by Anshul Reddy (idea and project owner) for #BuildHybridAI 2026.
+
+Run: python tests/ghost_smoke.py      (GHOST_PORT env overrides the port)
+MOCKED: cloud Gemini, App Check and Gemini Nano are fakes here. The fake cloud
+does honest maths on exactly the lines in the request body it receives, so the
+test checks the real round trip: rules -> scale -> request -> restore.
+"""
+import sys, json, os, re, threading, http.server, socketserver, functools
+from playwright.sync_api import sync_playwright
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public")
+PORT = int(os.environ.get("GHOST_PORT", "8137"))
+class Q(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a): pass
+socketserver.TCPServer.allow_reuse_address = True
+srv = socketserver.TCPServer(("127.0.0.1", PORT), functools.partial(Q, directory=ROOT))
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+URL = f"http://127.0.0.1:{PORT}/ghost.html"
+
+LINE = re.compile(r"(T\d+) \| (debit|credit) \| ((?:Person|Merchant|Payer|Item)_[A-Z]+) \| (\w+) \| (\d+)")
+def maths(lines):
+    inc = sp = hous = 0; by = {}
+    for _id, d, who, cat, amt in lines:
+        a = int(amt)
+        if d == "credit": inc += a
+        elif cat != "savings":
+            sp += a; by[cat] = by.get(cat, 0) + a
+            if cat in ("rent", "emi"): hous += a
+    rent_who = next((w for _i, d, w, c, _a in lines if c == "rent"), "Person_A")
+    return {"income": inc, "spend": sp, "breakdown": [{"category": c, "amount": v} for c, v in by.items()],
+            "rent_emi_share": hous / inc if inc else 0, "savings_rate": (inc - sp) / inc if inc else 0,
+            "tips": [{"text": "Rent to " + rent_who + " is {amount}; aim for under 40% with EMIs.", "amount": by.get("rent", 0)},
+                     {"text": cloud["tip2"], "amount": 100}]}
+
+FAKE_NANO = r"""
+window.__nanoAvail = 'unavailable';
+window.__nanoCalls = 0;
+window.LanguageModel = {
+  availability: async () => window.__nanoAvail,
+  create: async () => ({
+    prompt: async (m) => { window.__nanoCalls++; const s = JSON.stringify(m);
+      const re = /(T\d+) \| (debit|credit) \| (\w+) \| (\w+) \| (\d+)/g; let x, inc = 0, sp = 0, h = 0, by = {};
+      while ((x = re.exec(s))) { const a = +x[5]; if (x[2] === 'credit') inc += a; else if (x[4] !== 'savings') { sp += a; by[x[4]] = (by[x[4]] || 0) + a; if (x[4] === 'rent' || x[4] === 'emi') h += a; } }
+      return JSON.stringify({ income: inc, spend: sp, breakdown: Object.keys(by).map((c) => ({ category: c, amount: by[c] })),
+        rent_emi_share: h / inc, savings_rate: (inc - sp) / inc, tips: [{ text: 'On-device tip: food is {amount}.', amount: by.food || 0 }] }); },
+    promptStreaming: () => new ReadableStream({ start(c) { c.enqueue('x'); c.close(); } }),
+    destroy() {} }),
+};
+"""
+CORS = {"access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*"}
+cloud = {"mode": "ok", "bodies": [], "tip2": "Merchant_B is a small spend."}
+def vertex(route):
+    r = route.request
+    if r.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
+    body = r.post_data or ""
+    cloud["bodies"].append(body)
+    if cloud["mode"] == "appcheck":
+        return route.fulfill(status=403, headers={**CORS, "content-type": "application/json"},
+                             body=json.dumps({"error": {"code": 403, "message": "App Check token is invalid.", "status": "PERMISSION_DENIED"}}))
+    text = json.loads(body)["contents"][0]["parts"][0]["text"]
+    out = maths(LINE.findall(text))
+    c = {"candidates": [{"content": {"role": "model", "parts": [{"text": json.dumps(out)}]}, "finishReason": "STOP"}]}
+    return route.fulfill(status=200, headers={**CORS, "content-type": "application/json"}, body=json.dumps(c))
+def appcheck(route):
+    if route.request.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
+    return route.fulfill(status=200, headers={**CORS, "content-type": "application/json"}, body=json.dumps({"token": "fake", "ttl": "3600s"}))
+
+results = []
+def ok(name, cond, extra=""):
+    results.append((name, bool(cond)))
+    print(("PASS " if cond else "FAIL ") + name + (" :: " + str(extra)[:300] if (extra != "" and not cond) else ""))
+
+REAL = ["rameshkumar", "Priya Sharma", "NETFLIX", "swiggy", "bigbasket", "ACME", "AMAZON", "XX4821", "4321", "UPI Ref", "85,000", "85000", "24000", "12450"]
+
+src = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", open(os.path.join(ROOT, "ghost.js"), encoding="utf8").read())
+ok("static: ghost.js never uses innerHTML / insertAdjacentHTML / document.write", not re.search(r"innerHTML|insertAdjacentHTML|document\.write", src))
+html = open(os.path.join(ROOT, "ghost.html"), encoding="utf8").read()
+ok("static: ghost.html loads no external script or font", not re.search(r'(href|src)="https?://', html))
+
+with sync_playwright() as p:
+    b = p.chromium.launch(channel="chrome", headless=True)
+    def ctx_page(**kw):
+        ctx = b.new_context(**kw)
+        ctx.add_init_script(FAKE_NANO)
+        ctx.route("**/firebasevertexai.googleapis.com/**", vertex)
+        ctx.route("**/content-firebaseappcheck.googleapis.com/**", appcheck)
+        ctx.route("**/www.google.com/recaptcha/**", lambda r: r.abort())
+        pg = ctx.new_page()
+        errs = []
+        pg.on("pageerror", lambda e: errs.append(str(e)))
+        pg.goto(URL); pg.wait_for_function("window.AionHybrid && window.AionHybrid.ghost", timeout=15000)
+        return ctx, pg, errs
+
+    # ---------- cloud route ----------
+    ctx, pg, errs = ctx_page()
+    pg.select_option("#gRoute", "prefer_in_cloud")
+    pg.click("#gSampleSms"); pg.wait_for_selector("#gLocal:not([hidden])")
+    ok("rules: spend shown in real rupees", pg.text_content("#kSpend") == "₹46,777", pg.text_content("#kSpend"))
+    ok("rules: rent+EMI share 43%", pg.text_content("#kRent") == "43%", pg.text_content("#kRent"))
+    ok("rules: savings rate 45%", pg.text_content("#kSave") == "45%", pg.text_content("#kSave"))
+    ok("receipt: 12 real rows and 12 sent rows", pg.locator("#gReal tr").count() == 12 and pg.locator("#gSent tr").count() == 12)
+    out = pg.text_content("#gOut")
+    ok("receipt: outgoing text has no real name, account or real amount", not [x for x in REAL if x in out], [x for x in REAL if x in out])
+    ok("receipt: says 0 real names found", "found: 0" in pg.text_content("#gFacts"), pg.text_content("#gFacts"))
+    ok("button: cloud route says it sends to cloud Gemini", "cloud Gemini" in pg.text_content("#ghostSendBtn"))
+    n0 = len(cloud["bodies"])
+    pg.evaluate("document.getElementById('ghostSendBtn').click()")
+    pg.wait_for_timeout(600)
+    ok("gesture: a script click is refused and sends nothing", len(cloud["bodies"]) == n0 and "direct click" in (pg.text_content("#gSendMsg") or ""), pg.text_content("#gSendMsg"))
+    pg.click("#ghostSendBtn"); pg.wait_for_selector("#gAnswer:not([hidden])", timeout=20000)
+    sent = cloud["bodies"][-1] if len(cloud["bodies"]) > n0 else ""
+    ok("cloud: exactly one request body went out", len(cloud["bodies"]) == n0 + 1)
+    ok("cloud: the request body has no real name, account or real amount", sent and not [x for x in REAL if x in sent], [x for x in REAL if x in sent])
+    ok("cloud: the request asked for JSON with a schema", '"responseMimeType":"application/json"' in sent and "responseSchema" in sent)
+    who = pg.text_content("#gWho")
+    ok("label: answered by cloud Gemini, body observed, 0 real names", "cloud Gemini" in who and "real names in it: 0" in who and "observed: no" not in who, who)
+    ok("restore: model spend back near real rupees", pg.text_content("#aSpend") in ("₹46,777",) or abs(int(re.sub(r"\D", "", pg.text_content("#aSpend"))) - 46777) <= 46777 * 0.02, pg.text_content("#aSpend"))
+    tips = pg.text_content("#aTips")
+    ok("restore: stand-in names in tips become real names", "rameshkumar" in tips and "Person_A" not in tips and "swiggy" in tips, tips)
+    ok("restore: rent tip in real rupees", "₹24,000" in tips or "₹23," in tips or "₹24," in tips, tips)
+    ok("check: model's maths agrees with the rules", pg.text_content("#aAgree").count("agrees") == 4, pg.text_content("#aAgree"))
+    rc = pg.evaluate("AionHybrid.telemetry.getReceipts().filter(r => r.route === 'cloud-ghost-math')")
+    ok("receipt: one frozen cloud-ghost-math receipt, body observed, 0 private hits", len(rc) == 1 and rc[0]["egressAudit"]["bodyObserved"] is True and rc[0]["egressAudit"]["privateValueHits"] == 0, rc)
+    # Send again: a fresh approval, still one body per click.
+    pg.click("#ghostSendBtn"); pg.wait_for_timeout(1200)
+    ok("cloud: a second click sends a second (fresh) request", len(cloud["bodies"]) == n0 + 2)
+
+    # ---------- hostile cloud: HTML in a tip ----------
+    cloud["tip2"] = "<img src=x onerror=\"window.__pwned=1\"> Merchant_B"
+    pg.click("#ghostSendBtn"); pg.wait_for_timeout(1500)
+    ok("hostile: HTML from the model is shown as text", pg.locator("#aTips img").count() == 0 and "<img" in pg.text_content("#aTips") and not pg.evaluate("window.__pwned"))
+    cloud["tip2"] = "Merchant_B is a small spend."
+
+    # ---------- App Check failure ----------
+    cloud["mode"] = "appcheck"
+    pg.click("#ghostSendBtn"); pg.wait_for_timeout(1500)
+    m = pg.text_content("#gSendMsg") or ""
+    ok("app check: a 403 is reported in one line, approval kept, rules stand", "No model answer" in m and "approval is kept" in m and "rules" in m, m)
+    cloud["mode"] = "ok"
+    ok("no page errors (cloud)", not errs, errs)
+    ctx.close()
+
+    # ---------- on-device route (fake Nano) ----------
+    ctx, pg, errs = ctx_page()
+    pg.evaluate("window.__nanoAvail = 'available'")
+    pg.wait_for_function("AionHybrid.state.nano === 'ready'", timeout=10000)
+    pg.select_option("#gRoute", "prefer_on_device")
+    pg.click("#gSampleBudget"); pg.wait_for_selector("#gReceiptStep:not([hidden])")
+    ok("button: with Nano ready the button says on this device", "on this device" in pg.text_content("#ghostSendBtn"))
+    n0 = len(cloud["bodies"])
+    pg.click("#ghostSendBtn"); pg.wait_for_selector("#gAnswer:not([hidden])", timeout=20000)
+    who = pg.text_content("#gWho")
+    ok("device: answered by Gemini Nano on this device, nothing sent", "Gemini Nano on this device" in who and "nothing was sent" in who, who)
+    ok("device: no request body reached the cloud", len(cloud["bodies"]) == n0)
+    ok("device: Nano got scaled numbers and stand-ins too", pg.evaluate("window.__nanoCalls") >= 1)
+    ok("device: budget labels with a name are hidden ('Rent to Mr Sharma')", "Sharma" not in pg.text_content("#gOut"))
+    ok("no page errors (device)", not errs, errs)
+    ctx.close()
+
+    # ---------- phone width ----------
+    ctx, pg, errs = ctx_page(viewport={"width": 390, "height": 844})
+    pg.click("#gSampleSms"); pg.wait_for_selector("#gReceiptStep:not([hidden])")
+    ok("phone: no horizontal scroll at 390 px", pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
+    small = pg.evaluate("[...document.querySelectorAll('button,select')].filter(e => e.offsetParent && e.getBoundingClientRect().height < 44).map(e => e.id)")
+    ok("phone: buttons and the route menu are at least 44 px tall", not small, small)
+    pg.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost_shot.png"), full_page=True)
+    ctx.close()
+    b.close()
+
+srv.shutdown()
+fails = [n for n, c in results if not c]
+print("GHOST SMOKE: %d passed, %d failed" % (len(results) - len(fails), len(fails)))
+sys.exit(1 if fails else 0)

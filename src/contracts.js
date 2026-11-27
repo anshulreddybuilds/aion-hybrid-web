@@ -52,6 +52,18 @@ export const PURPOSES = {
     },
     required: ["instructions", "goal"],
   },
+  /* Ghost-Math (money lens). Each entry is one line
+   * "T3 | debit | Merchant_B | food | 412": a stand-in name and a number
+   * already multiplied by the session's secret factor, built on the device by
+   * src/ghostMath.js. No SMS text, account number, date or real name. */
+  ghost_math: {
+    label: "Money lens (scaled, stand-in names)",
+    fields: {
+      instructions: str(2400),
+      entries: strList(90, 200),
+    },
+    required: ["instructions", "entries"],
+  },
   case_research: {
     label: "Case research (public)",
     fields: {
@@ -289,6 +301,7 @@ export const DISCLOSURE_TIERS = Object.freeze({
 export const RECEIPT_ROUTES = Object.freeze([
   "on-device-nano", "cloud-sealed-chat", "cloud-blindfold", "local-fallback", "local-deterministic",
   "cloud-case-research",   /* Case tab: approved case_research disclosure sent only_in_cloud */
+  "cloud-ghost-math",      /* Ghost-Math: scaled numbers and stand-in names sent to cloud Gemini */
 ]);
 export const RECEIPT_STATUSES = Object.freeze([
   "completed", "timed_out", "blocked_egress", "rejected", "fallback", "failed",

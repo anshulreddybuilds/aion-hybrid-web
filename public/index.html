@@ -67,6 +67,7 @@
 <div class="b-head">
 <h2 class="k" id="instTitle">The border</h2>
 <p class="b-case" id="caseTag">Loading the sample case</p>
+<button class="ask-jump" id="askJump" type="button">Paste a quote, get a straight answer</button>
 <p class="live-k" id="liveState"><i aria-hidden="true"></i><span id="liveText">Everything is on this device</span></p>
 <button aria-controls="field" aria-expanded="false" class="btn ghost small" id="fieldToggle" type="button">Show the slips</button>
 </div>
@@ -89,35 +90,43 @@
 </aside>
 
 <div class="steps" id="steps" tabindex="-1">
-<!-- 01 QUOTE -->
+<!-- 01 QUOTE: the ask comes first. The place to paste and the place the
+     answer appears are both on the first screen, with plain labels. -->
 <section aria-labelledby="h-quote" class="step" id="step-quote">
 <header class="step-head">
 <p class="kicker"><span>01</span>Quote</p>
-<h2 id="h-quote" tabindex="-1">Bring in a supplier quote.</h2>
-<p class="lede" id="quoteLede">It is read and split into passages on this device. Nothing from this Case flow is sent until you approve the exact text.</p>
+<h2 id="h-quote" tabindex="-1">Is this quote a good deal?</h2>
+<p class="lede" id="quoteLede">Paste a supplier&#8217;s quote. AION checks it against your private budget, deadline and rules on this device and gives you a straight answer. Your private numbers never leave it.</p>
 </header>
-<div class="panel">
+<div class="panel ask" id="askPanel">
+<label class="ask-k" for="quoteText"><b>1</b>Paste your supplier&#8217;s quote here</label>
+<textarea id="quoteText" placeholder="Supplier name on the first line, then the quote: price, delivery date, what is included, warranty, cancellation." rows="4" spellcheck="false"></textarea>
+<div class="row">
+<button class="btn primary" id="importBtn" type="button">Check this quote</button>
+<label class="btn file" id="imageLabel" title="Needs Gemini Nano in this browser. Paste the text instead.">Read a photo of it<input accept="image/png,image/jpeg" autocomplete="off" id="imageInput" type="file"/></label>
+</div>
+<p class="msg" data-tone="" id="quoteMsg" role="status"></p>
+</div>
+<div aria-labelledby="ansK" class="panel answer" data-verdict="" id="answerPanel" role="region">
+<p class="ask-k" id="ansK"><b>2</b>Your answer appears here</p>
+<p aria-live="polite" class="ans-v" id="ansV">&#8212;</p>
+<p class="ans-for" id="ansFor"></p>
+<ul class="ans-why" id="ansWhy"></ul>
+<div class="row ans-go">
+<button class="btn" data-go="verdict" type="button">See every check</button>
+<button class="btn ghost" data-go="share" type="button">Change your budget and deadline</button>
+</div>
+</div>
+<div class="panel samples">
 <div class="scenarios" id="scenarioBox">
-<p class="k" id="scenarioLabel">Scenario</p>
+<p class="k" id="scenarioLabel">Or try a sample</p>
 <div aria-labelledby="scenarioLabel" class="seg" id="scenarios" role="radiogroup"></div>
 <p class="seg-blurb" id="scenarioBlurb"></p>
 <label class="poison" for="poison"><input id="poison" type="checkbox"/><span>Plant a hidden instruction in this case (to test the injection rule)</span></label>
 </div>
-</div>
-<div class="panel">
 <div aria-live="polite" class="loaded" id="caseNow"></div>
-<details class="own" id="ownQuote">
-<summary>Use your own quote</summary>
-<label class="field-label" for="quoteText">Paste the quote text</label>
-<textarea id="quoteText" placeholder="Supplier name on the first line, then the quote: price, delivery, what is included, warranty, cancellation." rows="5" spellcheck="false"></textarea>
-<div class="row">
-<button class="btn primary" id="importBtn" type="button">Read on this device</button>
-<label class="btn file" id="imageLabel" title="Needs Gemini Nano in this browser. Paste the text instead.">Read an image<input accept="image/png,image/jpeg" autocomplete="off" id="imageInput" type="file"/></label>
 </div>
-</details>
-<p class="msg" data-tone="" id="quoteMsg" role="status"></p>
-</div>
-<div class="next"><button class="btn primary" data-go="share" type="button">Next: decide what leaves</button></div>
+<div class="next"><button class="btn primary" data-go="share" type="button">Next: choose what the cloud may see</button></div>
 </section>
 
 <!-- 02 SHARE -->

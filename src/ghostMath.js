@@ -434,7 +434,12 @@ export function chooseTips(modelTips, rulesTips) {
   const good = (modelTips || []).filter((t) => ACTION_RE.test(t.text) && ((t.amount != null && t.amount >= 1) || /₹\s?[1-9]/.test(t.text)));
   const out = good.slice(0, 3).map((t) => Object.assign({ from: "model" }, t));
   (rulesTips || []).forEach((t) => { if (out.length < 2) out.push({ text: t.text, amount: t.amount, exact: true, from: "rules" }); });
-  return { tips: out.slice(0, 3), dropped: (modelTips || []).length - good.length };
+  return { tips: out.slice(0, 3).map((t) => Object.assign({}, t, { text: capitalize(t.text) })), dropped: (modelTips || []).length - good.length };
+}
+
+/** First letter upper case ("cut swiggy ..." -> "Cut swiggy ..."); nothing else changes. */
+export function capitalize(text) {
+  return String(text == null ? "" : text).replace(/^(\s*)(\p{Ll})/u, (m, sp, c) => sp + c.toUpperCase());
 }
 
 /* ------------------------------ the cloud's task ------------------------------ */

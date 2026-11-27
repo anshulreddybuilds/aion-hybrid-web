@@ -35,7 +35,7 @@ def maths(lines):
             "tips": [{"text": "Renegotiate rent with " + rent_who + ": it is {amount} a month.", "amount": by.get("rent", 0)},
                      {"text": cloud["tip2"], "amount": by.get("food", 0)},
                      {"text": "Your total spend is {amount}.", "amount": sp},
-                     {"text": "Cancel subscriptions with " + subs_who + " to save " + str(subs_amt) + " a month", "amount": 0}]}
+                     {"text": "cancel subscriptions with " + subs_who + " to save " + str(subs_amt) + " a month", "amount": 0}]}
 
 FAKE_NANO = r"""
 window.__nanoAvail = 'unavailable';
@@ -104,10 +104,24 @@ with sync_playwright() as p:
     ok("rules: spend shown in real rupees", pg.text_content("#kSpend") == "₹46,777", pg.text_content("#kSpend"))
     ok("rules: rent+EMI share 43%", pg.text_content("#kRent") == "43%", pg.text_content("#kRent"))
     ok("rules: savings rate 45%", pg.text_content("#kSave") == "45%", pg.text_content("#kSave"))
-    ok("receipt: 12 real rows and 12 sent rows", pg.locator("#gReal tr").count() == 12 and pg.locator("#gSent tr").count() == 12)
+    rows = pg.evaluate("""[...document.querySelectorAll('#gLens tr')].map(tr => ({
+        id: tr.dataset.id, you: tr.querySelector('td.you .nm').textContent, youAmt: tr.querySelector('td.you-amt').textContent,
+        gem: tr.querySelector('td.gem .nm').textContent, gemCat: tr.querySelector('td.gem .ct').textContent,
+        gemAmt: tr.querySelector('td.gem-amt').textContent }))""")
+    out_lines = pg.text_content("#gOut").split("\n")
+    ok("lens: one aligned row per entry (12)", len(rows) == 12)
+    ok("lens: row T2 pairs rameshkumar ₹24,000 with Person_A", rows[1]["you"] == "rameshkumar" and rows[1]["youAmt"] == "₹24,000" and rows[1]["gem"] == "Person_A", rows[1])
+    def sent_line(r): return " | ".join([r["id"], "credit" if r["gemAmt"].startswith("+") else "debit", r["gem"], r["gemCat"].split(" · ")[0], r["gemAmt"].lstrip("+")])
+    ok("lens: every right-hand side is exactly a line of the text Gemini receives", all(sent_line(r) in out_lines for r in rows), [sent_line(r) for r in rows][:2])
+    ok("lens: no real name on the right-hand side", not [r for r in rows if r["you"] in r["gem"] or r["gem"] in r["you"]])
+    ok("lens: column headings say what you see / what Gemini gets", "What you see" in pg.text_content("#gReceiptStep thead") and "What Gemini gets" in pg.text_content("#gReceiptStep thead"))
+    wy, wg = pg.text_content("#gWhyYou"), pg.text_content("#gWhyGem")
+    ok("why: your rent+EMI share (43%) is the rules figure", wy == "43%" and pg.text_content("#kRent") == wy, (wy, pg.text_content("#kRent")))
+    ok("why: the same share from Gemini's numbers is within 2 points", abs(int(wy.rstrip("%")) - int(wg.rstrip("%"))) <= 2, (wy, wg))
+    ok("why: a plain-English line explains it", "same secret factor" in pg.text_content("#gWhyText") and "who you pay" in pg.text_content("#gWhy"))
     out = pg.text_content("#gOut")
     ok("receipt: outgoing text has no real name, account or real amount", not [x for x in REAL if x in out], [x for x in REAL if x in out])
-    ok("receipt: says 0 real names found", "found: 0" in pg.text_content("#gFacts"), pg.text_content("#gFacts"))
+    ok("receipt: says 0 real names found", "12 real names replaced; 0 found in the text Gemini receives" in pg.text_content("#gFacts"), pg.text_content("#gFacts"))
     ok("button: cloud route says it sends to cloud Gemini", "cloud Gemini" in pg.text_content("#ghostSendBtn"))
     n0 = len(cloud["bodies"])
     pg.evaluate("document.getElementById('ghostSendBtn').click()")
@@ -128,7 +142,9 @@ with sync_playwright() as p:
     ok("tips: the statement tip with no action is left out and says so", "Your total spend" not in tips and "left out" in tips, tips)
     ok("screen: the bare-number tip from the model shows the real ₹649 a month", "NETFLIX to save ₹649 a month" in tips, tips)
     # Real figures on this page (each entry and the rules' totals); any other number from the request is a leak.
-    reals = {int(re.sub(r"\D", "", t)) for t in pg.locator("#gReal td.num").all_text_contents()}
+    ok("tips: every tip starts with a capital letter", all(li[:1].isupper() for li in pg.locator("#aTips li").all_text_contents() if "left out" not in li), pg.locator("#aTips li").all_text_contents())
+    ok("tips: a lowercase model tip is capitalised", "Cancel subscriptions with NETFLIX" in tips, tips)
+    reals = {int(re.sub(r"\D", "", t)) for t in pg.locator("#gLens td.you-amt").all_text_contents()}
     reals |= {46777, 85000, 36450, 5000, 38223}
     flat = tips.replace(",", "")
     leaked = [n for n in cloud["sent"] if n >= 10 and n not in reals and re.search(r"(?<!\d)" + str(n) + r"(?!\d)", flat)]
@@ -193,6 +209,11 @@ with sync_playwright() as p:
     ok("phone: no horizontal scroll at 390 px", pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
     small = pg.evaluate("[...document.querySelectorAll('button,select')].filter(e => e.offsetParent && e.getBoundingClientRect().height < 44).map(e => e.id)")
     ok("phone: buttons and the route menu are at least 44 px tall", not small, small)
+    ok("phone: each lens row keeps the real line and Gemini's line together, labelled",
+       pg.evaluate("""(() => { const tr = document.querySelector('#gLens tr'); const you = tr.querySelector('td.you'), gem = tr.querySelector('td.gem');
+         const a = getComputedStyle(you, '::before').content, b = getComputedStyle(gem, '::before').content;
+         return a.includes('You see') && b.includes('Gemini gets') && gem.getBoundingClientRect().top > you.getBoundingClientRect().top; })()"""))
+    ok("phone: the lens fits the screen (no table wider than 390 px)", pg.evaluate("document.querySelector('.lens').scrollWidth <= document.querySelector('.lens').clientWidth + 1"))
     pg.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost_shot.png"), full_page=True)
     ctx.close()
     b.close()

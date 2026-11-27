@@ -216,6 +216,13 @@ for (let seed = 1; seed <= 20; seed++) {
   ok("check: for 81 gaps from 0% to 8%, 'agrees' is exactly 'printed gap <= printed limit'", consistent);
 }
 
+/* ------------------------------ tips start with a capital ------------------------------ */
+{
+  ok("capital: first letter only", G.capitalize("cut swiggy to save ₹280 a month") === "Cut swiggy to save ₹280 a month" && G.capitalize("Cancel NETFLIX") === "Cancel NETFLIX" && G.capitalize("") === "");
+  const picked = G.chooseTips([{ text: "cancel NETFLIX to save ₹649 a month.", amount: 649 }, { text: "pause Uber rides to save ₹200 a month.", amount: 200 }], []);
+  ok("capital: every chosen tip starts with a capital letter", picked.tips.length === 2 && picked.tips.every((t) => /^[A-Z]/.test(t.text)), picked.tips);
+}
+
 /* ------------------------------ no scaled amount reaches the screen ------------------------------ */
 {
   const local = G.summarize(entries);

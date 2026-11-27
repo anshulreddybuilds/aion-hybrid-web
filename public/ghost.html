@@ -66,6 +66,49 @@
   .facts li::before { content:"— "; color:var(--mute); }
   details { margin-top:12px; } summary { cursor:pointer; color:var(--bone-2); min-height:44px; display:flex; align-items:center; }
   pre.out { white-space:pre-wrap; word-break:break-word; background:var(--panel); border:1px solid var(--hair); border-radius:8px; padding:12px; font:12px/1.5 var(--mono); max-height:320px; overflow:auto; }
+  /* Round 2: the side-by-side lens. One row per entry; the bright rule down the
+     middle is the border between this device and the cloud. */
+  .lens { border:1px solid var(--hair); border-radius:12px; overflow:hidden; background:var(--panel); }
+  .lens table { font:15px/1.35 var(--sans); table-layout:fixed; }
+  .lens col.c-amt { width:7.5em; } .lens col.c-gap { width:2px; }
+  .lens thead th { padding:14px 16px 10px; font:500 12px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; border-bottom:1px solid var(--hair-2); }
+  .lens th.h-you { color:var(--cold); } .lens th.h-gem { color:var(--signal); }
+  .lens td { padding:11px 16px; border-bottom:1px solid var(--hair); vertical-align:middle; }
+  .lens tr:last-child td { border-bottom:0; }
+  .lens td.gap { padding:0; background:var(--bone); opacity:.55; }
+  .lens .nm { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lens .ct { display:block; font-size:12px; color:var(--mute); margin-top:2px; }
+  .lens td.amt { text-align:right; font:15px/1.35 var(--mono); white-space:nowrap; }
+  .lens td.you-amt { color:var(--bone); }
+  .lens td.gem, .lens td.gem-amt { font-family:var(--mono); color:#ffb48f; background:rgba(255,106,43,.045); }
+  .lens td.gem .ct { font-family:var(--sans); }
+  .lens td.cr { color:var(--fit); }
+  .lens tbody tr:hover td:not(.gap) { background:rgba(236,230,218,.05); }
+  .why { margin-top:16px; border-left:2px solid var(--bone); padding:4px 0 4px 18px; max-width:760px; }
+  .why-h { margin:0 0 4px; font:400 22px/1.2 var(--serif); }
+  .why p { margin:0; color:var(--bone-2); }
+  .why-cmp { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:1px; margin:14px 0 10px; background:var(--hair); border:1px solid var(--hair); border-radius:10px; overflow:hidden; }
+  .why-cmp > div { background:var(--panel); padding:12px 14px; display:flex; flex-direction:column; justify-content:center; }
+  .why-l { font-size:14px; color:var(--bone-2); }
+  .why-k { font:12px/1.2 var(--mono); color:var(--mute); text-transform:uppercase; letter-spacing:.06em; }
+  .why-v { font:400 32px/1.1 var(--serif); margin-top:4px; }
+  .why-you .why-v { color:var(--cold); } .why-gem .why-v { color:var(--signal); }
+  p.why-foot { font-size:14px; color:var(--mute); }
+  @media (max-width:640px) {
+    .lens table, .lens tbody, .lens tr, .lens td { display:block; width:100%; }
+    .lens thead, .lens colgroup { display:none; }
+    .lens tbody tr { display:grid; grid-template-columns:1fr auto; border-bottom:1px solid var(--hair-2); }
+    .lens tr:last-child { border-bottom:0; }
+    .lens td { border-bottom:0; padding:8px 14px; }
+    .lens td.gap { display:none; }
+    .lens td.you::before, .lens td.gem::before { display:block; font:500 10px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; margin-bottom:4px; }
+    .lens td.you::before { content:"You see"; color:var(--cold); }
+    .lens td.gem::before { content:"Gemini gets"; color:var(--signal); }
+    .lens td.you-amt, .lens td.gem-amt { align-self:end; }
+    .lens td.gem, .lens td.gem-amt, .lens tbody tr:hover td:not(.gap) { background:transparent; }
+    .lens td.gem, .lens td.gem-amt { padding-top:2px; padding-bottom:12px; }
+    .why-cmp { grid-template-columns:1fr 1fr; } .why-cmp > div:first-child { grid-column:1 / -1; }
+  }
   .answered { font:13px/1.5 var(--mono); padding:12px 14px; border-radius:8px; border:1px solid var(--hair-2); }
   .answered.cloud { border-color:var(--signal); } .answered.device { border-color:var(--cold); } .answered.rules { border-color:var(--fit); }
   .msg { color:var(--caution); font-size:14px; margin-top:10px; } .msg.bad { color:var(--block); }
@@ -124,14 +167,31 @@
   </section>
 
   <section class="step" id="gReceiptStep" hidden aria-labelledby="s3">
-    <h2 id="s3"><span class="n">03</span>Privacy receipt</h2>
-    <p class="hint">Left: what stays here. Right: the only thing a model gets. Every amount is multiplied by a secret factor picked for this tab (between 0.55 and 0.95, kept in memory, never shown or sent), with a small extra wobble per line.</p>
-    <div class="receipt">
-      <div class="side real"><h3>Real · stays on this device</h3><div class="tablewrap"><table><thead><tr><th>#</th><th>Who</th><th>What</th><th class="num">₹</th></tr></thead><tbody id="gReal"></tbody></table></div></div>
-      <div class="side sent"><h3>Sent · fake numbers</h3><div class="tablewrap"><table><thead><tr><th>#</th><th>Stand-in</th><th>What</th><th class="num">Number</th></tr></thead><tbody id="gSent"></tbody></table></div></div>
+    <h2 id="s3"><span class="n">03</span>What you see, what Gemini gets</h2>
+    <p class="hint">Line by line. The left stays in this tab. The right is the only thing a model receives.</p>
+    <div class="lens">
+      <table aria-describedby="gWhy">
+        <caption class="sr">Each entry: your real name and amount, next to the stand-in and scaled number Gemini receives</caption>
+        <colgroup><col class="c-who"/><col class="c-amt"/><col class="c-gap"/><col class="c-who"/><col class="c-amt"/></colgroup>
+        <thead>
+          <tr><th scope="colgroup" colspan="2" class="h-you">What you see</th><th aria-hidden="true"></th><th scope="colgroup" colspan="2" class="h-gem">What Gemini gets</th></tr>
+        </thead>
+        <tbody id="gLens"></tbody>
+      </table>
     </div>
+    <aside class="why" id="gWhy" aria-label="Why the maths still works">
+      <p class="why-h">Why the maths still works</p>
+      <p id="gWhyText"></p>
+      <div class="why-cmp">
+        <div><span class="why-l" id="gWhyLabel">Rent + EMI ÷ income</span></div>
+        <div class="why-you"><span class="why-k">Your numbers</span><span class="why-v" id="gWhyYou">-</span></div>
+        <div class="why-gem"><span class="why-k">Gemini's numbers</span><span class="why-v" id="gWhyGem">-</span></div>
+      </div>
+      <p class="why-foot" id="gWhyNoise" hidden></p>
+      <p class="why-foot">What it can't learn: how much you earn or spend, or who you pay.</p>
+    </aside>
     <ul class="facts" id="gFacts"></ul>
-    <details><summary>The exact text that leaves this device</summary><pre class="out" id="gOut"></pre></details>
+    <details><summary id="gOutSummary">The exact text Gemini receives</summary><pre class="out" id="gOut"></pre></details>
     <div class="row">
       <button type="button" class="send" id="ghostSendBtn">Send fake numbers</button>
       <span class="hint" id="gSendHint" style="margin:0"></span>

@@ -72,21 +72,56 @@
   }
 
   function renderReceipt(p) {
-    var real = $("gReal"), sent = $("gSent"); clear(real); clear(sent);
+    /* One row per entry: the real side and exactly what Gemini receives for it. */
+    var body = $("gLens"); clear(body);
+    var cell = function (cls, name, sub) {
+      var td = el("td", null, cls);
+      td.appendChild(el("span", name, "nm")); if (sub) td.appendChild(el("span", sub, "ct"));
+      return td;
+    };
     p.rows.forEach(function (r) {
-      var a = el("tr"); [r.id, r.party || "(no name)", CAT[r.category] || r.category].forEach(function (t) { a.appendChild(el("td", t)); });
-      a.appendChild(el("td", (r.direction === "credit" ? "+" : "") + H.ghost.rupees(r.real), "num")); real.appendChild(a);
-      var b = el("tr"); [r.id, r.standIn, r.category].forEach(function (t) { b.appendChild(el("td", t)); });
-      b.appendChild(el("td", (r.direction === "credit" ? "+" : "") + String(r.sent), "num")); sent.appendChild(b);
+      var cr = r.direction === "credit";
+      var tr = el("tr");
+      tr.setAttribute("data-id", r.id);
+      tr.appendChild(cell("you", r.party || "(no name)", (CAT[r.category] || r.category) + (cr ? " · in" : "")));
+      tr.appendChild(el("td", (cr ? "+" : "") + H.ghost.rupees(r.real), "amt you-amt" + (cr ? " cr" : "")));
+      var gap = el("td", null, "gap"); gap.setAttribute("aria-hidden", "true"); tr.appendChild(gap);
+      tr.appendChild(cell("gem", r.standIn, r.category + (cr ? " · credit" : "")));
+      tr.appendChild(el("td", (cr ? "+" : "") + String(r.sent), "amt gem-amt"));
+      body.appendChild(tr);
     });
+    renderWhy(p);
     var facts = $("gFacts"); clear(facts);
     [
-      p.count + " entries read on this device" + (p.skipped.length ? "; " + p.skipped.length + " line(s) not understood and left out" : "") + ".",
-      "Real names checked in the outgoing text: " + p.leak.namesChecked + " · found: " + p.leak.nameHits.length + " (private-name scanner: " + p.scannerHits + ").",
-      "Not sent: SMS wording, account and card numbers, UPI references, dates, balances.",
-      "Sent: " + p.outgoingChars + " characters — stand-ins, categories and scaled numbers.",
+      p.count + " entries read on this device" + (p.skipped.length ? "; " + p.skipped.length + " line(s) not understood and left out" : "") + ". " +
+        p.leak.namesChecked + " real names replaced; " + p.leak.nameHits.length + " found in the text Gemini receives.",
+      "Never sent: SMS wording, account and card numbers, UPI references, dates, balances.",
     ].forEach(function (t) { facts.appendChild(el("li", t)); });
+    $("gOutSummary").textContent = "The exact text Gemini receives (" + p.outgoingChars.toLocaleString("en-IN") + " characters)";
     $("gOut").textContent = p.outgoing;
+  }
+
+  /* The same proportion worked out twice: from the real amounts and from the
+   * scaled ones Gemini gets. They match (to within the per-line noise) because
+   * every amount was multiplied by the same secret number. */
+  function renderWhy(p) {
+    var sum = function (pick, key) { return p.rows.reduce(function (a, r) { return a + (pick(r) ? r[key] : 0); }, 0); };
+    var housing = function (r) { return r.direction === "debit" && (r.category === "rent" || r.category === "emi"); };
+    var credit = function (r) { return r.direction === "credit"; };
+    var spent = function (r) { return r.direction === "debit" && r.category !== "savings"; };
+    var base = sum(credit, "real") > 0 ? credit : spent;
+    var you = sum(base, "real") ? sum(housing, "real") / sum(base, "real") : null;
+    var gem = sum(base, "sent") ? sum(housing, "sent") / sum(base, "sent") : null;
+    $("gWhyLabel").textContent = "Rent + EMI ÷ " + (base === credit ? "income" : "spending");
+    $("gWhyYou").textContent = pct(you);
+    $("gWhyGem").textContent = pct(gem);
+    $("gWhyText").textContent = "Every number Gemini gets is your number multiplied by the same secret factor (picked for this tab, " +
+      "between 0.55 and 0.95, never shown or sent), plus a little noise per line. Multiplying everything by one number keeps every " +
+      "proportion, so Gemini can still work out your shares and savings rate. We divide its answer by the same factor here.";
+    var gap = you != null && gem != null ? Math.abs(Math.round(you * 100) - Math.round(gem * 100)) : 0;
+    $("gWhyNoise").textContent = gap ? gap + " point" + (gap === 1 ? "" : "s") + " apart: that is the small per-line noise, added so a known price can't reveal the secret factor." : "";
+    $("gWhyNoise").hidden = !gap;
+    $("gWhy").hidden = you == null;
   }
 
   async function read() {

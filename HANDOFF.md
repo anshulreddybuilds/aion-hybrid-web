@@ -39,6 +39,14 @@ Tests: `node tests/ghost.test.mjs` **68/68** (this includes scale/restore round 
   Tests: ghost 95/95, ghost smoke 40/40 (mocked).
 - **Automated browsers can't pass App Check** (reCAPTCHA gives them a low score), so the real-cloud check after this fix needs a person to click Send.
 
+## Round 2 started (28 Nov): side-by-side view
+- **Step 03 is now "What you see, what Gemini gets":** one row per entry, with your real name, category and ₹ amount on the left and, across a bright dividing line, exactly what Gemini receives (stand-in, category, scaled number) on the right. A test checks every right-hand side is literally a line of the text that's sent. On a phone each row stacks as "You see" over "Gemini gets".
+- **"Why the maths still works":** a short plain-English paragraph, plus one live comparison worked out from the data on screen: rent + EMI ÷ income from your numbers beside the same sum on Gemini's numbers (e.g. 43% vs 43%). If per-line noise makes them differ by a point, a line says so and why. It ends with what Gemini can't learn: how much you earn or spend, or who you pay.
+- **Tips now start with a capital letter** (Gemini sometimes sent "cancel …").
+- The receipt facts are cut to two lines; the outgoing text's size is in its expander title.
+- Tests: ghost 97/97, ghost smoke 51/51 (mocked), plus a visual check at 1280 px and 390 px.
+- Still to do in round 2: optionally highlight a row on both sides on hover/focus for presenting, and a "show the live request body" toggle.
+
 ## App Check (the required rule)
 App Check is already turned on in the code: reCAPTCHA Enterprise with the site key in `src/hybrid.js`. The debug provider can never run on the production domains. I couldn't see the Firebase console, so please check these yourself:
 1. **Firebase console → App Check → APIs → Firebase AI Logic:** it should say **Enforced**. If it says Monitoring, click Enforce.

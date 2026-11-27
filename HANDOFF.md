@@ -21,6 +21,12 @@ Tests: `node tests/ghost.test.mjs` **68/68** (this includes scale/restore round 
 
 **Not verified tonight:** a real cloud Gemini answer on the preview, real App Check on the preview domain, and real Gemini Nano (skipped as agreed).
 
+## Update, 28 Nov night
+- **A real cloud answer came back on the preview** (Anshul's own browser): cloud Gemini (gemini-3.5-flash-lite) in 2.9 s, behind App Check. The page saw a 1,351-character request go out, with 0 of 12 real names in it. All four checks against the rules agreed.
+- To get there: the preview domain was added to the reCAPTCHA key (done from the laptop) and to the Firebase browser key's website list (done by Anshul in the console). App Check for Firebase AI Logic was already Enforced. The API Keys API was left off.
+- **Fix after that answer:** a restored amount within the wobble of a figure the rules already know is now shown exactly (rent reads ₹24,000, not ₹24,306); other figures say "about". Tips must name an action and a monthly figure. Plain statements ("your savings amount is …") are left out, and the rules' own tips fill in to make at least two. The model's maths is still checked on the raw numbers. Tests: ghost 78/78, ghost smoke 33/33 (mocked).
+- **Automated browsers can't pass App Check** (reCAPTCHA gives them a low score), so the real-cloud check after this fix needs a person to click Send.
+
 ## App Check (the required rule)
 App Check is already turned on in the code: reCAPTCHA Enterprise with the site key in `src/hybrid.js`. The debug provider can never run on the production domains. I couldn't see the Firebase console, so please check these yourself:
 1. **Firebase console → App Check → APIs → Firebase AI Logic:** it should say **Enforced**. If it says Monitoring, click Enforce.

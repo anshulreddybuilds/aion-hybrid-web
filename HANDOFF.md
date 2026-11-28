@@ -59,6 +59,44 @@ Tests: `node tests/ghost.test.mjs` **68/68** (this includes scale/restore round 
 - **Bug found and fixed:** a figure in a tip that names a payee now only snaps to that payee's own amounts. Before, a ₹2,400 rent saving could become the ₹2,340 grocery bill.
 - Tests: ghost 108/108, ghost smoke 77/77 (mocked), with visual checks at 1280 px and 390 px.
 
+## Round 4 (29 Nov): polish and testing from every angle
+**Real testing is tomorrow on a friend's PC: see `FRIEND_PC_TEST.md`.** It includes the Gemini Nano part the 8 GB laptop can't run, and saving the demo recording.
+
+**Flaws found by attacking it, all fixed:**
+- **Non-transactions were counted:**
+  - a message carrying an OTP code counted as spending;
+  - a **failed** payment counted as spent;
+  - a credit-card bill confirmation counted as **income**;
+  - refunds counted as income.
+
+  OTP, failed/declined, UPI collect requests, card-bill confirmations and balance-only alerts are now left out, and the page says why. Refunds and reversals lower spending. A footer like "Never share your OTP" no longer hides a real payment.
+- **Numbers:** "1.2 crore" read as ₹1.20; "Rs500debited" was skipped, then read as ₹50 after a first fix; "650 rupees" wasn't read; "Refund: -500" read as ₹500 spent.
+- **Language:** Hindi (डेबिट, जमा, रु, वेतन) and Hinglish ("bheje") alerts were skipped entirely.
+- **Budgets:** labels with digits ("Rent for flat 4B") were skipped; a stray "—" stayed on the end of a label.
+- **Silent losses:** the same alert pasted twice counted twice; past 200 messages the rest vanished with no warning. Both are now counted and reported in one "Left out: …" sentence.
+- **Restoring shares:** a real rent share above 100% (rent 1.62× income) was misread as 1.6%. The page now reads it against Gemini's own money figures.
+
+**New:**
+- A **Get Gemini Nano** button on this page (needed for the friend's PC).
+- With no income in the month, the check says so instead of printing a fake "%".
+- A tab icon, and dead styles removed.
+
+**New tests:**
+- `node tests/ghost_edge.test.mjs`, **40/40**: 30 edge cases, plus a **fuzz test of 400 random months** (random names, Hindi, odd amounts, non-transactions). Every line that would leave the device is exactly `T# | debit/credit | Stand_In | category | number`. No real name, real amount, account number, reference, date or Hindi text ever appears. The private-name scanner never has to block anything. On ordinary months the maths restores within 5%.
+- `python tests/ghost_attack.py`, **48/48** (mocked cloud/Nano/App Check), covering:
+  - a hostile month (HTML and emoji in names, Hindi, non-transactions, a duplicate), where **every request the page makes** is searched for real names and amounts (none), and the page only contacts itself, App Check/reCAPTCHA and the Gemini endpoint;
+  - nothing about the month in browser storage or the console;
+  - a cloud that's down, one that never answers (stopped at 15 s, approval kept), and one that answers in prose;
+  - the Nano download button, and junk then good answers from Nano;
+  - keyboard-only use with reduced motion;
+  - five screen sizes from 320 px to tablet and landscape: no sideways scrolling, 44 px buttons, captions fit.
+- All suites: ghost 108, ghost_edge 40, ghost smoke 77, ghost_attack 48, engine 89, live engine 277, quotes 101, send 18.
+
+**Still open:**
+- The demo recording isn't bundled yet; FRIEND_PC_TEST.md step B produces it.
+- Real Nano has never run against this page (step C).
+- The maths check's margin is fixed (3.5 points on shares), so very unusual months (rent many times income) can say "differs" on a correct answer.
+
 ## App Check (the required rule)
 App Check is already turned on in the code: reCAPTCHA Enterprise with the site key in `src/hybrid.js`. The debug provider can never run on the production domains. I couldn't see the Firebase console, so please check these yourself:
 1. **Firebase console → App Check → APIs → Firebase AI Logic:** it should say **Enforced**. If it says Monitoring, click Enforce.

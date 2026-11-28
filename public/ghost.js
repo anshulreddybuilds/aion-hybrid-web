@@ -17,11 +17,11 @@
     var parts = [];
     var why = {};
     (p.ignored || []).forEach(function (r) { why[r] = (why[r] || 0) + 1; });
-    Object.keys(why).forEach(function (r) { parts.push(why[r] + " not counted (" + r + ")"); });
-    if (p.duplicates) parts.push(p.duplicates + " repeated message" + (p.duplicates === 1 ? "" : "s") + " counted once");
-    if (p.skipped.length) parts.push(p.skipped.length + " line" + (p.skipped.length === 1 ? "" : "s") + " with no amount we could read");
-    if (p.overLimit) parts.push(p.overLimit + " over the " + p.maxEntries + "-message limit left out");
-    return parts.length ? "Read " + p.count + " transaction" + (p.count === 1 ? "" : "s") + ". " + parts.join("; ") + "." : "";
+    Object.keys(why).forEach(function (r) { parts.push(why[r] + " × " + r); });
+    if (p.duplicates) parts.push(p.duplicates + " × repeated message (counted once)");
+    if (p.skipped.length) parts.push(p.skipped.length + " × no amount we could read");
+    if (p.overLimit) parts.push(p.overLimit + " × over the " + p.maxEntries + "-message limit");
+    return parts.length ? "Read " + p.count + " transaction" + (p.count === 1 ? "" : "s") + ". Left out: " + parts.join(" · ") + "." : "";
   }
 
   function el(tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
@@ -152,7 +152,12 @@
     try {
       prepared = await H.ghost.prepare(text);
     } catch (e) { prepared = null; msg("gReadMsg", "Could not read that: " + e.message, true); return; }
-    if (!prepared.count) { msg("gReadMsg", "No amounts found. Lines need a rupee amount, e.g. “Rent: 22,000” or a bank SMS."); show("gLocal", false); show("gReceiptStep", false); sendLabel(); return; }
+    if (!prepared.count) {
+      var why0 = leftOut(prepared);
+      msg("gReadMsg", why0 ? why0.replace(/^Read 0 transactions. Left out: /, "No transactions to count. Left out: ") :
+        "No amounts found. Lines need a rupee amount, e.g. “Rent: 22,000” or a bank SMS.");
+      show("gLocal", false); show("gReceiptStep", false); sendLabel(); return;
+    }
     var notes = leftOut(prepared);
     if (notes) msg("gReadMsg", notes);
     renderLocal(prepared); renderReceipt(prepared);

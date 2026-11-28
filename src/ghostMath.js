@@ -28,15 +28,20 @@ export const MAX_ENTRIES = 200;
 
 /* ------------------------------ amounts ------------------------------ */
 
-/* Rs 1,02,345.67 | INR 450 | ₹2,340.5 | Rs. 2.4 lakh */
-const AMOUNT_RE = /(?:rs\.?|inr|₹)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(lakh|lac|k)?/gi;
+/* Rs 1,02,345.67 | INR 450 | ₹2,340.5 | Rs. 2.4 lakh | Rs 1.2 crore | रु 500 | 650 rupees */
+/* (?![0-9]) after the number stops it backing off a digit ("Rs500debited" must
+ * read 500, not 50); the unit, when there is one, must end its word. */
+const NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9])";
+const UNIT = "(?:(lakhs?|lacs?|crores?|cr|k)(?![a-z]))?";
+const AMOUNT_RE = new RegExp("(?:\\brs\\.?|\\binr|₹|रु\\.?|रुपये)\\s*" + NUMBER + "\\s*" + UNIT +
+  "|" + NUMBER + "\\s*(?:rupees|rupaye|rupay|रुपये|रुपए)", "gi");
 const NOT_THE_AMOUNT = /(?:avl\.?|available|avbl|a\/c)\s*(?:bal(?:ance)?|lmt|limit)?\s*(?:is|:)?\s*$|bal(?:ance)?\s*(?:is|:)?\s*$|limit\s*(?:is|:)?\s*$/i;
 
 export function toNumber(digits, unit) {
   const n = parseFloat(String(digits).replace(/,/g, ""));
   if (!isFinite(n)) return null;
   const u = String(unit || "").toLowerCase();
-  const v = u === "lakh" || u === "lac" ? n * 100000 : u === "k" ? n * 1000 : n;
+  const v = /^la(?:kh|c)s?$/.test(u) ? n * 100000 : /^(?:crores?|cr)$/.test(u) ? n * 10000000 : u === "k" ? n * 1000 : n;
   return Math.round(v * 100) / 100;
 }
 
@@ -47,7 +52,7 @@ export function findAmount(text) {
   while ((m = AMOUNT_RE.exec(text))) {
     const before = text.slice(Math.max(0, m.index - 22), m.index);
     if (NOT_THE_AMOUNT.test(before)) continue;
-    const v = toNumber(m[1], m[2]);
+    const v = m[1] != null ? toNumber(m[1], m[2]) : toNumber(m[3]);
     if (v != null && v > 0) return v;
   }
   return null;
@@ -59,7 +64,7 @@ const MERCHANT_WORDS = /\b(ltd|limited|pvt|private|store|stores|mart|bank|india|
 const KNOWN_MERCHANTS = /\b(swiggy|zomato|amazon|flipkart|myntra|ajio|meesho|netflix|spotify|hotstar|jiohotstar|prime|youtube|bigbasket|blinkit|zepto|dmart|instamart|uber|ola|rapido|irctc|airtel|jio|vodafone|vi|bsnl|bescom|tata|reliance|apollo|medplus|pharmeasy|bookmyshow|makemytrip|paytm|phonepe|gpay|starbucks|dominos|mcdonalds|kfc|hdfc|icici|sbi|axis|kotak|bajaj|lic)\b/i;
 
 function tidy(s) {
-  return String(s || "").replace(/[*_]+/g, " ").replace(/\s+/g, " ").replace(/^[\s:.\-]+|[\s:.\-,;]+$/g, "").trim();
+  return String(s || "").replace(/[*_]+/g, " ").replace(/\s+/g, " ").replace(/^[\s:.\-–—•]+|[\s:.\-–—,;=]+$/g, "").trim();
 }
 
 /** Best-effort payee / payer name from an SMS. Empty string when none is found. */
@@ -82,6 +87,9 @@ export function findParty(text, direction) {
     m = t.match(new RegExp("\\b(?:by|from)\\s+(?:NEFT|IMPS|UPI|RTGS)?\\s*(?:from\\s+)?(?!a\\/c|ac\\b|your\\b)([A-Za-z][A-Za-z0-9&.' \\-]{1,40}?)" + stop, "i"));
     if (m && !/^(?:neft|imps|upi|rtgs)$/i.test(m[1].trim())) return tidy(m[1]);
   }
+  /* Any UPI handle left in the message (Hindi alerts put it before "को"). */
+  m = t.match(/(?:^|[\s(])([A-Za-z][\w.\-]{1,40})@[a-z][\w.\-]*/);
+  if (m) { const h = m[1].replace(/[._\-]+/g, " ").replace(/\d{6,}/g, "").trim(); if (h) return tidy(h); }
   return "";
 }
 
@@ -97,7 +105,10 @@ export function partyKind(name, direction) {
 /* ------------------------------ categories ------------------------------ */
 /* First match wins; order matters (an "EMI" to a bank is a loan, not a bank fee). */
 export const CATEGORIES = [
-  ["income", /\b(salary|sal\b|payroll|stipend|bonus|income|freelance|interest credited|refund|cashback)\b/i],
+  /* Money coming back (a refund, a reversed failed payment, cashback) is not income:
+   * it lowers what was spent. */
+  ["refund", /\b(refund(?:ed)?|reversed|reversal|cashback|chargeback)\b/i],
+  ["income", /\b(salary|sal\b|payroll|stipend|bonus|income|freelance|interest credited)\b|वेतन|सैलरी/i],
   ["emi", /\b(emi|loan|nach|ach d|hdfc ltd|bajaj fin|finserv|home loan|car loan|personal loan)\b/i],
   ["rent", /\b(rent|landlord|house owner|pg\b|hostel|maintenance)\b/i],
   ["groceries", /\b(bigbasket|blinkit|zepto|dmart|instamart|grocery|groceries|kirana|supermarket|vegetables?|milk|dairy)\b/i],
@@ -115,7 +126,7 @@ export const CATEGORY_NAMES = CATEGORIES.map((c) => c[0]).concat(["transfers", "
 
 export function categorize(label, direction, kind) {
   for (const [name, re] of CATEGORIES) {
-    if (name === "income") { if (direction === "credit" && re.test(label)) return name; continue; }
+    if (name === "income" || name === "refund") { if (direction === "credit" && re.test(label)) return name; continue; }
     if (direction === "debit" && re.test(label)) return name;
   }
   if (direction === "credit") return "income";
@@ -124,9 +135,29 @@ export function categorize(label, direction, kind) {
 
 /* ------------------------------ parsing ------------------------------ */
 
-const DEBIT_RE = /\b(debited|debit|spent|paid|sent|withdrawn|purchase|txn of|transferred to|dr\b)/i;
-const CREDIT_RE = /\b(credited|received|deposited|cr\b|refund)/i;
-const SMS_HINT = /\b(a\/c|acct|account|upi|vpa|card|neft|imps|debited|credited|spent|ref\s*no)\b/i;
+/* English, Hindi and common Hinglish words. (?<![a-z]) instead of \b so that
+ * "Rs500debited" still reads; Devanagari words need no boundary. */
+const DEBIT_RE = /(?<![a-z])(debited|debit|spent|paid|sent|withdrawn|purchase|txn of|transferred to|dr\b|bheje|bheja|kharch|kata|kate)|डेबिट|कटे|काटे|भेजे|भुगतान|खर्च/i;
+const CREDIT_RE = /(?<![a-z])(credited|received|deposited|cr\b|refund|reversed|cashback|mile|mila|aaye)|जमा|क्रेडिट|प्राप्त|मिले/i;
+const SMS_HINT = /\b(a\/c|acct|account|upi|vpa|card|neft|imps|debited|credited|spent|ref\s*no)\b|खाते|यूपीआई/i;
+
+/* Messages that mention money but are not a transaction: they are left out and
+ * counted, never added to the month. */
+/* Each rule is narrow on purpose: real alerts often END with "Never share your
+ * OTP" or "Thank you for banking with us", and those must still count. */
+export const IGNORE_RULES = [
+  /* an actual code is in the message, not just a warning about OTPs */
+  ["one-time password", /\b(?:otp|one[- ]time password|verification code)\b[^\n]{0,60}?\b(?:is|:)\s*\d{4,8}\b|\b\d{4,8}\s+is\s+(?:your|the)\s+(?:otp|one[- ]time password)\b/i],
+  /* a failed payment; but a "reversed" or "refunded to your account" one is money back */
+  ["failed or declined", /^(?!.*\b(?:reversed|credited back|has been (?:refunded|credited)|refunded to)\b).*\b(failed|declined|unsuccessful|could not be (?:processed|completed)|not been processed)\b/i],
+  ["payment request, not a payment", /\b(has requested|requested (?:money|rs|inr|₹|payment)|collect request|is requesting)\b/i],
+  ["card bill paid (already counted where it left your bank)", /received towards your\b.*\bcard\b|\bpayment of\b.*\breceived\b.*\b(?:credit )?card\b/i],
+  ["balance only", /^(?!.*\b(debited|credited|spent|paid|sent|received)\b).*\b(?:balance|bal)\b.*\b(?:is|as on)\b/i],
+];
+export function ignoreReason(line) {
+  for (const [why, re] of IGNORE_RULES) if (re.test(line)) return why;
+  return null;
+}
 
 function parseSmsLine(line) {
   const amount = findAmount(line);
@@ -137,21 +168,29 @@ function parseSmsLine(line) {
   const direction = d >= 0 && (c < 0 || d < c) ? "debit" : "credit";
   const party = findParty(line, direction);
   let kind = partyKind(party, direction);
-  /* A UPI handle that is not a known shop (rameshkumar@okaxis) is a person. */
-  if (kind === "merchant" && /@[a-z]/i.test(line) && party && !KNOWN_MERCHANTS.test(party) && !MERCHANT_WORDS.test(party)) kind = "person";
+  /* A UPI handle that is not a known shop (rameshkumar@okaxis) is a person, and so
+   * is the payee of a "Sent Rs ... To Om" transfer. */
+  if (kind === "merchant" && party && !KNOWN_MERCHANTS.test(party) && !MERCHANT_WORDS.test(party) &&
+      (/@[a-z]/i.test(line) || /^\s*sent\b/i.test(line))) kind = "person";
   return { source: "sms", direction, amount, party, partyKind: kind, category: categorize(line + " " + party, direction, kind) };
 }
 
-/* "Rent: 25,000" | "Home loan EMI - ₹12,450" | "Salary 85000" | "Groceries 6k" */
-const BUDGET_RE = /^\s*[-*•]?\s*([^:=\d₹]{2,60}?)\s*[:=\-–]?\s*(?:rs\.?|inr|₹)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(lakh|lac|k)?\b\s*(?:\/\s*(?:month|mo|m))?\s*(?:\(([^)]{0,60})\))?\s*$/i;
+/* "Rent: 25,000" | "Home loan EMI - ₹12,450" | "Salary 85000" | "Groceries 6k" |
+ * "Rent for flat 4B: 22,000" (the amount is the LAST number on the line). */
+const BUDGET_RE = /^\s*[-*•]?\s*(.{2,60}?)\s*[:=\-–—]?\s*(?:rs\.?|inr|₹|रु\.?)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(lakhs?|lacs?|crores?|cr|k)?\b\s*(?:\/\s*(?:month|mo|m)\b|per month|a month|pm\b)?\s*(?:\(([^)]{0,60})\))?\s*$/i;
 const INCOME_LABEL = /\b(salary|income|stipend|bonus|freelance|take[- ]?home|in[- ]?hand|earnings|pay)\b/i;
 
 function parseBudgetLine(line) {
+  /* "Refund: -500" is a negative figure: not a spend, so it is not guessed at. */
+  if (/(?:^|[:=\s])[-−]\s*(?:rs\.?|inr|₹)?\s*\d/i.test(line.replace(/^\s*[-*•]\s+/, ""))) return null;
   const m = line.match(BUDGET_RE);
   if (!m) return null;
   const amount = toNumber(m[2], m[3]);
   if (amount == null || amount <= 0) return null;
   const label = tidy(m[1] + (m[4] ? " " + m[4] : ""));
+  /* A label needs a word in it (not just "Rs" or another number), and no currency
+   * sign of its own (that would make the line an SMS, not a budget line). */
+  if (!/[A-Za-zऀ-ॿ]{2}/.test(label.replace(/\b(?:rs|inr)\b/gi, "")) || /₹|\brs\.?\s*\d/i.test(label)) return null;
   const direction = INCOME_LABEL.test(label) ? "credit" : "debit";
   const category = categorize(label, direction, "merchant");
   /* A budget label is treated as private too ("Rent to Mr Sharma"): it is
@@ -159,21 +198,32 @@ function parseBudgetLine(line) {
   return { source: "budget", direction, amount, party: label, partyKind: direction === "credit" ? "payer" : "item", category };
 }
 
-/** Splits pasted text into entries. Unreadable lines are counted, never guessed. */
+/** Splits pasted text into entries. Nothing is guessed, and nothing is dropped
+ * silently: unreadable lines are `skipped`, non-transactions (OTP, failed,
+ * requests ...) are `ignored` with the reason, exact repeats are `duplicates`,
+ * and lines past MAX_ENTRIES are counted in `overLimit`. */
 export function parseInput(text) {
   const raw = String(text || "").replace(/\r/g, "");
   const chunks = /\n\s*\n/.test(raw) && raw.split(/\n\s*\n/).some((c) => c.indexOf("\n") >= 0 && SMS_HINT.test(c))
     ? raw.split(/\n\s*\n/).map((c) => c.replace(/\n/g, " ")) : raw.split("\n");
-  const entries = [];
-  const skipped = [];
+  const entries = [], skipped = [], ignored = [];
+  const seen = new Set();
+  let duplicates = 0, overLimit = 0;
   chunks.forEach((chunk) => {
     const line = chunk.trim();
     if (!line) return;
+    /* The same alert pasted twice is one transaction. */
+    const key = line.replace(/\s+/g, " ").toLowerCase();
+    if (seen.has(key)) { duplicates++; return; }
+    seen.add(key);
+    const why = ignoreReason(line);
+    if (why) { ignored.push({ line: line.slice(0, 80), reason: why }); return; }
     const e = (SMS_HINT.test(line) ? parseSmsLine(line) : null) || parseBudgetLine(line) || parseSmsLine(line);
-    if (e && entries.length < MAX_ENTRIES) entries.push(Object.assign({ id: "T" + (entries.length + 1) }, e));
-    else if (!e) skipped.push(line.slice(0, 80));
+    if (!e) skipped.push(line.slice(0, 80));
+    else if (entries.length >= MAX_ENTRIES) overLimit++;
+    else entries.push(Object.assign({ id: "T" + (entries.length + 1) }, e));
   });
-  return { entries, skipped };
+  return { entries, skipped, ignored, duplicates, overLimit };
 }
 
 /* ------------------------------ the rule engine ------------------------------ */
@@ -182,10 +232,12 @@ const r2 = (n) => Math.round(n * 100) / 100;
 
 /** Real-rupee figures, computed here and only here. */
 export function summarize(entries) {
-  let income = 0, spend = 0, invested = 0;
+  let income = 0, spend = 0, invested = 0, refunds = 0;
   const by = {}, count = {};
   (entries || []).forEach((e) => {
-    if (e.direction === "credit") income += e.amount;
+    /* A refund or reversal is money back, not income: it lowers spending. */
+    if (e.direction === "credit" && e.category === "refund") refunds += e.amount;
+    else if (e.direction === "credit") income += e.amount;
     /* Money moved into a SIP / FD / savings is kept, not spent. */
     else if (e.category === "savings") invested += e.amount;
     else { spend += e.amount; by[e.category] = (by[e.category] || 0) + e.amount; count[e.category] = (count[e.category] || 0) + 1; }
@@ -193,8 +245,11 @@ export function summarize(entries) {
   const breakdown = Object.keys(by).map((category) => ({ category, amount: r2(by[category]), share: spend ? by[category] / spend : 0, count: count[category] }))
     .sort((a, b) => b.amount - a.amount);
   const housing = (by.rent || 0) + (by.emi || 0);
+  /* Net spending: what went out, less what came back (never below zero). The
+   * breakdown stays gross, per category, so each bar is what was paid there. */
+  spend = Math.max(0, spend - refunds);
   return {
-    income: r2(income), spend: r2(spend), invested: r2(invested), breakdown,
+    income: r2(income), spend: r2(spend), invested: r2(invested), refunds: r2(refunds), breakdown,
     rentEmi: r2(housing),
     /* Share of income when income is known, otherwise of spending (and labelled so). */
     rentEmiShare: income > 0 ? housing / income : spend > 0 ? housing / spend : 0,
@@ -414,7 +469,22 @@ export const ACTION_RE = /\b(cut|cancel|switch|move|set|prepay|pause|renegotiate
 function restoreResult(json, fromAlias, k, exact, aliasFigures) {
   const j = json && typeof json === "object" ? json : {};
   const div = (v) => (num(v) == null ? null : num(v) / k);
-  const raw = { income: div(j.income), spend: div(j.spend), rentEmiShare: share(j.rent_emi_share), savingsRate: share(j.savings_rate) };
+  /* A share may come back as a fraction (0.43) or a percent (43). A real share
+   * can be above 1 (rent bigger than income), so the reading that agrees with
+   * the model's OWN money figures wins (those ratios do not change with k);
+   * the "looks like a percent" guess is only the fallback. */
+  const inc = num(j.income), sp = num(j.spend);
+  const bd = Array.isArray(j.breakdown) ? j.breakdown : [];
+  const housing = bd.reduce((a, b) => a + (b && /^(rent|emi)$/i.test(String(b.category)) && num(b.amount) != null ? num(b.amount) : 0), 0);
+  const derivedRent = bd.length ? (inc > 0 ? housing / inc : sp > 0 ? housing / sp : null) : null;
+  const derivedSave = inc > 0 && sp != null ? (inc - sp) / inc : null;
+  const pickShare = (v, derived) => {
+    const n = num(v);
+    if (n == null) return null;
+    if (derived != null && isFinite(derived)) return Math.abs(n - derived) <= Math.abs(n / 100 - derived) ? n : n / 100;
+    return share(n);
+  };
+  const raw = { income: div(j.income), spend: div(j.spend), rentEmiShare: pickShare(j.rent_emi_share, derivedRent), savingsRate: pickShare(j.savings_rate, derivedSave) };
   const fig = (v) => snap(v, exact).value;
   const breakdown = (Array.isArray(j.breakdown) ? j.breakdown : []).slice(0, 20).map((b) => ({
     category: CATEGORY_NAMES.indexOf(String(b && b.category).toLowerCase()) >= 0 ? String(b.category).toLowerCase() : "other",
@@ -488,7 +558,8 @@ export function capitalize(text) {
 export const INSTRUCTIONS = "You are a careful personal-finance assistant. Below is one month of money entries, one per line: " +
   "id | debit or credit | party | category | amount in rupees. Names are placeholders such as Person_A or Merchant_B; keep them " +
   "exactly as written. Using ONLY these entries, return JSON with: income (sum of credits), spend (sum of debits), breakdown " +
-  "(spend per category, as numbers; spend and breakdown leave out the savings category, which is money kept, not spent), rent_emi_share (rent plus emi divided by income, a fraction between 0 and 1; divide by spend if " +
+  "(spend per category, as numbers; spend and breakdown leave out the savings category, which is money kept, not spent; a credit in " +
+  "the refund category is money back, not income: subtract it from spend), rent_emi_share (rent plus emi divided by income, a fraction between 0 and 1; divide by spend if " +
   "there is no income), savings_rate ((income - spend) / income, a fraction), and 2 or 3 tips. Each tip must start with one concrete action " +
   "(cut, cancel, switch, move, set, prepay, pause or renegotiate something specific, naming the party or category) and say how much it " +
   "would free up each month; do not just restate a total. Suggest a believable partial cut, such as a quarter or a third of a " +

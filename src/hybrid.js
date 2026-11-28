@@ -749,6 +749,7 @@ async function ghostPrepare(text) {
   ghostPrepared = { entries: parsed.entries, summary, disclosure, isSample };
   return {
     count: parsed.entries.length, skipped: parsed.skipped.slice(), summary,
+    ignored: parsed.ignored.map((x) => x.reason), duplicates: parsed.duplicates, overLimit: parsed.overLimit, maxEntries: ghostMath.MAX_ENTRIES,
     rows: masked.rows.map((r) => Object.assign({}, r)),
     outgoing, outgoingChars: outgoing.length,
     leak: ghostMath.leakCheck(outgoing, parsed.entries),

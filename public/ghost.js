@@ -10,7 +10,19 @@
   var pct = function (x) { return x == null || !isFinite(x) ? "-" : Math.round(x * 100) + "%"; };
   var CAT = { rent: "Rent", emi: "EMI / loans", groceries: "Groceries", food: "Food & delivery", transport: "Transport", bills: "Bills",
     subscriptions: "Subscriptions", shopping: "Shopping", health: "Health", insurance: "Insurance", education: "Education",
-    transfers: "To people", other: "Other", income: "Income", savings: "Saved / invested" };
+    transfers: "To people", other: "Other", income: "Income", savings: "Saved / invested", refund: "Refund" };
+
+  /* One plain sentence for everything that was not counted, and why. */
+  function leftOut(p) {
+    var parts = [];
+    var why = {};
+    (p.ignored || []).forEach(function (r) { why[r] = (why[r] || 0) + 1; });
+    Object.keys(why).forEach(function (r) { parts.push(why[r] + " not counted (" + r + ")"); });
+    if (p.duplicates) parts.push(p.duplicates + " repeated message" + (p.duplicates === 1 ? "" : "s") + " counted once");
+    if (p.skipped.length) parts.push(p.skipped.length + " line" + (p.skipped.length === 1 ? "" : "s") + " with no amount we could read");
+    if (p.overLimit) parts.push(p.overLimit + " over the " + p.maxEntries + "-message limit left out");
+    return parts.length ? "Read " + p.count + " transaction" + (p.count === 1 ? "" : "s") + ". " + parts.join("; ") + "." : "";
+  }
 
   function el(tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
@@ -28,6 +40,11 @@
     n.textContent = "Gemini Nano: " + label;
     n.className = "pill " + (s.nano === "ready" ? "ok" : s.nano === "checking" || s.nano === "downloading" || s.nano === "downloadable" ? "warn" : "bad");
     n.title = s.nanoDetail || "";
+    /* Gemini Nano can be downloaded from here (Chrome asks for a click to start it). */
+    var nb = $("gNanoBtn");
+    nb.hidden = !(s.nano === "downloadable" || s.nano === "downloading");
+    nb.disabled = s.nano === "downloading";
+    nb.textContent = s.nano === "downloading" ? "Downloading Nano " + (s.nanoDetail || "") : "Get Gemini Nano";
     sendLabel();
   }
 
@@ -52,7 +69,8 @@
   function renderLocal(p) {
     var s = p.summary;
     $("kSpend").textContent = H.ghost.rupees(s.spend);
-    $("kSpendS").textContent = s.income ? "of " + H.ghost.rupees(s.income) + " income" + (s.invested ? " · " + H.ghost.rupees(s.invested) + " invested" : "") : "no income found";
+    $("kSpendS").textContent = (s.income ? "of " + H.ghost.rupees(s.income) + " income" : "no income found") +
+      (s.invested ? " · " + H.ghost.rupees(s.invested) + " invested" : "") + (s.refunds ? " · after " + H.ghost.rupees(s.refunds) + " refunded" : "");
     $("kRent").textContent = pct(s.rentEmiShare);
     $("kRentS").textContent = H.ghost.rupees(s.rentEmi) + " of " + s.rentEmiBase;
     $("kSave").textContent = s.savingsRate == null ? "-" : pct(s.savingsRate);
@@ -135,7 +153,8 @@
       prepared = await H.ghost.prepare(text);
     } catch (e) { prepared = null; msg("gReadMsg", "Could not read that: " + e.message, true); return; }
     if (!prepared.count) { msg("gReadMsg", "No amounts found. Lines need a rupee amount, e.g. “Rent: 22,000” or a bank SMS."); show("gLocal", false); show("gReceiptStep", false); sendLabel(); return; }
-    if (prepared.skipped.length) msg("gReadMsg", prepared.skipped.length + " line(s) had no amount we could read and were left out.");
+    var notes = leftOut(prepared);
+    if (notes) msg("gReadMsg", notes);
     renderLocal(prepared); renderReceipt(prepared);
     show("gLocal", true); show("gReceiptStep", true); msg("gSendMsg", "");
     sendLabel();
@@ -216,8 +235,10 @@
     var a = r.agreement || {}, g = a.gaps || {}, lim = a.tolerancePct;
     var one = function (n) { return n == null ? "?" : (Math.round(n * 10) / 10).toFixed(1); };
     var mark = function (k, unit) { return (a[k] ? "agrees" : "differs") + " (" + one(g[k]) + unit + ")"; };
+    /* With no income in the month, there is no percentage to give: say so. */
+    var incomeMark = rules.income > 0 ? mark("income", "%") : (a.income ? "agrees (none in the month)" : "differs (the model found income the rules did not)");
     $("aAgree").textContent = "Checked against the rules: amounts within " + one(lim) + "%, shares within " + one(lim) +
-      " points. Spend " + mark("spend", "%") + " · income " + mark("income", "%") + " · rent+EMI share " + mark("rentEmiShare", " pts") +
+      " points. Spend " + mark("spend", "%") + " · income " + incomeMark + " · rent+EMI share " + mark("rentEmiShare", " pts") +
       " · savings rate " + mark("savingsRate", " pts") + ". Where they differ, trust step 02.";
     show("gAnswer", true);
     if (!(opts && opts.noScroll)) scrollTo($("gAnswer"));
@@ -394,6 +415,7 @@
     $("ghostDemoBtn").addEventListener("click", runDemo);
     $("gCapStop").addEventListener("click", function () { demo.stop = true; });
     $("gSaveRec").addEventListener("click", saveRecording);
+    $("gNanoBtn").addEventListener("click", function () { if (H.downloadNano) H.downloadNano(); status(); });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && demo.on) demo.stop = true; });
     /* Clicking a row (or focusing it) lights both halves of that entry. */
     $("gLens").addEventListener("click", function (e) {

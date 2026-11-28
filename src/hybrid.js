@@ -20,7 +20,9 @@
  */
 import { initializeApp } from "firebase/app";
 import { initializeAppCheck, getToken, ReCaptchaEnterpriseProvider } from "firebase/app-check";
-import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode } from "firebase/ai";
+import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode, Schema } from "firebase/ai";
+import * as ghostMath from "./ghostMath.js";
+import { SAMPLE_SMS, SAMPLE_BUDGET } from "./ghostSamples.js";
 import * as egress from "./egress.js";
 import * as contracts from "./contracts.js";
 import * as telemetry from "./telemetry.js";
@@ -711,6 +713,181 @@ async function plannerLocalCall(prompt, jsonSchema, opts) {
   return { text: result.response.text(), model: "Gemini Nano" };
 }
 
+/* ------------------------------ Ghost-Math money lens ------------------------------
+ * The rules (src/ghostMath.js) run first, on this device: read the SMS or budget,
+ * work out the real-rupee figures, then build the ONLY text a model may see:
+ * stand-in names and amounts multiplied by this page's secret k. That text goes
+ * through the same disclosure boundary as every other cloud send (allowlist,
+ * approval by a real click, private-name scan, outbound monitor). Whatever
+ * answers - Gemini Nano here or cloud Gemini - gets the scaled text, so a cloud
+ * fallback never sees real rupees or names. k lives in this closure only. */
+const ghostSession = ghostMath.createSession();
+let ghostPrepared = null;
+
+function ghostSchema() {
+  const money = () => Schema.array({ items: Schema.object({ properties: { category: Schema.string(), amount: Schema.number() } }) });
+  return Schema.object({
+    properties: {
+      income: Schema.number(), spend: Schema.number(), breakdown: money(),
+      rent_emi_share: Schema.number(), savings_rate: Schema.number(),
+      tips: Schema.array({ items: Schema.object({ properties: { text: Schema.string(), amount: Schema.number() } }) }),
+    },
+  });
+}
+
+/** Local only: parse, rule-engine figures, the masked lines and the exact outgoing text. */
+async function ghostPrepare(text) {
+  const parsed = ghostMath.parseInput(text);
+  const summary = ghostMath.summarize(parsed.entries);
+  const masked = ghostSession.mask(parsed.entries);
+  egress.setPrivate("ghost_party", ghostSession.realNames());
+  const disclosure = parsed.entries.length
+    ? await egress.createDisclosure({ purpose: "ghost_math", payload: ghostMath.buildPayload(masked.lines) }) : null;
+  const outgoing = disclosure ? egress.serialize(disclosure) : "";
+  /* The bundled sample (invented data) is the only input a demo recording may be made from or replayed for. */
+  const isSample = String(text).replace(/\r/g, "").trim() === SAMPLE_SMS.trim();
+  ghostPrepared = { entries: parsed.entries, summary, disclosure, isSample };
+  return {
+    count: parsed.entries.length, skipped: parsed.skipped.slice(), summary,
+    ignored: parsed.ignored.map((x) => x.reason), duplicates: parsed.duplicates, overLimit: parsed.overLimit, maxEntries: ghostMath.MAX_ENTRIES,
+    rows: masked.rows.map((r) => Object.assign({}, r)),
+    outgoing, outgoingChars: outgoing.length,
+    leak: ghostMath.leakCheck(outgoing, parsed.entries),
+    scannerHits: egress.scanPrivate(outgoing).length,
+    localTips: ghostMath.localTips(summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount })),
+  };
+}
+
+const GHOST_ROUTES = { prefer_on_device: 1, prefer_in_cloud: 1, only_on_device: 1, only_in_cloud: 1 };
+let ghostLastRecording = null;
+
+/** Demo mode only: replays a recorded real Gemini answer for the bundled sample
+ * when no model can be reached now. Nothing is sent. The recording's own k (the
+ * sample's, stored with it) divides its numbers back; the answer is checked
+ * against the rules like a live one and is always labelled as recorded. */
+async function ghostReplay(rec) {
+  const p = ghostPrepared;
+  if (!p || !p.isSample) throw refused("replay_not_sample", "a recording can only be replayed for the bundled sample.");
+  const v = ghostMath.validateRecording(rec);
+  if (!v.ok) throw refused("replay_invalid", "the recording is not valid (" + v.errors.join(", ") + ").");
+  if (rec.sampleDigest !== await egress.sha256Hex(SAMPLE_SMS.trim())) throw refused("replay_stale", "the recording was made for a different sample.");
+  const s = ghostMath.createSession({ k: rec.k });
+  s.mask(p.entries);
+  const restored = s.restore(rec.response, ghostMath.exactFigures(p.entries, p.summary));
+  const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount }));
+  const picked = ghostMath.chooseTips(restored.tips, rulesTips, ghostMath.wholeAmounts(p.entries, p.summary));
+  restored.tips = picked.tips;
+  restored.tipsDropped = picked.dropped;
+  const leak = ghostMath.leakCheck(rec.requestText + "\n" + (rec.requestBody || ""), p.entries);
+  return {
+    ok: true, recorded: true, source: "recorded", model: rec.model, capturedAt: rec.capturedAt, latencyMs: rec.latencyMs || null,
+    restored, agreement: ghostMath.agreement(p.summary, restored.raw),
+    evidence: { recorded: true, body: rec.requestBody || rec.requestText, namesChecked: leak.namesChecked, nameHits: leak.nameHits.length },
+  };
+}
+
+async function ghostSend(modeKey) {
+  const p = ghostPrepared;
+  if (!p || !p.disclosure) throw refused("ghost_nothing", "there is nothing prepared to send.");
+  if (!ai) throw new Error("Firebase AI Logic is not initialised.");
+  const route = GHOST_ROUTES[modeKey] ? modeKey : state.mode;
+  if (route === "only_on_device" && state.nano !== "ready") {
+    const e = new Error("Gemini Nano is not ready in this browser, so nothing ran. The rules' figures and tips above are still yours.");
+    e.code = "nano_unavailable"; throw e;
+  }
+  /* One approval per send: after an answered send, the same lines get a fresh disclosure. */
+  if (p.disclosure.approvalState === "sent") p.disclosure = await egress.createDisclosure({ purpose: "ghost_math", payload: p.disclosure.payload });
+  const d = p.disclosure;
+  if (!egress.isApproved(d)) await egress.approve(d, "user_click");
+  const v = await egress.verify(d);
+  if (!v.ok) throw refused(v.code, "the disclosure is not valid to send: " + v.reason + ".");
+  const text = egress.serialize(d);
+  const hits = egress.scanPrivate(text);
+  if (hits.length) throw refused("private_value_blocked", "the outgoing text contains a real name.");
+  egress.markSent(d, { route, bytes: text.length });
+  const expected = expectedSource(route);
+  const limitMs = expected === SOURCE.on_device ? LOCAL_TIMEOUT_MS : CLOUD_TIMEOUT_MS;
+  const t0 = performance.now();
+  const attempts = [];
+  const candidates = route === "only_on_device" ? [CLOUD_MODELS[0]] : CLOUD_MODELS;
+  for (let i = 0; i < candidates.length; i++) {
+    const cloudModel = candidates[i];
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    let timer = null;
+    try {
+      const model = getGenerativeModel(ai, {
+        mode: MODES[route],
+        inCloudParams: { model: cloudModel, generationConfig: { responseMimeType: "application/json", responseSchema: ghostSchema() } },
+        onDeviceParams: { promptOptions: { responseConstraint: ghostMath.RESPONSE_JSON_SCHEMA } },
+      });
+      const stop = new Promise((_, reject) => { timer = setTimeout(() => {
+        try { if (controller) controller.abort(); } catch (e) { /* ignore */ }
+        reject(new InferenceTimeoutError((expected === SOURCE.on_device ? "Gemini Nano" : "Cloud model " + cloudModel) +
+          " did not answer within " + Math.round(limitMs / 1000) + " s (timeout)."));
+      }, limitMs); });
+      const result = await Promise.race([model.generateContent(text, controller ? { signal: controller.signal } : undefined), stop]);
+      clearTimeout(timer);
+      let json = null;
+      try { json = JSON.parse(result.response.text()); } catch (e) { json = null; }
+      let source = result.response.inferenceSource;
+      const sourceVerified = source === SOURCE.on_device || source === SOURCE.in_cloud;
+      if (!sourceVerified) source = expected;
+      if (source === SOURCE.on_device) state.nanoWarm = true; else state.cloudModel = cloudModel;
+      const latencyMs = Math.round(performance.now() - t0);
+      const obs = egress.observation(d.requestId, { withBodies: true });
+      const bodyLeak = ghostMath.leakCheck((obs.texts || []).join("\n"), p.entries);
+      const restored = ghostSession.restore(json, ghostMath.exactFigures(p.entries, p.summary));
+      const rulesTips = ghostMath.localTips(p.summary).map((t) => ({ text: ghostMath.fillTip(t.text, ghostMath.rupees(t.amount)), amount: t.amount }));
+      const picked = ghostMath.chooseTips(restored.tips, rulesTips, ghostMath.wholeAmounts(p.entries, p.summary));
+      restored.tips = picked.tips;
+      restored.tipsDropped = picked.dropped;
+      const isCloud = source === SOURCE.in_cloud;
+      const body = (obs.texts || [])[0] || "";
+      /* A real cloud answer for the bundled sample can be kept as the demo recording. */
+      if (isCloud && json && p.isSample) {
+        ghostLastRecording = { schema: ghostMath.RECORDING_SCHEMA, model: cloudModel, capturedAt: new Date().toISOString(), latencyMs,
+          k: 1 / ghostSession.unscale(1), sampleDigest: await egress.sha256Hex(SAMPLE_SMS.trim()), requestText: text,
+          requestBody: body.slice(0, 60000), response: json,
+          note: "A real Gemini answer for the bundled sample (invented data), captured in Ghost-Math demo mode. k is stored only because the data is the sample." };
+      }
+      const receipt = telemetry.recordReceipt({
+        route: isCloud ? "cloud-ghost-math" : "on-device-nano", status: json ? "completed" : "failed",
+        model: isCloud ? cloudModel : "Gemini Nano", requestedMode: route, latencyMs, approvalState: "approved",
+        egress: isCloud ? { tier: contracts.DISCLOSURE_TIERS.APPROVED_CLOUD, purpose: "ghost_math", digest: d.contentDigest,
+          bytes: text.length, attemptedChars: obs.attemptedChars, observedChars: obs.observedChars, bodyObserved: obs.bodyObserved,
+          fields: ["instructions", "entries"], privateValueHits: bodyLeak.nameHits.length } : { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY },
+        errorCode: json ? null : "bad_json",
+        contributors: { local_deterministic: true, local_ai: !isCloud, cloud_ai: isCloud, human_confirmed: true },
+      });
+      return {
+        ok: !!json, source, sourceVerified, model: isCloud ? cloudModel : "Gemini Nano", latencyMs, route,
+        restored, agreement: json ? ghostMath.agreement(p.summary, restored.raw) : null,
+        evidence: { bodyObserved: obs.bodyObserved, observedChars: obs.observedChars, bodies: obs.bodies.length,
+          namesChecked: bodyLeak.namesChecked, nameHits: bodyLeak.nameHits.length, body: body.slice(0, 60000) },
+        recordable: !!(isCloud && json && p.isSample),
+        receiptId: receipt.receiptId,
+      };
+    } catch (e) {
+      clearTimeout(timer);
+      const msg = e && e.name === "InferenceTimeoutError" ? e.message : describeError(e);
+      attempts.push(candidates.length > 1 ? cloudModel + ": " + msg : msg);
+      const modelProblem = /model|not found|404|unsupported|not supported|invalid argument|400/i.test(msg) &&
+        !/app.?check|api.?key|permission|quota|network|failed to fetch|timeout/i.test(msg);
+      if (!modelProblem || i === candidates.length - 1) {
+        const err = new Error(attempts.join("\n"));
+        err.code = (e && e.code) || "error";
+        err.approvalKept = keepApproval(d, err.code);
+        try { telemetry.recordReceipt({ route: expected === SOURCE.on_device ? "on-device-nano" : "cloud-ghost-math",
+          status: err.code === "timeout" ? "timed_out" : "failed", model: expected === SOURCE.on_device ? "Gemini Nano" : cloudModel,
+          requestedMode: route, latencyMs: Math.round(performance.now() - t0), approvalState: "approved", errorCode: String(err.code),
+          egress: expected === SOURCE.on_device ? { tier: contracts.DISCLOSURE_TIERS.LOCAL_ONLY }
+            : { tier: contracts.DISCLOSURE_TIERS.APPROVED_CLOUD, purpose: "ghost_math", digest: d.contentDigest, bytes: text.length } }); } catch (x) { /* best effort */ }
+        throw err;
+      }
+    }
+  }
+}
+
 /* ---------------------------------- header bar ---------------------------------- */
 
 const NANO_LABEL = {
@@ -936,6 +1113,21 @@ function boot() {
       validatePlan: contracts.validatePlan, DISCLOSURE_TIERS: contracts.DISCLOSURE_TIERS,
       RECEIPT_SCHEMA_VERSION: contracts.RECEIPT_SCHEMA_VERSION, PLAN_STEP_SCHEMA_VERSION: contracts.PLAN_STEP_SCHEMA_VERSION },
     timeouts: { cloudMs: CLOUD_TIMEOUT_MS, localMs: LOCAL_TIMEOUT_MS },
+    /* Ghost-Math. k is never exposed; a send needs a real click on #ghostSendBtn. */
+    ghost: {
+      prepare: ghostPrepare,
+      replay: ghostReplay,
+      /* The last real cloud answer for the sample, as a recording (null otherwise). */
+      lastRecording: () => (ghostLastRecording ? JSON.parse(JSON.stringify(ghostLastRecording)) : null),
+      /* A real click on Send, or on the demo button (which says it sends the sample's
+       * disguised lines) - the demo click approves a send of the bundled sample only. */
+      sendFromClick: (event, modeKey) => (trustedBorderAction(event, ["ghostSendBtn"]) ||
+          (trustedBorderAction(event, ["ghostDemoBtn"]) && ghostPrepared && ghostPrepared.isSample))
+        ? ghostSend(modeKey)
+        : Promise.reject(Object.assign(new Error("Sending needs a direct click on the send button."), { code: "user_gesture_required" })),
+      samples: { sms: SAMPLE_SMS, budget: SAMPLE_BUDGET },
+      rupees: ghostMath.rupees, checkTolerance: ghostMath.CHECK_TOLERANCE, kRange: [ghostMath.K_MIN, ghostMath.K_MAX], wobble: ghostMath.WOBBLE,
+    },
     border: makeBorder(router),
   };
   if (window.__resolveAionHybrid) window.__resolveAionHybrid(window.AionHybrid);
